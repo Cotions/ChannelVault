@@ -235,6 +235,7 @@ function annotateCards(ids) {
       badge.textContent = "✓ In Vault";
 
       const thumb = card.querySelector(
+        "a.ytLockupViewModelContentImage, yt-thumbnail-view-model, " +
         "yt-lockup-thumbnail, ytd-thumbnail, yt-image, a#thumbnail"
       );
 
