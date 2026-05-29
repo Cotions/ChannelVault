@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    body {
+      width: 260px;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      padding: 12px 16px;
+      margin: 0;
+      color: #202124;
+    }
+    h2 {
+      margin: 0 0 8px;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ccc;
+    }
+    .dot.online { background: #2e7d32; }
+    #status { color: #666; margin-bottom: 10px; }
+    #count { font-weight: 600; font-size: 22px; }
+    #label { color: #555; font-size: 12px; margin-top: 2px; }
+    .error { color: #c62828; font-size: 12px; margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <h2><span class="dot" id="dot"></span> ChannelVault</h2>
+  <div id="status">Connecting…</div>
+  <div id="count">—</div>
+  <div id="label">videos tracked</div>
+  <div class="error" id="error" hidden>Backend offline — run tracker.py</div>
+
+  <script>
+    fetch("http://localhost:5000/videos")
+      .then(r => r.json())
+      .then(data => {
+        document.getElementById("dot").classList.add("online");
+        document.getElementById("status").textContent = "Backend connected";
+        document.getElementById("count").textContent = data.length;
+      })
+      .catch(() => {
+        document.getElementById("status").textContent = "Backend offline";
+        document.getElementById("error").hidden = false;
+      });
+  </script>
+</body>
+</html>

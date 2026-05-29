@@ -1,0 +1,4 @@
+watchdog
+tinytag
+flask
+flask-cors
