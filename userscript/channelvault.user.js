@@ -9,8 +9,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @run-at       document-idle
-// @updateURL    http://localhost:3360/channelvault.user.js
-// @downloadURL  http://localhost:3360/channelvault.user.js
+// @updateURL    https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channelvault.user.js
+// @downloadURL  https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channelvault.user.js
 // ==/UserScript==
 
 const API_BASE = "http://localhost:3360";

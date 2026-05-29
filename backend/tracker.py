@@ -14,7 +14,6 @@ BASE_DIR        = os.path.dirname(__file__)
 DB_PATH         = os.path.join(BASE_DIR, "videos.db")
 CONFIG_PATH     = os.path.join(BASE_DIR, "config.json")
 STATIC_DIR      = os.path.join(BASE_DIR, "static")
-USERSCRIPT_PATH = os.path.join(BASE_DIR, "..", "userscript", "channelvault.user.js")
 DEFAULT_WATCH   = "/home/cotions/Downloads"
 
 app = Flask(__name__, static_folder=STATIC_DIR)
@@ -142,12 +141,6 @@ def start_observer(directory):
 @app.get("/")
 def ui():
     return send_from_directory(STATIC_DIR, "index.html")
-
-@app.get("/channelvault.user.js")
-def userscript():
-    path = os.path.realpath(USERSCRIPT_PATH)
-    return send_from_directory(os.path.dirname(path), os.path.basename(path),
-                               mimetype="application/javascript")
 
 @app.get("/config")
 def get_config():
