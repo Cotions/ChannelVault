@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.0.0
+// @version      1.1.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -9,23 +9,25 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @run-at       document-idle
+// @updateURL    http://localhost:3360/channelvault.user.js
+// @downloadURL  http://localhost:3360/channelvault.user.js
 // ==/UserScript==
 
 const API_BASE = "http://localhost:3360";
 const BADGE_ID = "channelvault-badge";
+const CARD_BADGE_CLASS = "cv-card-badge";
 
 GM_addStyle(`
   #${BADGE_ID} {
     display: inline-flex;
     align-items: center;
-    margin-left: 10px;
+    margin-top: 8px;
     padding: 3px 10px;
     background: #2e7d32;
     color: #fff;
     font-size: 13px;
     font-weight: 600;
     border-radius: 4px;
-    vertical-align: middle;
     line-height: 1.4;
     font-family: system-ui, sans-serif;
   }
@@ -58,10 +60,10 @@ function injectBadge() {
 
   if (!titleEl) return;
 
-  const badge = document.createElement("span");
+  const badge = document.createElement("div");
   badge.id = BADGE_ID;
   badge.textContent = "✓ Downloaded";
-  titleEl.appendChild(badge);
+  titleEl.insertAdjacentElement("afterend", badge);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,8 +192,115 @@ function waitForTitle(cb, attempts = 0) {
 }
 
 // ---------------------------------------------------------------------------
+// Channel page — annotate video cards
+// ---------------------------------------------------------------------------
+
+let _downloadedIds = null;
+let _cardObserver  = null;
+
+function gmFetchIds() {
+  return new Promise((resolve) => {
+    GM_xmlhttpRequest({
+      method: "GET",
+      url: `${API_BASE}/videos/ids`,
+      onload: (res) => {
+        try { resolve(new Set(JSON.parse(res.responseText).ids || [])); }
+        catch (_) { resolve(new Set()); }
+      },
+      onerror: () => resolve(new Set()),
+    });
+  });
+}
+
+function extractVideoIdFromHref(href) {
+  const m = href && href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function annotateCards(ids) {
+  document
+    .querySelectorAll("a.ytLockupMetadataViewModelTitle[href*='watch?v=']")
+    .forEach(link => {
+      const videoId = extractVideoIdFromHref(link.getAttribute("href"));
+      if (!videoId || !ids.has(videoId)) return;
+
+      const card = link.closest(
+        "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
+        "ytd-grid-video-renderer, ytd-compact-video-renderer"
+      ) || link.parentElement;
+      if (!card || card.querySelector(`.${CARD_BADGE_CLASS}`)) return;
+
+      const badge = document.createElement("div");
+      badge.className = CARD_BADGE_CLASS;
+      badge.textContent = "✓ In Vault";
+
+      const thumb = card.querySelector(
+        "yt-lockup-thumbnail, ytd-thumbnail, yt-image, a#thumbnail"
+      );
+
+      if (thumb) {
+        if (getComputedStyle(thumb).position === "static") {
+          thumb.style.position = "relative";
+        }
+        badge.style.cssText = [
+          "position:absolute",
+          "top:6px",
+          "left:6px",
+          "z-index:10",
+          "padding:2px 8px",
+          "background:#2e7d32dd",
+          "color:#fff",
+          "font-size:11px",
+          "font-weight:700",
+          "border-radius:3px",
+          "pointer-events:none",
+          "font-family:system-ui,sans-serif",
+          "line-height:1.6",
+        ].join(";");
+        thumb.appendChild(badge);
+      } else {
+        const h3 = link.closest("h3") || link.parentElement;
+        badge.style.cssText = [
+          "display:inline-block",
+          "margin-left:6px",
+          "padding:1px 6px",
+          "background:#2e7d32",
+          "color:#fff",
+          "font-size:10px",
+          "font-weight:700",
+          "border-radius:3px",
+          "vertical-align:middle",
+          "font-family:system-ui,sans-serif",
+          "line-height:1.6",
+        ].join(";");
+        (h3 || link).insertAdjacentElement("afterend", badge);
+      }
+    });
+}
+
+function stopCardObserver() {
+  if (_cardObserver) { _cardObserver.disconnect(); _cardObserver = null; }
+}
+
+async function initCardAnnotation() {
+  stopCardObserver();
+  _downloadedIds = await gmFetchIds();
+  if (_downloadedIds.size === 0) return;
+
+  annotateCards(_downloadedIds);
+
+  _cardObserver = new MutationObserver(() => annotateCards(_downloadedIds));
+  _cardObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+// ---------------------------------------------------------------------------
 // YouTube SPA navigation
 // ---------------------------------------------------------------------------
 
-window.addEventListener("yt-navigate-finish", checkAndAnnotate);
-checkAndAnnotate();
+function onNavigate() {
+  checkAndAnnotate();
+  initCardAnnotation();
+}
+
+window.addEventListener("yt-navigate-finish", onNavigate);
+onNavigate();

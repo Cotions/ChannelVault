@@ -14,6 +14,7 @@ BASE_DIR        = os.path.dirname(__file__)
 DB_PATH         = os.path.join(BASE_DIR, "videos.db")
 CONFIG_PATH     = os.path.join(BASE_DIR, "config.json")
 STATIC_DIR      = os.path.join(BASE_DIR, "static")
+USERSCRIPT_PATH = os.path.join(BASE_DIR, "..", "userscript", "channelvault.user.js")
 DEFAULT_WATCH   = "/home/cotions/Downloads"
 
 app = Flask(__name__, static_folder=STATIC_DIR)
@@ -142,6 +143,12 @@ def start_observer(directory):
 def ui():
     return send_from_directory(STATIC_DIR, "index.html")
 
+@app.get("/channelvault.user.js")
+def userscript():
+    path = os.path.realpath(USERSCRIPT_PATH)
+    return send_from_directory(os.path.dirname(path), os.path.basename(path),
+                               mimetype="application/javascript")
+
 @app.get("/config")
 def get_config():
     return jsonify(load_config())
@@ -210,6 +217,13 @@ def update_stats(video_id):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+@app.get("/videos/ids")
+def list_video_ids():
+    conn = get_conn()
+    rows = conn.execute("SELECT video_id FROM downloaded_videos").fetchall()
+    conn.close()
+    return jsonify({"ids": [r["video_id"] for r in rows]})
 
 @app.get("/videos")
 def list_videos():

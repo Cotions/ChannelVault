@@ -1,5 +1,6 @@
 const API_BASE = "http://localhost:3360";
 const BADGE_ID = "channelvault-badge";
+const CARD_BADGE_CLASS = "cv-card-badge";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -140,11 +141,113 @@ function waitForTitle(cb, attempts = 0) {
 }
 
 // ---------------------------------------------------------------------------
+// Channel page — annotate video cards with downloaded badge
+// ---------------------------------------------------------------------------
+
+let _downloadedIds = null;
+let _cardObserver  = null;
+
+async function fetchDownloadedIds() {
+  try {
+    const data = await fetch(`${API_BASE}/videos/ids`).then(r => r.json());
+    return new Set(data.ids || []);
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function extractVideoIdFromHref(href) {
+  const m = href && href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function annotateCards(ids) {
+  document
+    .querySelectorAll("a.ytLockupMetadataViewModelTitle[href*='watch?v=']")
+    .forEach(link => {
+      const videoId = extractVideoIdFromHref(link.getAttribute("href"));
+      if (!videoId || !ids.has(videoId)) return;
+
+      const card = link.closest(
+        "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
+        "ytd-grid-video-renderer, ytd-compact-video-renderer"
+      ) || link.parentElement;
+      if (!card || card.querySelector(`.${CARD_BADGE_CLASS}`)) return;
+
+      const badge = document.createElement("div");
+      badge.className = CARD_BADGE_CLASS;
+      badge.textContent = "✓ In Vault";
+
+      const thumb = card.querySelector(
+        "yt-lockup-thumbnail, ytd-thumbnail, yt-image, a#thumbnail"
+      );
+
+      if (thumb) {
+        if (getComputedStyle(thumb).position === "static") {
+          thumb.style.position = "relative";
+        }
+        badge.style.cssText = [
+          "position:absolute",
+          "top:6px",
+          "left:6px",
+          "z-index:10",
+          "padding:2px 8px",
+          "background:#2e7d32dd",
+          "color:#fff",
+          "font-size:11px",
+          "font-weight:700",
+          "border-radius:3px",
+          "pointer-events:none",
+          "font-family:system-ui,sans-serif",
+          "line-height:1.6",
+        ].join(";");
+        thumb.appendChild(badge);
+      } else {
+        // Fallback: inline badge after the title h3
+        const h3 = link.closest("h3") || link.parentElement;
+        badge.style.cssText = [
+          "display:inline-block",
+          "margin-left:6px",
+          "padding:1px 6px",
+          "background:#2e7d32",
+          "color:#fff",
+          "font-size:10px",
+          "font-weight:700",
+          "border-radius:3px",
+          "vertical-align:middle",
+          "font-family:system-ui,sans-serif",
+          "line-height:1.6",
+        ].join(";");
+        (h3 || link).insertAdjacentElement("afterend", badge);
+      }
+    });
+}
+
+function stopCardObserver() {
+  if (_cardObserver) { _cardObserver.disconnect(); _cardObserver = null; }
+}
+
+async function initCardAnnotation() {
+  stopCardObserver();
+  _downloadedIds = await fetchDownloadedIds();
+  if (_downloadedIds.size === 0) return;
+
+  annotateCards(_downloadedIds);
+
+  _cardObserver = new MutationObserver(() => annotateCards(_downloadedIds));
+  _cardObserver.observe(document.body, { childList: true, subtree: true });
+}
+
+// ---------------------------------------------------------------------------
 // YouTube SPA navigation handling
 // ---------------------------------------------------------------------------
 
-// YouTube fires this custom event on each client-side navigation
-window.addEventListener("yt-navigate-finish", checkAndAnnotate);
+function onNavigate() {
+  checkAndAnnotate();          // watch page badge (no-ops if no ?v=)
+  initCardAnnotation();        // card badges everywhere (home, channel, search, subs)
+}
+
+window.addEventListener("yt-navigate-finish", onNavigate);
 
 // Initial load
-checkAndAnnotate();
+onNavigate();
