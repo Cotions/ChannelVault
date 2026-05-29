@@ -1,2 +1,5 @@
 
 metadata exemple.txt
+venv/
+__pycache__/
+backend/videos.db

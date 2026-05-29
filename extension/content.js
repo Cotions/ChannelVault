@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:5000";
+const API_BASE = "http://localhost:3360";
 const BADGE_ID = "channelvault-badge";
 
 // ---------------------------------------------------------------------------

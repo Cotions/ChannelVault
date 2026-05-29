@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         ChannelVault
-// @namespace    https://creativetrnd.com
+// @namespace    https://github.com/Cotions/channelvault
 // @version      1.0.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
-// @author       TRND
+// @author       Cotions
 // @match        https://www.youtube.com/*
 // @connect      localhost
 // @grant        GM_xmlhttpRequest
@@ -11,7 +11,7 @@
 // @run-at       document-idle
 // ==/UserScript==
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = "http://localhost:3360";
 const BADGE_ID = "channelvault-badge";
 
 GM_addStyle(`
@@ -49,9 +49,12 @@ function injectBadge() {
   if (document.getElementById(BADGE_ID)) return;
 
   const titleEl =
+    document.querySelector("ytd-watch-metadata h1") ||
+    document.querySelector("h1.ytd-watch-metadata") ||
+    document.querySelector("#above-the-fold h1") ||
     document.querySelector("h1.ytd-video-primary-info-renderer") ||
     document.querySelector("ytd-video-primary-info-renderer h1") ||
-    document.querySelector("#above-the-fold #title h1");
+    document.querySelector("#title h1");
 
   if (!titleEl) return;
 
@@ -172,9 +175,12 @@ async function checkAndAnnotate() {
 
 function waitForTitle(cb, attempts = 0) {
   const titleEl =
+    document.querySelector("ytd-watch-metadata h1") ||
+    document.querySelector("h1.ytd-watch-metadata") ||
+    document.querySelector("#above-the-fold h1") ||
     document.querySelector("h1.ytd-video-primary-info-renderer") ||
     document.querySelector("ytd-video-primary-info-renderer h1") ||
-    document.querySelector("#above-the-fold #title h1");
+    document.querySelector("#title h1");
 
   if (titleEl) {
     cb();

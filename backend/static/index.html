@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChannelVault</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3a;
+      --accent: #2e7d32;
+      --accent-hover: #388e3c;
+      --accent-light: #1b5e20;
+      --danger: #c62828;
+      --text: #e8eaf6;
+      --muted: #7b7f9e;
+      --mono: 'JetBrains Mono', 'Fira Code', monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    .status-dot.online { background: #4caf50; box-shadow: 0 0 6px #4caf5088; }
+
+    .status-label { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+    main {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+
+    .card-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    .folder-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 8px 12px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+    button:disabled { opacity: 0.45; cursor: default; }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+    .btn-secondary { background: var(--border); color: var(--text); }
+    .btn-secondary:hover:not(:disabled) { background: #363a50; }
+
+    .btn-danger { background: var(--danger); color: #fff; }
+
+    .msg {
+      margin-top: 10px;
+      font-size: 12px;
+      padding: 8px 12px;
+      border-radius: 5px;
+      display: none;
+    }
+    .msg.show { display: block; }
+    .msg.ok   { background: #1b5e2044; color: #a5d6a7; border: 1px solid #2e7d3244; }
+    .msg.err  { background: #c6282822; color: #ef9a9a; border: 1px solid #c6282844; }
+
+    .scan-log {
+      margin-top: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      max-height: 180px;
+      overflow-y: auto;
+      display: none;
+      line-height: 1.7;
+    }
+    .scan-log.show { display: block; }
+    .scan-log .ok   { color: #a5d6a7; }
+    .scan-log .skip { color: var(--muted); }
+    .scan-log .err  { color: #ef9a9a; }
+
+    .stats-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+
+    .stat {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 16px;
+      min-width: 110px;
+    }
+
+    .stat-num {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .search-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 8px 10px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+    tbody tr:hover { background: #ffffff06; }
+    tbody tr:last-child { border-bottom: none; }
+
+    td { padding: 9px 10px; vertical-align: middle; }
+
+    .td-title { font-weight: 500; max-width: 260px; }
+    .td-title a { color: var(--text); text-decoration: none; }
+    .td-title a:hover { color: #90caf9; }
+    .td-channel { color: var(--muted); }
+    .td-mono { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+    .td-num { font-variant-numeric: tabular-nums; }
+
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: var(--muted);
+    }
+
+    .badge-dl {
+      display: inline-block;
+      font-size: 10px;
+      background: var(--accent-light);
+      color: #a5d6a7;
+      border-radius: 3px;
+      padding: 1px 6px;
+      font-weight: 600;
+    }
+
+    .del-btn {
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .del-btn:hover { color: #ef9a9a; background: #c6282822; }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="status-dot" id="dot"></div>
+  <h1>ChannelVault</h1>
+  <span class="status-label" id="status-label">Connecting…</span>
+</header>
+
+<main>
+
+  <!-- Folder config -->
+  <div class="card">
+    <div class="card-title">Watch Folder</div>
+    <div class="folder-row">
+      <input type="text" id="folder-input" placeholder="/home/user/Downloads" />
+      <button class="btn-secondary" id="btn-save">Save</button>
+      <button class="btn-primary" id="btn-scan">Scan Now</button>
+    </div>
+    <div class="msg" id="folder-msg"></div>
+    <div class="scan-log" id="scan-log"></div>
+  </div>
+
+  <!-- Video list -->
+  <div class="card">
+    <div class="card-title">Tracked Videos</div>
+    <div class="stats-row">
+      <div class="stat">
+        <div class="stat-num" id="stat-total">—</div>
+        <div class="stat-label">Total</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="stat-with-stats">—</div>
+        <div class="stat-label">With stats</div>
+      </div>
+    </div>
+    <div class="search-row">
+      <input type="text" id="search" placeholder="Filter by title or channel…" style="max-width:320px;" />
+    </div>
+    <div id="table-wrap"></div>
+  </div>
+
+</main>
+
+<script>
+const API = "http://localhost:3360";
+let allVideos = [];
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+async function boot() {
+  try {
+    const [cfg, videos] = await Promise.all([
+      fetch(`${API}/config`).then(r => r.json()),
+      fetch(`${API}/videos`).then(r => r.json()),
+    ]);
+    document.getElementById("dot").classList.add("online");
+    document.getElementById("status-label").textContent = "Backend connected";
+    document.getElementById("folder-input").value = cfg.watch_directory || "";
+    allVideos = videos;
+    renderTable(videos);
+    updateStats(videos);
+  } catch (_) {
+    document.getElementById("status-label").textContent = "Backend offline";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Folder save
+// ---------------------------------------------------------------------------
+
+document.getElementById("btn-save").addEventListener("click", async () => {
+  const dir = document.getElementById("folder-input").value.trim();
+  const msg = document.getElementById("folder-msg");
+  try {
+    const res = await fetch(`${API}/config`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ watch_directory: dir }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showMsg(msg, `Watching: ${data.watch_directory}`, "ok");
+    } else {
+      showMsg(msg, data.error, "err");
+    }
+  } catch (e) {
+    showMsg(msg, "Request failed — is the backend running?", "err");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Scan
+// ---------------------------------------------------------------------------
+
+document.getElementById("btn-scan").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-scan");
+  const log = document.getElementById("scan-log");
+  btn.disabled = true;
+  btn.textContent = "Scanning…";
+  log.innerHTML = "";
+  log.classList.add("show");
+
+  try {
+    const res  = await fetch(`${API}/scan`, { method: "POST" });
+    const data = await res.json();
+
+    if (!data.ok) {
+      log.innerHTML = `<span class="err">${data.error}</span>`;
+    } else {
+      const summary = `Scanned ${data.total} file(s) — ${data.tracked} tracked, ${data.skipped} skipped, ${data.errors} errors`;
+      log.innerHTML = `<span class="ok">${summary}</span>\n`;
+      data.results.forEach(r => {
+        const name = r.file.split("/").pop();
+        if (r.status === "tracked") {
+          log.innerHTML += `<span class="ok">  ✓ ${r.title || name}</span>\n`;
+        } else if (r.status === "skipped") {
+          log.innerHTML += `<span class="skip">  — ${name} (no YouTube metadata)</span>\n`;
+        } else {
+          log.innerHTML += `<span class="err">  ✗ ${name}: ${r.status}</span>\n`;
+        }
+      });
+      // Refresh table
+      const videos = await fetch(`${API}/videos`).then(r => r.json());
+      allVideos = videos;
+      renderTable(filterVideos(document.getElementById("search").value));
+      updateStats(videos);
+    }
+  } catch (_) {
+    log.innerHTML = `<span class="err">Request failed — is the backend running?</span>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = "Scan Now";
+});
+
+// ---------------------------------------------------------------------------
+// Table
+// ---------------------------------------------------------------------------
+
+function filterVideos(query) {
+  const q = query.toLowerCase();
+  if (!q) return allVideos;
+  return allVideos.filter(v =>
+    (v.title || "").toLowerCase().includes(q) ||
+    (v.channel_name || "").toLowerCase().includes(q)
+  );
+}
+
+function fmt(n) {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + "K";
+  return n.toString();
+}
+
+function fmtDate(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return d.toLocaleDateString("en-CA");
+}
+
+function fmtDuration(secs) {
+  if (!secs) return "—";
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+  return `${m}:${String(s).padStart(2,"0")}`;
+}
+
+function renderTable(videos) {
+  const wrap = document.getElementById("table-wrap");
+  if (!videos.length) {
+    wrap.innerHTML = `<div class="empty">No videos tracked yet. Run a scan or download a video.</div>`;
+    return;
+  }
+
+  const rows = videos.map(v => `
+    <tr>
+      <td class="td-title">
+        <a href="https://www.youtube.com/watch?v=${v.video_id}" target="_blank">${esc(v.title || v.video_id)}</a>
+      </td>
+      <td class="td-channel">${esc(v.channel_name || "—")}</td>
+      <td class="td-mono">${fmtDuration(v.duration_secs)}</td>
+      <td class="td-num">${fmt(v.view_count)}</td>
+      <td class="td-num">${fmt(v.like_count)}</td>
+      <td>${fmtDate(v.downloaded_at)}</td>
+      <td>
+        <button class="del-btn" title="Remove from vault" onclick="deleteVideo('${v.video_id}', this)">✕</button>
+      </td>
+    </tr>
+  `).join("");
+
+  wrap.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Channel</th>
+          <th>Duration</th>
+          <th>Views</th>
+          <th>Likes</th>
+          <th>Downloaded</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function updateStats(videos) {
+  document.getElementById("stat-total").textContent      = videos.length;
+  document.getElementById("stat-with-stats").textContent = videos.filter(v => v.view_count != null).length;
+}
+
+document.getElementById("search").addEventListener("input", e => {
+  renderTable(filterVideos(e.target.value));
+});
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+async function deleteVideo(videoId, btn) {
+  btn.disabled = true;
+  try {
+    await fetch(`${API}/videos/${videoId}`, { method: "DELETE" });
+    allVideos = allVideos.filter(v => v.video_id !== videoId);
+    renderTable(filterVideos(document.getElementById("search").value));
+    updateStats(allVideos);
+  } catch (_) {
+    btn.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Utils
+// ---------------------------------------------------------------------------
+
+function showMsg(el, text, type) {
+  el.textContent = text;
+  el.className   = `msg show ${type}`;
+  setTimeout(() => el.classList.remove("show"), 4000);
+}
+
+function esc(str) {
+  return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+boot();
+</script>
+</body>
+</html>

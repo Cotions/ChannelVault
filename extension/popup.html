@@ -39,7 +39,7 @@
   <div class="error" id="error" hidden>Backend offline — run tracker.py</div>
 
   <script>
-    fetch("http://localhost:5000/videos")
+    fetch("http://localhost:3360/videos")
       .then(r => r.json())
       .then(data => {
         document.getElementById("dot").classList.add("online");
