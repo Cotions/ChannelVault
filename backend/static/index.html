@@ -243,6 +243,41 @@
     }
     .del-btn:hover { color: #ef9a9a; background: #c6282822; }
 
+    .creator-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 8px;
+    }
+
+    .creator-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .creator-card:hover { border-color: var(--accent); }
+
+    .creator-name {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .creator-count {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--accent-hover);
+      flex-shrink: 0;
+    }
+
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -263,11 +298,18 @@
     <div class="card-title">Watch Folder</div>
     <div class="folder-row">
       <input type="text" id="folder-input" placeholder="/home/user/Downloads" />
+      <button class="btn-secondary" id="btn-browse">Browse…</button>
       <button class="btn-secondary" id="btn-save">Save</button>
       <button class="btn-primary" id="btn-scan">Scan Now</button>
     </div>
     <div class="msg" id="folder-msg"></div>
     <div class="scan-log" id="scan-log"></div>
+  </div>
+
+  <!-- Creators -->
+  <div class="card">
+    <div class="card-title">Videos per Creator</div>
+    <div id="creators-wrap"><div class="empty">No data yet.</div></div>
   </div>
 
   <!-- Video list -->
@@ -320,6 +362,36 @@ async function boot() {
 // Folder save
 // ---------------------------------------------------------------------------
 
+document.getElementById("btn-browse").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-browse");
+  const msg = document.getElementById("folder-msg");
+  btn.disabled = true;
+  btn.textContent = "Opening…";
+  try {
+    const res  = await fetch(`${API}/browse`);
+    const data = await res.json();
+    if (data.ok && data.directory) {
+      document.getElementById("folder-input").value = data.directory;
+      // auto-save
+      const save = await fetch(`${API}/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ watch_directory: data.directory }),
+      });
+      const saved = await save.json();
+      if (saved.ok) {
+        showMsg(msg, `Watching: ${saved.watch_directory}`, "ok");
+      } else {
+        showMsg(msg, saved.error, "err");
+      }
+    }
+  } catch (_) {
+    showMsg(msg, "Request failed — is the backend running?", "err");
+  }
+  btn.disabled = false;
+  btn.textContent = "Browse…";
+});
+
 document.getElementById("btn-save").addEventListener("click", async () => {
   const dir = document.getElementById("folder-input").value.trim();
   const msg = document.getElementById("folder-msg");
@@ -353,32 +425,66 @@ document.getElementById("btn-scan").addEventListener("click", async () => {
   log.classList.add("show");
 
   try {
-    const res  = await fetch(`${API}/scan`, { method: "POST" });
-    const data = await res.json();
-
-    if (!data.ok) {
-      log.innerHTML = `<span class="err">${data.error}</span>`;
-    } else {
-      const summary = `Scanned ${data.total} file(s) — ${data.tracked} tracked, ${data.skipped} skipped, ${data.errors} errors`;
-      log.innerHTML = `<span class="ok">${summary}</span>\n`;
-      data.results.forEach(r => {
-        const name = r.file.split("/").pop();
-        if (r.status === "tracked") {
-          log.innerHTML += `<span class="ok">  ✓ ${r.title || name}</span>\n`;
-        } else if (r.status === "skipped") {
-          log.innerHTML += `<span class="skip">  — ${name} (no YouTube metadata)</span>\n`;
-        } else {
-          log.innerHTML += `<span class="err">  ✗ ${name}: ${r.status}</span>\n`;
-        }
-      });
-      // Refresh table
-      const videos = await fetch(`${API}/videos`).then(r => r.json());
-      allVideos = videos;
-      renderTable(filterVideos(document.getElementById("search").value));
-      updateStats(videos);
+    const res = await fetch(`${API}/scan`, { method: "POST" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      log.innerHTML = `<span class="err">${data.error || "Scan failed"}</span>`;
+      btn.disabled = false;
+      btn.textContent = "Scan Now";
+      return;
     }
-  } catch (_) {
-    log.innerHTML = `<span class="err">Request failed — is the backend running?</span>`;
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let   buf     = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split("\n\n");
+      buf = lines.pop();
+
+      for (const chunk of lines) {
+        const line = chunk.trim();
+        if (!line.startsWith("data:")) continue;
+        let evt;
+        try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+
+        if (evt.type === "start") {
+          log.innerHTML = `<span class="ok">Found ${evt.total} file(s) — scanning…</span>\n`;
+
+        } else if (evt.type === "progress") {
+          // Update the progress line (last child if it's a progress line, else append)
+          const pct    = Math.round((evt.done / evt.total) * 100);
+          const progId = "scan-progress-line";
+          let   progEl = document.getElementById(progId);
+          if (!progEl) {
+            progEl    = document.createElement("span");
+            progEl.id = progId;
+            log.appendChild(document.createTextNode("\n"));
+            log.appendChild(progEl);
+          }
+          progEl.className   = "ok";
+          progEl.textContent = `  [${evt.done}/${evt.total}] ${pct}% — tracked: ${evt.tracked}  skipped: ${evt.skipped}  errors: ${evt.errors}`;
+          log.scrollTop = log.scrollHeight;
+
+        } else if (evt.type === "done") {
+          const progEl = document.getElementById("scan-progress-line");
+          if (progEl) progEl.remove();
+          log.innerHTML += `<span class="ok">Done — ${evt.total} file(s): ${evt.tracked} tracked, ${evt.skipped} skipped, ${evt.errors} errors</span>\n`;
+          log.scrollTop  = log.scrollHeight;
+
+          const videos = await fetch(`${API}/videos`).then(r => r.json());
+          allVideos = videos;
+          renderTable(filterVideos(document.getElementById("search").value));
+          updateStats(videos);
+        }
+      }
+    }
+  } catch (e) {
+    log.innerHTML += `<span class="err">Request failed — is the backend running?</span>`;
   }
 
   btn.disabled = false;
@@ -464,6 +570,39 @@ function renderTable(videos) {
 function updateStats(videos) {
   document.getElementById("stat-total").textContent      = videos.length;
   document.getElementById("stat-with-stats").textContent = videos.filter(v => v.view_count != null).length;
+  renderCreators(videos);
+}
+
+function renderCreators(videos) {
+  const wrap = document.getElementById("creators-wrap");
+  if (!videos.length) {
+    wrap.innerHTML = `<div class="empty">No data yet.</div>`;
+    return;
+  }
+
+  const counts = {};
+  for (const v of videos) {
+    const ch = v.channel_name || "Unknown";
+    counts[ch] = (counts[ch] || 0) + 1;
+  }
+
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+
+  wrap.innerHTML = `<div class="creator-grid">${
+    sorted.map(([name, count]) => `
+      <div class="creator-card" onclick="filterByCreator(${JSON.stringify(esc(name))})">
+        <span class="creator-name" title="${esc(name)}">${esc(name)}</span>
+        <span class="creator-count">${count}</span>
+      </div>
+    `).join("")
+  }</div>`;
+}
+
+function filterByCreator(name) {
+  const search = document.getElementById("search");
+  search.value = name;
+  renderTable(filterVideos(name));
+  search.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 document.getElementById("search").addEventListener("input", e => {

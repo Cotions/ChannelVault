@@ -1,5 +1,19 @@
 #!/bin/bash
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# If not running in a terminal, relaunch inside one
+if ! [ -t 0 ]; then
+  if command -v gnome-terminal &>/dev/null; then
+    gnome-terminal -- bash "$0"
+  elif command -v xfce4-terminal &>/dev/null; then
+    xfce4-terminal -e "bash \"$0\""
+  elif command -v xterm &>/dev/null; then
+    xterm -e "bash \"$0\""
+  fi
+  exit 0
+fi
+
+cd "$SCRIPT_DIR"
 
 PORT=3360
 PID=$(fuser ${PORT}/tcp 2>/dev/null | tr -d ' ')

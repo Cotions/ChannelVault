@@ -7,7 +7,7 @@ import threading
 from tinytag import TinyTag
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 
 BASE_DIR        = os.path.dirname(__file__)
@@ -44,6 +44,7 @@ def get_conn():
 
 def init_db():
     conn = get_conn()
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute('''
         CREATE TABLE IF NOT EXISTS downloaded_videos (
             video_id         TEXT PRIMARY KEY,
@@ -84,20 +85,26 @@ def process_video_file(file_path):
             return result
         video_id = match.group(1)
 
-        extra         = tag.extra if hasattr(tag, "extra") and tag.extra else {}
-        description   = extra.get("description") or extra.get("longdesc") or extra.get("long_description")
-        recorded_date = str(tag.year) if tag.year else None
+        other         = tag.other if hasattr(tag, "other") and tag.other else {}
+        description   = other.get("description") or other.get("longdesc") or other.get("long_description")
+        if isinstance(description, list):
+            description = description[0] if description else None
+        year          = tag.year
+        if isinstance(year, list):
+            year = year[0] if year else None
+        recorded_date = str(year) if year else None
 
-        conn = get_conn()
-        conn.execute('''
-            INSERT OR IGNORE INTO downloaded_videos
-                (video_id, title, channel_name, url, file_path,
-                 genre, description, recorded_date, duration_secs, file_size_bytes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (video_id, tag.title, tag.artist, url, file_path,
-              tag.genre, description, recorded_date, tag.duration, tag.filesize))
-        conn.commit()
-        conn.close()
+        with _db_lock:
+            conn = get_conn()
+            conn.execute('''
+                INSERT OR IGNORE INTO downloaded_videos
+                    (video_id, title, channel_name, url, file_path,
+                     genre, description, recorded_date, duration_secs, file_size_bytes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (video_id, tag.title, tag.artist, url, file_path,
+                  tag.genre, description, recorded_date, tag.duration, tag.filesize))
+            conn.commit()
+            conn.close()
 
         result.update({"status": "tracked", "title": tag.title, "video_id": video_id})
         print(f"[tracker] Tracked: {tag.title} ({video_id})")
@@ -118,6 +125,7 @@ class VideoDownloadHandler(FileSystemEventHandler):
 
 _observer      = None
 _observer_lock = threading.Lock()
+_db_lock       = threading.Lock()
 
 def start_observer(directory):
     global _observer
@@ -130,7 +138,7 @@ def start_observer(directory):
             return
         handler   = VideoDownloadHandler()
         _observer = Observer()
-        _observer.schedule(handler, path=directory, recursive=False)
+        _observer.schedule(handler, path=directory, recursive=True)
         _observer.start()
         print(f"[watcher] Monitoring {directory}")
 
@@ -160,6 +168,21 @@ def set_config():
     start_observer(directory)
     return jsonify({"ok": True, "watch_directory": directory})
 
+@app.get("/browse")
+def browse():
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["zenity", "--file-selection", "--directory", "--title=Select folder to watch"],
+            capture_output=True, text=True, timeout=60
+        )
+        chosen = result.stdout.strip()
+        if chosen:
+            return jsonify({"ok": True, "directory": chosen})
+    except Exception:
+        pass
+    return jsonify({"ok": False, "directory": None})
+
 @app.post("/scan")
 def scan():
     cfg       = load_config()
@@ -167,23 +190,35 @@ def scan():
     if not os.path.isdir(directory):
         return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
 
-    files = [
-        os.path.join(directory, f)
-        for f in os.listdir(directory)
-        if f.endswith((".mp4", ".mkv"))
-    ]
-    results = [process_video_file(fp) for fp in files]
-    tracked = sum(1 for r in results if r["status"] == "tracked")
-    skipped = sum(1 for r in results if r["status"] == "skipped")
-    errors  = sum(1 for r in results if r["status"] and r["status"].startswith("error"))
-    return jsonify({
-        "ok": True,
-        "total": len(files),
-        "tracked": tracked,
-        "skipped": skipped,
-        "errors": errors,
-        "results": results,
-    })
+    files = []
+    for root_dir, _, filenames in os.walk(directory):
+        for f in filenames:
+            if f.endswith((".mp4", ".mkv")):
+                files.append(os.path.join(root_dir, f))
+
+    BATCH = 10
+
+    def generate():
+        total   = len(files)
+        tracked = skipped = errors = 0
+        yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+
+        for i, fp in enumerate(files):
+            r = process_video_file(fp)
+            if r["status"] == "tracked":
+                tracked += 1
+            elif r["status"] == "skipped":
+                skipped += 1
+            elif r["status"] and r["status"].startswith("error"):
+                errors += 1
+
+            if (i + 1) % BATCH == 0 or (i + 1) == total:
+                yield f"data: {json.dumps({'type': 'progress', 'done': i + 1, 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors, 'last': r})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'done', 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @app.get("/check-video/<video_id>")
 def check_video(video_id):
