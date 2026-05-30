@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.1.0
+// @version      1.1.1
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -18,18 +18,27 @@ const BADGE_ID = "channelvault-badge";
 const CARD_BADGE_CLASS = "cv-card-badge";
 
 GM_addStyle(`
+  ytd-watch-metadata #title,
+  #above-the-fold #title {
+    position: relative !important;
+  }
   #${BADGE_ID} {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
     display: inline-flex;
     align-items: center;
-    margin-top: 8px;
     padding: 3px 10px;
     background: #2e7d32;
-    color: #e53935;
-    font-size: 13px;
+    color: #fff;
+    font-size: 12px;
     font-weight: 600;
     border-radius: 4px;
     line-height: 1.4;
     font-family: system-ui, sans-serif;
+    z-index: 1;
+    pointer-events: none;
   }
 `);
 
