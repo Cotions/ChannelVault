@@ -262,6 +262,20 @@ def list_videos():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+@app.get("/userscript/channelvault.user.js")
+@app.get("/channelvault.user.js")
+def serve_userscript():
+    userscript_path = os.path.join(BASE_DIR, "..", "userscript")
+    response = send_from_directory(
+        os.path.abspath(userscript_path),
+        "channelvault.user.js",
+        mimetype="application/javascript"
+    )
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
 @app.delete("/videos/<video_id>")
 def delete_video(video_id):
     conn = get_conn()

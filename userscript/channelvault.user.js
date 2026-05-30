@@ -24,7 +24,7 @@ GM_addStyle(`
     margin-top: 8px;
     padding: 3px 10px;
     background: #2e7d32;
-    color: #fff;
+    color: #e53935;
     font-size: 13px;
     font-weight: 600;
     border-radius: 4px;
@@ -263,7 +263,7 @@ function annotateCards(ids) {
           "z-index:10",
           "padding:2px 8px",
           "background:#2e7d32dd",
-          "color:#ffeb3b",
+          "color:#e53935",
           "font-size:11px",
           "font-weight:700",
           "border-radius:3px",
@@ -279,7 +279,7 @@ function annotateCards(ids) {
           "margin-left:6px",
           "padding:1px 6px",
           "background:#2e7d32",
-          "color:#ffeb3b",
+          "color:#e53935",
           "font-size:10px",
           "font-weight:700",
           "border-radius:3px",
