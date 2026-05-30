@@ -9,8 +9,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channelvault.user.js
-// @downloadURL  https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channelvault.user.js
+// @updateURL    http://localhost:3360/userscript/channelvault.user.js
+// @downloadURL  http://localhost:3360/userscript/channelvault.user.js
 // ==/UserScript==
 
 const API_BASE = "http://localhost:3360";
@@ -45,6 +45,17 @@ function getVideoId() {
 function removeBadge() {
   const el = document.getElementById(BADGE_ID);
   if (el) el.remove();
+}
+
+function colorTitle(green) {
+  const titleEl =
+    document.querySelector("ytd-watch-metadata h1 yt-formatted-string") ||
+    document.querySelector("ytd-watch-metadata h1") ||
+    document.querySelector("#above-the-fold h1 yt-formatted-string") ||
+    document.querySelector("#title h1 yt-formatted-string") ||
+    document.querySelector("#title h1");
+  if (!titleEl) return;
+  titleEl.style.color = green ? "#2e7d32" : "";
 }
 
 function injectBadge() {
@@ -156,6 +167,7 @@ async function postStats(videoId) {
 
 async function checkAndAnnotate() {
   removeBadge();
+  colorTitle(false);
   const videoId = getVideoId();
   if (!videoId) return;
 
@@ -170,6 +182,7 @@ async function checkAndAnnotate() {
   if (downloaded) {
     waitForTitle(() => {
       injectBadge();
+      colorTitle(true);
       setTimeout(() => postStats(videoId), 2000);
     });
   }
@@ -250,7 +263,7 @@ function annotateCards(ids) {
           "z-index:10",
           "padding:2px 8px",
           "background:#2e7d32dd",
-          "color:#fff",
+          "color:#ffeb3b",
           "font-size:11px",
           "font-weight:700",
           "border-radius:3px",
@@ -266,7 +279,7 @@ function annotateCards(ids) {
           "margin-left:6px",
           "padding:1px 6px",
           "background:#2e7d32",
-          "color:#fff",
+          "color:#ffeb3b",
           "font-size:10px",
           "font-weight:700",
           "border-radius:3px",
