@@ -149,6 +149,66 @@
     .scan-log .skip { color: var(--muted); }
     .scan-log .err  { color: #ef9a9a; }
 
+    .badge-wanted {
+      display: inline-block;
+      font-size: 10px;
+      background: #0d47a1;
+      color: #90caf9;
+      border-radius: 3px;
+      padding: 1px 6px;
+      font-weight: 600;
+    }
+
+    .wanted-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .wanted-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .wanted-item a {
+      color: #90caf9;
+      text-decoration: none;
+      flex: 1;
+      font-weight: 500;
+    }
+    .wanted-item a:hover { text-decoration: underline; }
+
+    .ignored-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid #c6282833;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+
+    .ignored-item a {
+      color: #ef9a9a;
+      text-decoration: none;
+      flex: 1;
+      font-weight: 500;
+    }
+    .ignored-item a:hover { text-decoration: underline; }
+
+    .wanted-channel {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
     .stats-row {
       display: flex;
       gap: 12px;
@@ -306,6 +366,18 @@
     <div class="scan-log" id="scan-log"></div>
   </div>
 
+  <!-- Wanted -->
+  <div class="card" id="wanted-card">
+    <div class="card-title">Download Wishlist</div>
+    <div id="wanted-wrap"><div class="empty">No videos in wishlist.</div></div>
+  </div>
+
+  <!-- Ignored -->
+  <div class="card" id="ignored-card">
+    <div class="card-title" style="color:#ef9a9a;">Not Interested</div>
+    <div id="ignored-wrap"><div class="empty">No ignored videos.</div></div>
+  </div>
+
   <!-- Creators -->
   <div class="card">
     <div class="card-title">Videos per Creator</div>
@@ -323,6 +395,14 @@
       <div class="stat">
         <div class="stat-num" id="stat-with-stats">—</div>
         <div class="stat-label">With stats</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="stat-wanted" style="color:#90caf9;">—</div>
+        <div class="stat-label">Wanted</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num" id="stat-ignored" style="color:#ef9a9a;">—</div>
+        <div class="stat-label">Ignored</div>
       </div>
     </div>
     <div class="search-row">
@@ -343,16 +423,20 @@ let allVideos = [];
 
 async function boot() {
   try {
-    const [cfg, videos] = await Promise.all([
+    const [cfg, videos, wanted, ignored] = await Promise.all([
       fetch(`${API}/config`).then(r => r.json()),
       fetch(`${API}/videos`).then(r => r.json()),
+      fetch(`${API}/wanted`).then(r => r.json()),
+      fetch(`${API}/ignored`).then(r => r.json()),
     ]);
     document.getElementById("dot").classList.add("online");
     document.getElementById("status-label").textContent = "Backend connected";
     document.getElementById("folder-input").value = cfg.watch_directory || "";
     allVideos = videos;
     renderTable(videos);
-    updateStats(videos);
+    updateStats(videos, wanted, ignored);
+    renderWanted(wanted);
+    renderIgnored(ignored);
   } catch (_) {
     document.getElementById("status-label").textContent = "Backend offline";
   }
@@ -476,10 +560,16 @@ document.getElementById("btn-scan").addEventListener("click", async () => {
           log.innerHTML += `<span class="ok">Done — ${evt.total} file(s): ${evt.tracked} tracked, ${evt.skipped} skipped, ${evt.errors} errors</span>\n`;
           log.scrollTop  = log.scrollHeight;
 
-          const videos = await fetch(`${API}/videos`).then(r => r.json());
+          const [videos, wanted, ignored] = await Promise.all([
+            fetch(`${API}/videos`).then(r => r.json()),
+            fetch(`${API}/wanted`).then(r => r.json()),
+            fetch(`${API}/ignored`).then(r => r.json()),
+          ]);
           allVideos = videos;
           renderTable(filterVideos(document.getElementById("search").value));
-          updateStats(videos);
+          updateStats(videos, wanted, ignored);
+          renderWanted(wanted);
+          renderIgnored(ignored);
         }
       }
     }
@@ -567,10 +657,63 @@ function renderTable(videos) {
   `;
 }
 
-function updateStats(videos) {
+function updateStats(videos, wanted, ignored) {
   document.getElementById("stat-total").textContent      = videos.length;
   document.getElementById("stat-with-stats").textContent = videos.filter(v => v.view_count != null).length;
+  if (wanted  !== undefined) document.getElementById("stat-wanted").textContent  = wanted.length;
+  if (ignored !== undefined) document.getElementById("stat-ignored").textContent = ignored.length;
   renderCreators(videos);
+}
+
+function renderWanted(wanted) {
+  const wrap = document.getElementById("wanted-wrap");
+  if (!wanted || !wanted.length) {
+    wrap.innerHTML = `<div class="empty">No videos in wishlist.</div>`;
+    return;
+  }
+  wrap.innerHTML = `<div class="wanted-list">${
+    wanted.map(v => `
+      <div class="wanted-item" data-id="${v.video_id}">
+        <a href="https://www.youtube.com/watch?v=${v.video_id}" target="_blank">${esc(v.title || v.video_id)}</a>
+        <span class="wanted-channel">${esc(v.channel_name || "—")}</span>
+        <button class="del-btn" title="Remove from wishlist" onclick="removeMark('${v.video_id}', this, 'wanted')">✕</button>
+      </div>
+    `).join("")
+  }</div>`;
+}
+
+function renderIgnored(ignored) {
+  const wrap = document.getElementById("ignored-wrap");
+  if (!ignored || !ignored.length) {
+    wrap.innerHTML = `<div class="empty">No ignored videos.</div>`;
+    return;
+  }
+  wrap.innerHTML = `<div class="wanted-list">${
+    ignored.map(v => `
+      <div class="ignored-item" data-id="${v.video_id}">
+        <a href="https://www.youtube.com/watch?v=${v.video_id}" target="_blank">${esc(v.title || v.video_id)}</a>
+        <span class="wanted-channel">${esc(v.channel_name || "—")}</span>
+        <button class="del-btn" title="Remove from ignored" onclick="removeMark('${v.video_id}', this, 'ignored')">✕</button>
+      </div>
+    `).join("")
+  }</div>`;
+}
+
+async function removeMark(videoId, btn, type) {
+  btn.disabled = true;
+  try {
+    await fetch(`${API}/mark/${videoId}`, { method: "DELETE" });
+    const [wanted, ignored] = await Promise.all([
+      fetch(`${API}/wanted`).then(r => r.json()),
+      fetch(`${API}/ignored`).then(r => r.json()),
+    ]);
+    renderWanted(wanted);
+    renderIgnored(ignored);
+    document.getElementById("stat-wanted").textContent  = wanted.length;
+    document.getElementById("stat-ignored").textContent = ignored.length;
+  } catch (_) {
+    btn.disabled = false;
+  }
 }
 
 function renderCreators(videos) {
@@ -619,7 +762,7 @@ async function deleteVideo(videoId, btn) {
     await fetch(`${API}/videos/${videoId}`, { method: "DELETE" });
     allVideos = allVideos.filter(v => v.video_id !== videoId);
     renderTable(filterVideos(document.getElementById("search").value));
-    updateStats(allVideos);
+    updateStats(allVideos, undefined, undefined);
   } catch (_) {
     btn.disabled = false;
   }

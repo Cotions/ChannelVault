@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.1.1
+// @version      1.3.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -13,9 +13,14 @@
 // @downloadURL  http://localhost:3360/userscript/channelvault.user.js
 // ==/UserScript==
 
-const API_BASE = "http://localhost:3360";
-const BADGE_ID = "channelvault-badge";
-const CARD_BADGE_CLASS = "cv-card-badge";
+const API_BASE           = "http://localhost:3360";
+const BADGE_ID           = "channelvault-badge";
+const CARD_BADGE_CLASS   = "cv-card-badge";
+const COLOR_DOWNLOADED   = "#2e7d32";
+const COLOR_WANTED       = "#1565c0";
+const COLOR_WANTED_TEXT  = "#90caf9";
+const COLOR_IGNORED      = "#b71c1c";
+const COLOR_IGNORED_TEXT = "#ef9a9a";
 
 GM_addStyle(`
   ytd-watch-metadata #title,
@@ -107,25 +112,6 @@ function gmFetch(url) {
   });
 }
 
-function gmPost(url, body) {
-  return new Promise((resolve, reject) => {
-    GM_xmlhttpRequest({
-      method: "POST",
-      url,
-      headers: { "Content-Type": "application/json" },
-      data: JSON.stringify(body),
-      onload: (res) => {
-        try {
-          resolve(JSON.parse(res.responseText));
-        } catch (e) {
-          reject(e);
-        }
-      },
-      onerror: reject,
-    });
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Stats scraping
 // ---------------------------------------------------------------------------
@@ -162,14 +148,6 @@ function scrapeStats() {
   return { view_count: viewCount, like_count: likeCount };
 }
 
-async function postStats(videoId) {
-  const stats = scrapeStats();
-  if (stats.view_count === null && stats.like_count === null) return;
-  try {
-    await gmPost(`${API_BASE}/update-stats/${videoId}`, stats);
-  } catch (_) {}
-}
-
 // ---------------------------------------------------------------------------
 // Main check
 // ---------------------------------------------------------------------------
@@ -192,7 +170,6 @@ async function checkAndAnnotate() {
     waitForTitle(() => {
       injectBadge();
       colorTitle(true);
-      setTimeout(() => postStats(videoId), 2000);
     });
   }
 }
@@ -218,6 +195,8 @@ function waitForTitle(cb, attempts = 0) {
 // ---------------------------------------------------------------------------
 
 let _downloadedIds = null;
+let _wantedIds     = null;
+let _ignoredIds    = null;
 let _cardObserver  = null;
 
 function gmFetchIds() {
@@ -226,10 +205,17 @@ function gmFetchIds() {
       method: "GET",
       url: `${API_BASE}/videos/ids`,
       onload: (res) => {
-        try { resolve(new Set(JSON.parse(res.responseText).ids || [])); }
-        catch (_) { resolve(new Set()); }
+        try {
+          const data = JSON.parse(res.responseText);
+          resolve({
+            downloaded: new Set(data.ids || []),
+            wanted:     new Set(data.wanted_ids || []),
+            ignored:    new Set(data.ignored_ids || []),
+          });
+        }
+        catch (_) { resolve({ downloaded: new Set(), wanted: new Set(), ignored: new Set() }); }
       },
-      onerror: () => resolve(new Set()),
+      onerror: () => resolve({ downloaded: new Set(), wanted: new Set(), ignored: new Set() }),
     });
   });
 }
@@ -239,12 +225,17 @@ function extractVideoIdFromHref(href) {
   return m ? m[1] : null;
 }
 
-function annotateCards(ids) {
+function annotateCards(downloaded, wanted, ignored) {
   document
     .querySelectorAll("a.ytLockupMetadataViewModelTitle[href*='watch?v=']")
     .forEach(link => {
       const videoId = extractVideoIdFromHref(link.getAttribute("href"));
-      if (!videoId || !ids.has(videoId)) return;
+      if (!videoId) return;
+
+      const isDownloaded = downloaded.has(videoId);
+      const isWanted     = !isDownloaded && wanted.has(videoId);
+      const isIgnored    = !isDownloaded && !isWanted && ignored.has(videoId);
+      if (!isDownloaded && !isWanted && !isIgnored) return;
 
       const card = link.closest(
         "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
@@ -252,9 +243,16 @@ function annotateCards(ids) {
       ) || link.parentElement;
       if (!card || card.querySelector(`.${CARD_BADGE_CLASS}`)) return;
 
+      let color, text, textColor;
+      if (isDownloaded) { color = COLOR_DOWNLOADED; text = "✓ In Vault";  textColor = "#fff"; }
+      else if (isWanted){ color = COLOR_WANTED;     text = "⬇ Wanted";    textColor = COLOR_WANTED_TEXT; }
+      else              { color = COLOR_IGNORED;    text = "✕ Skip";       textColor = COLOR_IGNORED_TEXT; }
+
+      link.style.color = color;
+
       const badge = document.createElement("div");
       badge.className = CARD_BADGE_CLASS;
-      badge.textContent = "✓ In Vault";
+      badge.textContent = text;
 
       const thumb = card.querySelector(
         "a.ytLockupViewModelContentImage, yt-thumbnail-view-model, " +
@@ -271,8 +269,8 @@ function annotateCards(ids) {
           "left:6px",
           "z-index:10",
           "padding:2px 8px",
-          "background:#2e7d32dd",
-          "color:#e53935",
+          `background:${color}dd`,
+          `color:${textColor}`,
           "font-size:11px",
           "font-weight:700",
           "border-radius:3px",
@@ -287,8 +285,8 @@ function annotateCards(ids) {
           "display:inline-block",
           "margin-left:6px",
           "padding:1px 6px",
-          "background:#2e7d32",
-          "color:#e53935",
+          `background:${color}`,
+          `color:${textColor}`,
           "font-size:10px",
           "font-weight:700",
           "border-radius:3px",
@@ -307,14 +305,174 @@ function stopCardObserver() {
 
 async function initCardAnnotation() {
   stopCardObserver();
-  _downloadedIds = await gmFetchIds();
-  if (_downloadedIds.size === 0) return;
+  const ids  = await gmFetchIds();
+  _downloadedIds = ids.downloaded;
+  _wantedIds     = ids.wanted;
+  _ignoredIds    = ids.ignored;
 
-  annotateCards(_downloadedIds);
+  annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
 
-  _cardObserver = new MutationObserver(() => annotateCards(_downloadedIds));
+  _cardObserver = new MutationObserver(() => annotateCards(_downloadedIds, _wantedIds, _ignoredIds));
   _cardObserver.observe(document.body, { childList: true, subtree: true });
 }
+
+// ---------------------------------------------------------------------------
+// Menu injection — add CV items to the 3-dots dropdown
+// ---------------------------------------------------------------------------
+
+let _pendingMenuVideoId  = null;
+let _pendingMenuVideoUrl = null;
+let _pendingMenuTitle    = null;
+let _pendingMenuChannel  = null;
+
+function gmPost(url, body) {
+  return new Promise((resolve, reject) => {
+    GM_xmlhttpRequest({
+      method:  "POST",
+      url,
+      headers: { "Content-Type": "application/json" },
+      data:    JSON.stringify(body),
+      onload:  resolve,
+      onerror: reject,
+    });
+  });
+}
+
+function el(tag, cls, attrs) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (attrs) Object.entries(attrs).forEach(([k, v]) => e.setAttribute(k, v));
+  return e;
+}
+
+function makeCVMenuItem(label, svgPath, onClick) {
+  const ns = "http://www.w3.org/2000/svg";
+
+  const item = el("yt-list-item-view-model", "ytListItemViewModelHost cv-menu-item", { role: "menuitem" });
+  const wrapper = el("div", "ytListItemViewModelLayoutWrapper ytListItemViewModelContainer ytListItemViewModelCompact ytListItemViewModelTappable ytListItemViewModelInPopup ytListItemViewModelNoTrailingText");
+  const main = el("div", "ytListItemViewModelMainContainer");
+
+  // Icon
+  const imgContainer = el("div", "ytListItemViewModelImageContainer ytListItemViewModelLeading");
+  imgContainer.setAttribute("aria-hidden", "true");
+  const iconSpan = el("span", "ytIconWrapperHost ytListItemViewModelAccessory ytListItemViewModelImage");
+  iconSpan.setAttribute("role", "img");
+  iconSpan.setAttribute("aria-hidden", "true");
+  const iconInner = el("span", "yt-icon-shape ytSpecIconShapeHost");
+  const iconDiv = el("div");
+  iconDiv.style.cssText = "width:100%;height:100%;display:block;fill:currentcolor;";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("height", "24"); svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("width", "24");
+  svg.setAttribute("focusable", "false"); svg.setAttribute("aria-hidden", "true");
+  svg.style.cssText = "pointer-events:none;display:inherit;width:100%;height:100%;";
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", svgPath);
+  svg.appendChild(path);
+  iconDiv.appendChild(svg);
+  iconInner.appendChild(iconDiv);
+  iconSpan.appendChild(iconInner);
+  imgContainer.appendChild(iconSpan);
+
+  // Button
+  const btn = el("button", "ytButtonOrAnchorHost ytButtonOrAnchorButton ytListItemViewModelButtonOrAnchor");
+  const textWrapper = el("div", "ytListItemViewModelTextWrapper");
+  const titleWrapper = el("div", "ytListItemViewModelTitleWrapper");
+  const span = el("span", "ytAttributedStringHost ytListItemViewModelTitle ytAttributedStringWhiteSpacePreWrap");
+  span.setAttribute("role", "text");
+  span.textContent = label;
+  titleWrapper.appendChild(span);
+  textWrapper.appendChild(titleWrapper);
+  btn.appendChild(textWrapper);
+  btn.addEventListener("click", onClick);
+
+  main.appendChild(imgContainer);
+  main.appendChild(btn);
+  wrapper.appendChild(main);
+  item.appendChild(wrapper);
+  return item;
+}
+
+function injectCVMenuItems(container) {
+  // Remove stale items from previous open (YouTube reuses this node)
+  container.querySelectorAll(".cv-menu-item").forEach(el => el.remove());
+
+  const listView = container.querySelector("yt-list-view-model");
+  console.log("[CV] injectCVMenuItems listView=", listView, "videoId=", _pendingMenuVideoId);
+  if (!listView) return;
+
+  const videoId  = _pendingMenuVideoId;
+  const videoUrl = _pendingMenuVideoUrl;
+  const title    = _pendingMenuTitle;
+  const channel  = _pendingMenuChannel;
+  if (!videoId) return;
+
+  // Remove max-height so injected items aren't clipped
+  const sheet = container.closest("yt-sheet-view-model");
+  if (sheet) sheet.style.maxHeight = "none";
+
+  const wantItem = makeCVMenuItem(
+    "⬇ Add to Vault Wishlist",
+    "M12 2a1 1 0 00-1 1v11.586l-4.293-4.293a1 1 0 10-1.414 1.414L12 18.414l6.707-6.707a1 1 0 10-1.414-1.414L13 14.586V3a1 1 0 00-1-1Zm7 18H5a1 1 0 000 2h14a1 1 0 000-2Z",
+    async (e) => {
+      e.stopPropagation();
+      try {
+        await gmPost(`${API_BASE}/want-to-download`, { video_id: videoId, url: videoUrl, title, channel_name: channel });
+        const ids = await gmFetchIds();
+        _downloadedIds = ids.downloaded; _wantedIds = ids.wanted; _ignoredIds = ids.ignored;
+        annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
+      } catch (_) {}
+    }
+  );
+
+  const skipItem = makeCVMenuItem(
+    "✕ Not Interested",
+    "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
+    async (e) => {
+      e.stopPropagation();
+      try {
+        await gmPost(`${API_BASE}/do-not-want`, { video_id: videoId, url: videoUrl, title, channel_name: channel });
+        const ids = await gmFetchIds();
+        _downloadedIds = ids.downloaded; _wantedIds = ids.wanted; _ignoredIds = ids.ignored;
+        annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
+      } catch (_) {}
+    }
+  );
+
+  listView.appendChild(wantItem);
+  listView.appendChild(skipItem);
+}
+
+function captureMenuContext(btn) {
+  const card = btn.closest(
+    "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
+    "ytd-grid-video-renderer, ytd-compact-video-renderer"
+  );
+  if (!card) return;
+  const link = card.querySelector("a.ytLockupMetadataViewModelTitle[href*='watch?v=']");
+  if (!link) return;
+  const videoId = extractVideoIdFromHref(link.getAttribute("href"));
+  if (!videoId) return;
+  _pendingMenuVideoId  = videoId;
+  _pendingMenuVideoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  _pendingMenuTitle    = link.textContent.trim() || null;
+  _pendingMenuChannel  = card.querySelector(
+    "a.ytLockupMetadataViewModelSubtitle, .ytLockupMetadataViewModelChannelName, " +
+    "ytd-channel-name a, .ytd-channel-name a"
+  )?.textContent.trim() || null;
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".ytLockupMetadataViewModelMenuButton button");
+  if (!btn) return;
+  console.log("[CV] 3-dots clicked, btn=", btn);
+  captureMenuContext(btn);
+  console.log("[CV] pending videoId=", _pendingMenuVideoId);
+  setTimeout(() => {
+    const container = document.querySelector(".ytContextualSheetLayoutContentContainer");
+    console.log("[CV] container found=", container, "listView=", container?.querySelector("yt-list-view-model"));
+    if (container) injectCVMenuItems(container);
+  }, 80);
+}, true);
 
 // ---------------------------------------------------------------------------
 // YouTube SPA navigation

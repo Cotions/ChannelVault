@@ -60,9 +60,28 @@ def init_db():
             downloaded_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             view_count       INTEGER,
             like_count       INTEGER,
-            stats_updated_at TIMESTAMP
+            stats_updated_at TIMESTAMP,
+            status           TEXT DEFAULT 'downloaded'
         )
     ''')
+
+    # Migrate: add status column to existing DB if missing
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(downloaded_videos)").fetchall()]
+    if "status" not in cols:
+        conn.execute("ALTER TABLE downloaded_videos ADD COLUMN status TEXT DEFAULT 'downloaded'")
+        conn.execute("UPDATE downloaded_videos SET status='downloaded' WHERE status IS NULL")
+
+    # Migrate: absorb wanted_videos table if it still exists
+    existing = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='wanted_videos'"
+    ).fetchone()
+    if existing:
+        conn.execute('''
+            INSERT OR IGNORE INTO downloaded_videos (video_id, title, channel_name, url, status, downloaded_at)
+            SELECT video_id, title, channel_name, url, 'wanted', wanted_at FROM wanted_videos
+        ''')
+        conn.execute("DROP TABLE wanted_videos")
+
     conn.commit()
     conn.close()
 
@@ -96,11 +115,25 @@ def process_video_file(file_path):
 
         with _db_lock:
             conn = get_conn()
+            # UPSERT: insert new, or promote wanted/ignored → downloaded
             conn.execute('''
-                INSERT OR IGNORE INTO downloaded_videos
+                INSERT INTO downloaded_videos
                     (video_id, title, channel_name, url, file_path,
-                     genre, description, recorded_date, duration_secs, file_size_bytes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     genre, description, recorded_date, duration_secs, file_size_bytes, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
+                ON CONFLICT(video_id) DO UPDATE SET
+                    title=excluded.title,
+                    channel_name=excluded.channel_name,
+                    url=excluded.url,
+                    file_path=excluded.file_path,
+                    genre=excluded.genre,
+                    description=excluded.description,
+                    recorded_date=excluded.recorded_date,
+                    duration_secs=excluded.duration_secs,
+                    file_size_bytes=excluded.file_size_bytes,
+                    downloaded_at=CURRENT_TIMESTAMP,
+                    status='downloaded'
+                WHERE downloaded_videos.status != 'downloaded'
             ''', (video_id, tag.title, tag.artist, url, file_path,
                   tag.genre, description, recorded_date, tag.duration, tag.filesize))
             conn.commit()
@@ -228,8 +261,9 @@ def check_video(video_id):
     ).fetchone()
     conn.close()
     if row:
-        return jsonify({"downloaded": True, "data": dict(row)})
-    return jsonify({"downloaded": False})
+        d = dict(row)
+        return jsonify({"downloaded": d.get("status") == "downloaded", "status": d.get("status"), "data": d})
+    return jsonify({"downloaded": False, "status": None})
 
 @app.post("/update-stats/<video_id>")
 def update_stats(video_id):
@@ -240,7 +274,7 @@ def update_stats(video_id):
     conn.execute('''
         UPDATE downloaded_videos
         SET view_count = ?, like_count = ?, stats_updated_at = CURRENT_TIMESTAMP
-        WHERE video_id = ?
+        WHERE video_id = ? AND status = 'downloaded'
     ''', (view_count, like_count, video_id))
     conn.commit()
     conn.close()
@@ -249,15 +283,80 @@ def update_stats(video_id):
 @app.get("/videos/ids")
 def list_video_ids():
     conn = get_conn()
-    rows = conn.execute("SELECT video_id FROM downloaded_videos").fetchall()
+    rows = conn.execute("SELECT video_id, status FROM downloaded_videos").fetchall()
     conn.close()
-    return jsonify({"ids": [r["video_id"] for r in rows]})
+    downloaded = [r["video_id"] for r in rows if r["status"] == "downloaded"]
+    wanted     = [r["video_id"] for r in rows if r["status"] == "wanted"]
+    ignored    = [r["video_id"] for r in rows if r["status"] == "ignored"]
+    return jsonify({"ids": downloaded, "wanted_ids": wanted, "ignored_ids": ignored})
+
+def _upsert_mark(video_id, title, channel_name, url, status):
+    conn = get_conn()
+    conn.execute('''
+        INSERT INTO downloaded_videos (video_id, title, channel_name, url, status)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+            title=COALESCE(excluded.title, downloaded_videos.title),
+            channel_name=COALESCE(excluded.channel_name, downloaded_videos.channel_name),
+            url=COALESCE(excluded.url, downloaded_videos.url),
+            status=excluded.status
+        WHERE downloaded_videos.status != 'downloaded'
+    ''', (video_id, title, channel_name, url, status))
+    conn.commit()
+    conn.close()
+
+@app.post("/want-to-download")
+def add_wanted():
+    body         = request.get_json(silent=True) or {}
+    video_id     = (body.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"ok": False, "error": "video_id required"}), 400
+    _upsert_mark(video_id, body.get("title"), body.get("channel_name"), body.get("url"), "wanted")
+    return jsonify({"ok": True})
+
+@app.post("/do-not-want")
+def add_ignored():
+    body         = request.get_json(silent=True) or {}
+    video_id     = (body.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"ok": False, "error": "video_id required"}), 400
+    _upsert_mark(video_id, body.get("title"), body.get("channel_name"), body.get("url"), "ignored")
+    return jsonify({"ok": True})
+
+@app.delete("/mark/<video_id>")
+def remove_mark(video_id):
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM downloaded_videos WHERE video_id = ? AND status != 'downloaded'",
+        (video_id,)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.get("/wanted")
+def list_wanted():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM downloaded_videos WHERE status='wanted' ORDER BY downloaded_at DESC"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.get("/ignored")
+def list_ignored():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM downloaded_videos WHERE status='ignored' ORDER BY downloaded_at DESC"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 @app.get("/videos")
 def list_videos():
     conn = get_conn()
     rows = conn.execute(
-        "SELECT * FROM downloaded_videos ORDER BY downloaded_at DESC"
+        "SELECT * FROM downloaded_videos WHERE status='downloaded' ORDER BY downloaded_at DESC"
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
