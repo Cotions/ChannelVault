@@ -383,6 +383,22 @@ def delete_video(video_id):
     conn.close()
     return jsonify({"ok": True})
 
+@app.get("/thumb/<video_id>")
+def serve_thumb(video_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
+    ).fetchone()
+    conn.close()
+    if not row or not row["file_path"]:
+        return ("", 404)
+    base = os.path.splitext(row["file_path"])[0]
+    for ext in (".jpg", ".jpeg", ".webp", ".png"):
+        candidate = base + ext
+        if os.path.exists(candidate):
+            return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
+    return ("", 404)
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------

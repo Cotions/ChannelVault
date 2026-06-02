@@ -1,0 +1,74 @@
+import { useEffect, useState } from "react";
+import { Routes, Route } from "react-router-dom";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark } from "./lib/api";
+import WatchFolder from "./components/WatchFolder";
+import Overview   from "./pages/Overview";
+import ArtistPage from "./pages/ArtistPage";
+
+export default function App() {
+  const [online,  setOnline]  = useState(false);
+  const [cfg,     setCfg]     = useState({});
+  const [videos,  setVideos]  = useState([]);
+  const [wanted,  setWanted]  = useState([]);
+  const [ignored, setIgnored] = useState([]);
+
+  async function load() {
+    try {
+      const [c, v, w, i] = await Promise.all([
+        getConfig(), getVideos(), getWanted(), getIgnored(),
+      ]);
+      setCfg(c);
+      setVideos(v);
+      setWanted(w);
+      setIgnored(i);
+      setOnline(true);
+    } catch {
+      setOnline(false);
+    }
+  }
+
+  useEffect(() => { load(); }, []);
+
+  async function handleDelete(id) {
+    await deleteVideo(id);
+    setVideos(prev => prev.filter(v => v.video_id !== id));
+  }
+
+  async function handleRemoveMark(id) {
+    await removeMark(id);
+    const [w, i] = await Promise.all([getWanted(), getIgnored()]);
+    setWanted(w);
+    setIgnored(i);
+  }
+
+  return (
+    <>
+      <header>
+        <div className={`status-dot ${online ? "online" : ""}`} />
+        <h1>ChannelVault</h1>
+        <span className="status-label">{online ? "Backend connected" : "Backend offline"}</span>
+      </header>
+
+      <main>
+        <WatchFolder initialDir={cfg.watch_directory} onScanDone={load} />
+        <Routes>
+          <Route
+            path="/"
+            element={
+              <Overview
+                videos={videos}
+                wanted={wanted}
+                ignored={ignored}
+                onRemoveMark={handleRemoveMark}
+              />
+            }
+          />
+          <Route
+            path="/artist/:name"
+            element={<ArtistPage videos={videos} onDelete={handleDelete} />}
+          />
+        </Routes>
+      </main>
+    </>
+  );
+}
