@@ -50,7 +50,7 @@ export default function App() {
       </header>
 
       <main>
-        <WatchFolder initialDir={cfg.watch_directory} onScanDone={load} />
+        <WatchFolder initialDir={cfg.watch_directory} initialDataDir={cfg.data_directory} onScanDone={load} />
         <Routes>
           <Route
             path="/"

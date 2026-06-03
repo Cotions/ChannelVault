@@ -20,9 +20,11 @@ async function del(path) {
   return r.json();
 }
 
-export function getConfig()        { return get("/config"); }
-export function saveConfig(dir)    { return post("/config", { watch_directory: dir }); }
-export function browse()           { return get("/browse"); }
+export function getConfig()          { return get("/config"); }
+export function saveConfig(dir)      { return post("/config", { watch_directory: dir }); }
+export function saveDataDir(dir)     { return post("/config", { data_directory: dir }); }
+export function browse()             { return get("/browse"); }
+export function browseData()         { return get("/browse?title=Select+data+directory"); }
 export function getVideos()        { return get("/videos"); }
 export function getWanted()        { return get("/wanted"); }
 export function getIgnored()       { return get("/ignored"); }

@@ -2,6 +2,7 @@ import os
 import re
 import time
 import json
+import shutil
 import sqlite3
 import threading
 from tinytag import TinyTag
@@ -11,10 +12,10 @@ from flask import Flask, jsonify, request, send_from_directory, Response, stream
 from flask_cors import CORS
 
 BASE_DIR        = os.path.dirname(__file__)
-DB_PATH         = os.path.join(BASE_DIR, "videos.db")
 CONFIG_PATH     = os.path.join(BASE_DIR, "config.json")
 STATIC_DIR      = os.path.join(BASE_DIR, "static")
 DEFAULT_WATCH   = "/home/cotions/Downloads"
+DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "channelvault")
 
 app = Flask(__name__, static_folder=STATIC_DIR)
 CORS(app)
@@ -24,21 +25,34 @@ CORS(app)
 # ---------------------------------------------------------------------------
 
 def load_config():
+    cfg = {}
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
-            return json.load(f)
-    return {"watch_directory": DEFAULT_WATCH}
+            cfg = json.load(f)
+    cfg.setdefault("watch_directory", DEFAULT_WATCH)
+    cfg.setdefault("data_directory", DEFAULT_DATA)
+    return cfg
 
 def save_config(cfg):
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
+
+def get_db_path():
+    return os.path.join(load_config()["data_directory"], "videos.db")
+
+def get_thumbs_dir():
+    return os.path.join(load_config()["data_directory"], "thumbs")
+
+def ensure_data_dir(data_dir):
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(os.path.join(data_dir, "thumbs"), exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -141,6 +155,16 @@ def process_video_file(file_path):
 
         result.update({"status": "tracked", "title": tag.title, "video_id": video_id})
         print(f"[tracker] Tracked: {tag.title} ({video_id})")
+        # Copy thumbnail to data dir
+        thumbs_dir = get_thumbs_dir()
+        base = os.path.splitext(file_path)[0]
+        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+            src = base + ext
+            if os.path.exists(src):
+                dest = os.path.join(thumbs_dir, f"{video_id}{ext}")
+                if not os.path.exists(dest):
+                    shutil.copy2(src, dest)
+                break
     except Exception as e:
         result["status"] = f"error: {e}"
         print(f"[tracker] Error parsing {file_path}: {e}")
@@ -150,9 +174,25 @@ def process_video_file(file_path):
 # File watcher
 # ---------------------------------------------------------------------------
 
+def _is_ignored(path):
+    """Return True if any ancestor dir (up to watch root) contains .vaultIgnore."""
+    cfg = load_config()
+    watch_root = os.path.realpath(cfg.get("watch_directory", DEFAULT_WATCH))
+    current = os.path.realpath(os.path.dirname(path) if not os.path.isdir(path) else path)
+    while True:
+        if os.path.exists(os.path.join(current, ".vaultIgnore")):
+            return True
+        if current == watch_root or current == os.path.dirname(current):
+            break
+        current = os.path.dirname(current)
+    return False
+
+
 class VideoDownloadHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith((".mp4", ".mkv")):
+            if _is_ignored(event.src_path):
+                return
             time.sleep(2)
             process_video_file(event.src_path)
 
@@ -190,23 +230,43 @@ def get_config():
 @app.post("/config")
 def set_config():
     body = request.get_json(silent=True) or {}
-    directory = body.get("watch_directory", "").strip()
-    if not directory:
-        return jsonify({"ok": False, "error": "watch_directory is required"}), 400
-    if not os.path.isdir(directory):
-        return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
-    cfg = load_config()
-    cfg["watch_directory"] = directory
-    save_config(cfg)
-    start_observer(directory)
-    return jsonify({"ok": True, "watch_directory": directory})
+    cfg  = load_config()
+
+    if "watch_directory" in body:
+        directory = body["watch_directory"].strip()
+        if not directory:
+            return jsonify({"ok": False, "error": "watch_directory is required"}), 400
+        if not os.path.isdir(directory):
+            return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
+        cfg["watch_directory"] = directory
+        save_config(cfg)
+        start_observer(directory)
+
+    if "data_directory" in body:
+        data_dir = body["data_directory"].strip()
+        if not data_dir:
+            return jsonify({"ok": False, "error": "data_directory is required"}), 400
+        try:
+            ensure_data_dir(data_dir)
+        except Exception as e:
+            return jsonify({"ok": False, "error": f"Cannot create directory: {e}"}), 400
+        old_db = os.path.join(cfg["data_directory"], "videos.db")
+        new_db = os.path.join(data_dir, "videos.db")
+        if os.path.exists(old_db) and not os.path.exists(new_db):
+            shutil.copy2(old_db, new_db)
+        cfg["data_directory"] = data_dir
+        save_config(cfg)
+        init_db()
+
+    return jsonify({"ok": True, **cfg})
 
 @app.get("/browse")
 def browse():
     import subprocess
+    title = request.args.get("title", "Select folder to watch")
     try:
         result = subprocess.run(
-            ["zenity", "--file-selection", "--directory", "--title=Select folder to watch"],
+            ["zenity", "--file-selection", "--directory", f"--title={title}"],
             capture_output=True, text=True, timeout=60
         )
         chosen = result.stdout.strip()
@@ -224,7 +284,10 @@ def scan():
         return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
 
     files = []
-    for root_dir, _, filenames in os.walk(directory):
+    for root_dir, dirs, filenames in os.walk(directory):
+        if os.path.exists(os.path.join(root_dir, ".vaultIgnore")):
+            dirs.clear()
+            continue
         for f in filenames:
             if f.endswith((".mp4", ".mkv")):
                 files.append(os.path.join(root_dir, f))
@@ -385,6 +448,13 @@ def delete_video(video_id):
 
 @app.get("/thumb/<video_id>")
 def serve_thumb(video_id):
+    # Check data dir copy first
+    thumbs_dir = get_thumbs_dir()
+    for ext in (".jpg", ".jpeg", ".webp", ".png"):
+        candidate = os.path.join(thumbs_dir, f"{video_id}{ext}")
+        if os.path.exists(candidate):
+            return send_from_directory(thumbs_dir, f"{video_id}{ext}")
+    # Fallback to original file location
     conn = get_conn()
     row = conn.execute(
         "SELECT file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
@@ -404,8 +474,15 @@ def serve_thumb(video_id):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    init_db()
     cfg = load_config()
+    ensure_data_dir(cfg["data_directory"])
+    # One-time migration: copy old backend/videos.db to data_directory if new location is empty
+    legacy_db = os.path.join(BASE_DIR, "videos.db")
+    new_db    = get_db_path()
+    if os.path.exists(legacy_db) and not os.path.exists(new_db):
+        shutil.copy2(legacy_db, new_db)
+        print(f"[init] Migrated DB to {new_db}")
+    init_db()
     watcher_thread = threading.Thread(
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )

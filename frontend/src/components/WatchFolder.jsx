@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { saveConfig, browse, scan } from "../lib/api";
+import { saveConfig, saveDataDir, browse, browseData, scan } from "../lib/api";
 
-export default function WatchFolder({ initialDir, onScanDone }) {
-  const [dir, setDir]         = useState(initialDir || "");
-  const [msg, setMsg]         = useState(null);
+export default function WatchFolder({ initialDir, initialDataDir, onScanDone }) {
+  const [dir,     setDir]     = useState(initialDir     || "");
+  const [dataDir, setDataDir] = useState(initialDataDir || "");
+  const [msg,     setMsg]     = useState(null);
   const [scanLog, setScanLog] = useState([]);
   const [scanning, setScanning] = useState(false);
 
@@ -30,6 +31,30 @@ export default function WatchFolder({ initialDir, onScanDone }) {
     try {
       const data = await saveConfig(dir);
       if (data.ok) flash(`Watching: ${data.watch_directory}`, "ok");
+      else flash(data.error, "err");
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
+  }
+
+  async function handleBrowseData() {
+    try {
+      const data = await browseData();
+      if (data.ok && data.directory) {
+        setDataDir(data.directory);
+        const saved = await saveDataDir(data.directory);
+        if (saved.ok) flash(`Data directory: ${saved.data_directory}`, "ok");
+        else flash(saved.error, "err");
+      }
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
+  }
+
+  async function handleSaveData() {
+    try {
+      const data = await saveDataDir(dataDir);
+      if (data.ok) flash(`Data directory: ${data.data_directory}`, "ok");
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");
@@ -82,6 +107,22 @@ export default function WatchFolder({ initialDir, onScanDone }) {
           {scanning ? "Scanning…" : "Scan Now"}
         </button>
       </div>
+
+      <div className="card-title" style={{ marginTop: "16px" }}>Data Directory</div>
+      <div className="folder-row">
+        <input
+          type="text"
+          value={dataDir}
+          onChange={e => setDataDir(e.target.value)}
+          placeholder="~/.local/share/channelvault"
+        />
+        <button className="btn-secondary" onClick={handleBrowseData}>Browse…</button>
+        <button className="btn-secondary" onClick={handleSaveData}>Save</button>
+      </div>
+      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "6px" }}>
+        Stores the database and thumbnail copies. Changing this migrates the existing DB.
+      </div>
+
       {msg && <div className={`msg show ${msg.type}`}>{msg.text}</div>}
       {scanLog.length > 0 && (
         <div className="scan-log show">
