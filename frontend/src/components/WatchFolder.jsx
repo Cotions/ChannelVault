@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { saveConfig, saveDataDir, browse, browseData, scan } from "../lib/api";
 
 export default function WatchFolder({ initialDir, initialDataDir, onScanDone }) {
   const [dir,     setDir]     = useState(initialDir     || "");
   const [dataDir, setDataDir] = useState(initialDataDir || "");
+
+  useEffect(() => { if (initialDir)     setDir(initialDir); },     [initialDir]);
+  useEffect(() => { if (initialDataDir) setDataDir(initialDataDir); }, [initialDataDir]);
   const [msg,     setMsg]     = useState(null);
   const [scanLog, setScanLog] = useState([]);
   const [scanning, setScanning] = useState(false);

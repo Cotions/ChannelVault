@@ -1,4 +1,24 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { artistThumbUrl } from "../lib/api";
+
+function ArtistCard({ name, count, onClick }) {
+  const [hasThumb, setHasThumb] = useState(true);
+  return (
+    <div className="creator-card" onClick={onClick}>
+      {hasThumb && (
+        <img
+          className="creator-avatar"
+          src={artistThumbUrl(name)}
+          alt=""
+          onError={() => setHasThumb(false)}
+        />
+      )}
+      <span className="creator-name" title={name}>{name}</span>
+      <span className="creator-count">{count}</span>
+    </div>
+  );
+}
 
 export default function Overview({ videos, wanted, ignored, onRemoveMark }) {
   const navigate = useNavigate();
@@ -43,14 +63,7 @@ export default function Overview({ videos, wanted, ignored, onRemoveMark }) {
         ) : (
           <div className="creator-grid">
             {artists.map(([name, count]) => (
-              <div
-                key={name}
-                className="creator-card"
-                onClick={() => navigate(`/artist/${encodeURIComponent(name)}`)}
-              >
-                <span className="creator-name" title={name}>{name}</span>
-                <span className="creator-count">{count}</span>
-              </div>
+              <ArtistCard key={name} name={name} count={count} onClick={() => navigate(`/artist/${encodeURIComponent(name)}`)} />
             ))}
           </div>
         )}

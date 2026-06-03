@@ -40,12 +40,53 @@ def save_config(cfg):
 def get_db_path():
     return os.path.join(load_config()["data_directory"], "videos.db")
 
-def get_thumbs_dir():
-    return os.path.join(load_config()["data_directory"], "thumbs")
+def get_artist_thumbs_dir():
+    return os.path.join(load_config()["data_directory"], "artist_thumbs")
 
 def ensure_data_dir(data_dir):
     os.makedirs(data_dir, exist_ok=True)
-    os.makedirs(os.path.join(data_dir, "thumbs"), exist_ok=True)
+    os.makedirs(os.path.join(data_dir, "artist_thumbs"), exist_ok=True)
+
+_INVALID_CHARS = re.compile(r'[/\\:*?"<>|]')
+
+def _safe_dirname(name):
+    return _INVALID_CHARS.sub("-", name).strip()
+
+def sync_artist_folders():
+    from collections import defaultdict
+    cfg = load_config()
+    artist_thumbs_dir = os.path.join(cfg["data_directory"], "artist_thumbs")
+    thumbs_dir        = os.path.join(cfg["data_directory"], "thumbs")
+    os.makedirs(artist_thumbs_dir, exist_ok=True)
+    try:
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT channel_name, video_id FROM downloaded_videos
+               WHERE channel_name IS NOT NULL AND channel_name != ''
+               ORDER BY downloaded_at ASC"""
+        ).fetchall()
+        conn.close()
+        channels = defaultdict(list)
+        for row in rows:
+            channels[row["channel_name"]].append(row["video_id"])
+
+        for name, video_ids in channels.items():
+            safe = _safe_dirname(name)
+            artist_dir = os.path.join(artist_thumbs_dir, safe)
+            os.makedirs(artist_dir, exist_ok=True)
+            for video_id in video_ids:
+                for ext in (".jpg", ".jpeg", ".webp", ".png"):
+                    src = os.path.join(thumbs_dir, f"{video_id}{ext}")
+                    dest = os.path.join(artist_dir, f"{video_id}{ext}")
+                    if os.path.exists(src) and not os.path.exists(dest):
+                        shutil.move(src, dest)
+
+        # Remove thumbs dir if now empty
+        if os.path.isdir(thumbs_dir) and not os.listdir(thumbs_dir):
+            os.rmdir(thumbs_dir)
+            print("[artist_folders] Removed empty thumbs dir")
+    except Exception as e:
+        print(f"[artist_folders] {e}")
 
 # ---------------------------------------------------------------------------
 # Database
@@ -155,16 +196,18 @@ def process_video_file(file_path):
 
         result.update({"status": "tracked", "title": tag.title, "video_id": video_id})
         print(f"[tracker] Tracked: {tag.title} ({video_id})")
-        # Copy thumbnail to data dir
-        thumbs_dir = get_thumbs_dir()
-        base = os.path.splitext(file_path)[0]
-        for ext in (".jpg", ".jpeg", ".webp", ".png"):
-            src = base + ext
-            if os.path.exists(src):
-                dest = os.path.join(thumbs_dir, f"{video_id}{ext}")
-                if not os.path.exists(dest):
-                    shutil.copy2(src, dest)
-                break
+        # Copy thumbnail directly to artist folder
+        if tag.artist:
+            artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(tag.artist))
+            os.makedirs(artist_dir, exist_ok=True)
+            base = os.path.splitext(file_path)[0]
+            for ext in (".jpg", ".jpeg", ".webp", ".png"):
+                src = base + ext
+                if os.path.exists(src):
+                    dest = os.path.join(artist_dir, f"{video_id}{ext}")
+                    if not os.path.exists(dest):
+                        shutil.copy2(src, dest)
+                    break
     except Exception as e:
         result["status"] = f"error: {e}"
         print(f"[tracker] Error parsing {file_path}: {e}")
@@ -311,6 +354,7 @@ def scan():
             if (i + 1) % BATCH == 0 or (i + 1) == total:
                 yield f"data: {json.dumps({'type': 'progress', 'done': i + 1, 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors, 'last': r})}\n\n"
 
+        sync_artist_folders()
         yield f"data: {json.dumps({'type': 'done', 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
@@ -446,27 +490,39 @@ def delete_video(video_id):
     conn.close()
     return jsonify({"ok": True})
 
+@app.get("/artist-thumb/<path:name>")
+def serve_artist_thumb(name):
+    artist_thumbs_dir = get_artist_thumbs_dir()
+    safe = _safe_dirname(name)
+    artist_dir = os.path.join(artist_thumbs_dir, safe)
+    if os.path.isdir(artist_dir):
+        for fname in os.listdir(artist_dir):
+            if fname.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
+                return send_from_directory(artist_dir, fname)
+    return ("", 404)
+
+
 @app.get("/thumb/<video_id>")
 def serve_thumb(video_id):
-    # Check data dir copy first
-    thumbs_dir = get_thumbs_dir()
-    for ext in (".jpg", ".jpeg", ".webp", ".png"):
-        candidate = os.path.join(thumbs_dir, f"{video_id}{ext}")
-        if os.path.exists(candidate):
-            return send_from_directory(thumbs_dir, f"{video_id}{ext}")
-    # Fallback to original file location
     conn = get_conn()
     row = conn.execute(
-        "SELECT file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
+        "SELECT channel_name, file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
     ).fetchone()
     conn.close()
-    if not row or not row["file_path"]:
-        return ("", 404)
-    base = os.path.splitext(row["file_path"])[0]
-    for ext in (".jpg", ".jpeg", ".webp", ".png"):
-        candidate = base + ext
-        if os.path.exists(candidate):
-            return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
+    # Look in artist folder
+    if row and row["channel_name"]:
+        artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(row["channel_name"]))
+        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+            candidate = os.path.join(artist_dir, f"{video_id}{ext}")
+            if os.path.exists(candidate):
+                return send_from_directory(artist_dir, f"{video_id}{ext}")
+    # Fallback to original file location
+    if row and row["file_path"]:
+        base = os.path.splitext(row["file_path"])[0]
+        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+            candidate = base + ext
+            if os.path.exists(candidate):
+                return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
     return ("", 404)
 
 # ---------------------------------------------------------------------------
@@ -483,6 +539,7 @@ if __name__ == "__main__":
         shutil.copy2(legacy_db, new_db)
         print(f"[init] Migrated DB to {new_db}")
     init_db()
+    sync_artist_folders()
     watcher_thread = threading.Thread(
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )

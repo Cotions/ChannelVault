@@ -102,6 +102,8 @@ button:disabled { opacity: 0.45; cursor: default; }
 .btn-secondary { background: var(--border); color: var(--text); }
 .btn-secondary:hover:not(:disabled) { background: #363a50; }
 .btn-danger { background: var(--danger); color: #fff; }
+.btn-ghost { background: transparent; color: var(--muted); font-size: 12px; padding: 4px 10px; margin-left: auto; }
+.btn-ghost:hover { color: var(--text); background: var(--border); }
 
 .msg {
   margin-top: 10px;
@@ -160,6 +162,14 @@ button:disabled { opacity: 0.45; cursor: default; }
   transition: border-color 0.15s;
 }
 .creator-card:hover { border-color: var(--accent); }
+.creator-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--border);
+}
 .creator-name {
   font-size: 13px;
   font-weight: 500;

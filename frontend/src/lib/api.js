@@ -31,6 +31,7 @@ export function getIgnored()       { return get("/ignored"); }
 export function deleteVideo(id)    { return del(`/videos/${id}`); }
 export function removeMark(id)     { return del(`/mark/${id}`); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
+export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
 
 export async function scan(onEvent) {
   const r = await fetch(`${BASE}/scan`, { method: "POST" });

@@ -8,6 +8,7 @@ import ArtistPage from "./pages/ArtistPage";
 export default function App() {
   const [online,  setOnline]  = useState(false);
   const [cfg,     setCfg]     = useState({});
+  const [showWatchFolder, setShowWatchFolder] = useState(false);
   const [videos,  setVideos]  = useState([]);
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
@@ -47,10 +48,19 @@ export default function App() {
         <div className={`status-dot ${online ? "online" : ""}`} />
         <h1>ChannelVault</h1>
         <span className="status-label">{online ? "Backend connected" : "Backend offline"}</span>
+        <button
+          className="btn-ghost"
+          onClick={() => setShowWatchFolder(v => !v)}
+          title="Toggle watch folder settings"
+        >
+          {showWatchFolder ? "▲ Settings" : "▼ Settings"}
+        </button>
       </header>
 
       <main>
-        <WatchFolder initialDir={cfg.watch_directory} initialDataDir={cfg.data_directory} onScanDone={load} />
+        {showWatchFolder && (
+          <WatchFolder initialDir={cfg.watch_directory} initialDataDir={cfg.data_directory} onScanDone={load} />
+        )}
         <Routes>
           <Route
             path="/"
