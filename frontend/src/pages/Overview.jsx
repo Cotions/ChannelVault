@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { artistThumbUrl } from "../lib/api";
 
-function ArtistCard({ name, count, onClick }) {
+function ArtistCard({ name, stats, onClick }) {
   const [hasThumb, setHasThumb] = useState(true);
   return (
     <div className="creator-card" onClick={onClick}>
@@ -15,24 +15,38 @@ function ArtistCard({ name, count, onClick }) {
         />
       )}
       <span className="creator-name" title={name}>{name}</span>
-      <span className="creator-count">{count}</span>
+      <div className="creator-counts">
+        {stats.downloaded > 0 && <span className="creator-count">{stats.downloaded}</span>}
+        {stats.wanted > 0 && <span className="creator-count-wanted">⬇{stats.wanted}</span>}
+        {stats.ignored > 0 && <span className="creator-count-ignored">✕{stats.ignored}</span>}
+      </div>
     </div>
   );
 }
 
-export default function Overview({ videos, wanted, ignored, onRemoveMark }) {
+export default function Overview({ videos, wanted, ignored }) {
   const navigate = useNavigate();
 
-  const counts = {};
+  const artistStats = {};
   for (const v of videos) {
     const ch = v.channel_name || "Unknown";
-    counts[ch] = (counts[ch] || 0) + 1;
+    if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
+    artistStats[ch].downloaded++;
   }
-  const artists = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  for (const v of wanted) {
+    const ch = v.channel_name || "Unknown";
+    if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
+    artistStats[ch].wanted++;
+  }
+  for (const v of ignored) {
+    const ch = v.channel_name || "Unknown";
+    if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
+    artistStats[ch].ignored++;
+  }
+  const artists = Object.entries(artistStats).sort((a, b) => b[1].downloaded - a[1].downloaded);
 
   return (
     <>
-      {/* Stats */}
       <div className="card">
         <div className="card-title">Library</div>
         <div className="stats-row">
@@ -55,55 +69,19 @@ export default function Overview({ videos, wanted, ignored, onRemoveMark }) {
         </div>
       </div>
 
-      {/* Artists */}
       <div className="card">
         <div className="card-title">Artists</div>
         {artists.length === 0 ? (
           <div className="empty">No data yet.</div>
         ) : (
           <div className="creator-grid">
-            {artists.map(([name, count]) => (
-              <ArtistCard key={name} name={name} count={count} onClick={() => navigate(`/artist/${encodeURIComponent(name)}`)} />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Wanted */}
-      <div className="card">
-        <div className="card-title">Download Wishlist</div>
-        {wanted.length === 0 ? (
-          <div className="empty">No videos in wishlist.</div>
-        ) : (
-          <div className="wanted-list">
-            {wanted.map(v => (
-              <div key={v.video_id} className="wanted-item">
-                <a href={`https://www.youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noreferrer">
-                  {v.title || v.video_id}
-                </a>
-                <span className="wanted-channel">{v.channel_name || "—"}</span>
-                <button className="del-btn" onClick={() => onRemoveMark(v.video_id)}>✕</button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Ignored */}
-      <div className="card">
-        <div className="card-title" style={{ color: "#ef9a9a" }}>Not Interested</div>
-        {ignored.length === 0 ? (
-          <div className="empty">No ignored videos.</div>
-        ) : (
-          <div className="wanted-list">
-            {ignored.map(v => (
-              <div key={v.video_id} className="ignored-item">
-                <a href={`https://www.youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noreferrer">
-                  {v.title || v.video_id}
-                </a>
-                <span className="wanted-channel">{v.channel_name || "—"}</span>
-                <button className="del-btn" onClick={() => onRemoveMark(v.video_id)}>✕</button>
-              </div>
+            {artists.map(([name, stats]) => (
+              <ArtistCard
+                key={name}
+                name={name}
+                stats={stats}
+                onClick={() => navigate(`/artist/${encodeURIComponent(name)}`)}
+              />
             ))}
           </div>
         )}

@@ -78,13 +78,12 @@ export default function App() {
                 videos={videos}
                 wanted={wanted}
                 ignored={ignored}
-                onRemoveMark={handleRemoveMark}
               />
             }
           />
           <Route
             path="/artist/:name"
-            element={<ArtistPage videos={videos} onDelete={handleDelete} />}
+            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} />}
           />
         </Routes>
       </main>

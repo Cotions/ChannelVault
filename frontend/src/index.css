@@ -211,7 +211,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.creator-count { font-size: 18px; font-weight: 700; color: var(--accent-hover); flex-shrink: 0; }
+.creator-counts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.creator-count { font-size: 18px; font-weight: 700; color: var(--accent-hover); }
+.creator-count-wanted { font-size: 12px; font-weight: 700; color: #90caf9; background: #1565c033; border-radius: 3px; padding: 1px 5px; }
+.creator-count-ignored { font-size: 12px; font-weight: 700; color: #ef9a9a; background: #b71c1c33; border-radius: 3px; padding: 1px 5px; }
 
 /* Wanted / Ignored lists */
 .wanted-list { display: flex; flex-direction: column; gap: 6px; }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.3.12
+// @version      1.3.14
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -599,6 +599,26 @@ function injectCVMenuItemsPopup(popup) {
   }, 100);
 }
 
+function extractChannelFromCard(card) {
+  // Sidebar/recommended layout: channel is a text node inside the first metadata row span
+  const metaText = card.querySelector(".ytContentMetadataViewModelMetadataRow .ytContentMetadataViewModelMetadataText");
+  if (metaText) {
+    const raw = (metaText.firstChild?.nodeValue || metaText.textContent || "").trim();
+    if (raw) return raw;
+  }
+  return (
+    card.querySelector("a.ytLockupMetadataViewModelSubtitle")?.textContent.trim() ||
+    card.querySelector(".ytLockupMetadataViewModelChannelName")?.textContent.trim() ||
+    card.querySelector("ytd-channel-name a")?.textContent.trim() ||
+    card.querySelector(".ytd-channel-name a")?.textContent.trim() ||
+    card.querySelector("#channel-name a")?.textContent.trim() ||
+    card.querySelector("yt-formatted-string.ytd-channel-name")?.textContent.trim() ||
+    card.querySelector("a[href*='/@']")?.textContent.trim() ||
+    card.querySelector("a[href*='/channel/']")?.textContent.trim() ||
+    null
+  );
+}
+
 function captureMenuContext(btn) {
   const card = btn.closest(
     "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
@@ -612,10 +632,7 @@ function captureMenuContext(btn) {
   _pendingMenuVideoId  = videoId;
   _pendingMenuVideoUrl = `https://www.youtube.com/watch?v=${videoId}`;
   _pendingMenuTitle    = link.textContent.trim() || null;
-  _pendingMenuChannel  = card.querySelector(
-    "a.ytLockupMetadataViewModelSubtitle, .ytLockupMetadataViewModelChannelName, " +
-    "ytd-channel-name a, .ytd-channel-name a"
-  )?.textContent.trim() || null;
+  _pendingMenuChannel  = extractChannelFromCard(card);
 }
 
 document.addEventListener("click", (e) => {
@@ -637,7 +654,11 @@ document.addEventListener("click", (e) => {
       "ytd-watch-metadata h1 yt-formatted-string, #above-the-fold h1 yt-formatted-string"
     )?.textContent.trim() || null;
     _pendingMenuChannel  = document.querySelector(
-      "ytd-channel-name a, #channel-name a"
+      "#owner ytd-channel-name a, " +
+      "ytd-video-owner-renderer ytd-channel-name a, " +
+      "#upload-info ytd-channel-name a, " +
+      "ytd-channel-name a, " +
+      "#channel-name a"
     )?.textContent.trim() || null;
     setTimeout(() => {
       const popup = document.querySelector("ytd-menu-popup-renderer");
