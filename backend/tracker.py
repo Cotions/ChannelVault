@@ -482,6 +482,52 @@ def serve_userscript():
     response.headers["Expires"] = "0"
     return response
 
+@app.post("/videos/manual")
+def add_video_manual():
+    body     = request.get_json(silent=True) or {}
+    video_id = (body.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"ok": False, "error": "video_id is required"}), 400
+
+    url = body.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+
+    with _db_lock:
+        conn = get_conn()
+        conn.execute('''
+            INSERT INTO downloaded_videos
+                (video_id, title, channel_name, url, file_path,
+                 genre, description, recorded_date, duration_secs, file_size_bytes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
+            ON CONFLICT(video_id) DO UPDATE SET
+                title            = COALESCE(excluded.title, downloaded_videos.title),
+                channel_name     = COALESCE(excluded.channel_name, downloaded_videos.channel_name),
+                url              = COALESCE(excluded.url, downloaded_videos.url),
+                file_path        = COALESCE(excluded.file_path, downloaded_videos.file_path),
+                genre            = COALESCE(excluded.genre, downloaded_videos.genre),
+                description      = COALESCE(excluded.description, downloaded_videos.description),
+                recorded_date    = COALESCE(excluded.recorded_date, downloaded_videos.recorded_date),
+                duration_secs    = COALESCE(excluded.duration_secs, downloaded_videos.duration_secs),
+                file_size_bytes  = COALESCE(excluded.file_size_bytes, downloaded_videos.file_size_bytes),
+                downloaded_at    = CURRENT_TIMESTAMP,
+                status           = 'downloaded'
+        ''', (
+            video_id,
+            body.get("title") or None,
+            body.get("channel_name") or None,
+            url,
+            body.get("file_path") or None,
+            body.get("genre") or None,
+            body.get("description") or None,
+            body.get("recorded_date") or None,
+            body.get("duration_secs") or None,
+            body.get("file_size_bytes") or None,
+        ))
+        conn.commit()
+        conn.close()
+
+    return jsonify({"ok": True, "video_id": video_id})
+
+
 @app.delete("/videos/<video_id>")
 def delete_video(video_id):
     conn = get_conn()

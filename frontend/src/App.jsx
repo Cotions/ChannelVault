@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark } from "./lib/api";
-import WatchFolder from "./components/WatchFolder";
-import Overview   from "./pages/Overview";
-import ArtistPage from "./pages/ArtistPage";
+import WatchFolder    from "./components/WatchFolder";
+import AddVideoModal  from "./components/AddVideoModal";
+import Overview       from "./pages/Overview";
+import ArtistPage     from "./pages/ArtistPage";
 
 export default function App() {
   const [online,  setOnline]  = useState(false);
   const [cfg,     setCfg]     = useState({});
   const [showWatchFolder, setShowWatchFolder] = useState(false);
+  const [showAddVideo,    setShowAddVideo]    = useState(false);
   const [videos,  setVideos]  = useState([]);
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
@@ -48,6 +50,9 @@ export default function App() {
         <div className={`status-dot ${online ? "online" : ""}`} />
         <h1>ChannelVault</h1>
         <span className="status-label">{online ? "Backend connected" : "Backend offline"}</span>
+        <button className="btn-ghost btn-ghost-add" onClick={() => setShowAddVideo(true)} title="Add video manually">
+          + Add Video
+        </button>
         <button
           className="btn-ghost"
           onClick={() => setShowWatchFolder(v => !v)}
@@ -56,6 +61,10 @@ export default function App() {
           {showWatchFolder ? "▲ Settings" : "▼ Settings"}
         </button>
       </header>
+
+      {showAddVideo && (
+        <AddVideoModal onClose={() => setShowAddVideo(false)} onAdded={load} />
+      )}
 
       <main>
         {showWatchFolder && (

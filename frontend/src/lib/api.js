@@ -29,6 +29,7 @@ export function getVideos()        { return get("/videos"); }
 export function getWanted()        { return get("/wanted"); }
 export function getIgnored()       { return get("/ignored"); }
 export function deleteVideo(id)    { return del(`/videos/${id}`); }
+export function addVideoManual(data) { return post("/videos/manual", data); }
 export function removeMark(id)     { return del(`/mark/${id}`); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
