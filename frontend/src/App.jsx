@@ -11,6 +11,7 @@ export default function App() {
   const [cfg,     setCfg]     = useState({});
   const [showWatchFolder, setShowWatchFolder] = useState(false);
   const [showAddVideo,    setShowAddVideo]    = useState(false);
+  const [editVideo,       setEditVideo]       = useState(null);
   const [videos,  setVideos]  = useState([]);
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
@@ -65,6 +66,9 @@ export default function App() {
       {showAddVideo && (
         <AddVideoModal onClose={() => setShowAddVideo(false)} onAdded={load} />
       )}
+      {editVideo && (
+        <AddVideoModal onClose={() => setEditVideo(null)} onAdded={load} initialVideo={editVideo} />
+      )}
 
       <main>
         {showWatchFolder && (
@@ -83,7 +87,7 @@ export default function App() {
           />
           <Route
             path="/artist/:name"
-            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} />}
+            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} />}
           />
         </Routes>
       </main>

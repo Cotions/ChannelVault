@@ -25,11 +25,13 @@ export function saveConfig(dir)      { return post("/config", { watch_directory:
 export function saveDataDir(dir)     { return post("/config", { data_directory: dir }); }
 export function browse()             { return get("/browse"); }
 export function browseData()         { return get("/browse?title=Select+data+directory"); }
+export function browseFile()         { return get("/browse-file"); }
 export function getVideos()        { return get("/videos"); }
 export function getWanted()        { return get("/wanted"); }
 export function getIgnored()       { return get("/ignored"); }
 export function deleteVideo(id)    { return del(`/videos/${id}`); }
 export function addVideoManual(data) { return post("/videos/manual", data); }
+export function fetchMetadata(id)    { return post(`/fetch-metadata/${id}`, {}); }
 export function removeMark(id)     { return del(`/mark/${id}`); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }

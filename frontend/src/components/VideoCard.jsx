@@ -2,7 +2,7 @@ import { useState } from "react";
 import { thumbUrl } from "../lib/api";
 import { fmt, fmtDuration } from "../lib/fmt";
 
-export default function VideoCard({ video, onDelete }) {
+export default function VideoCard({ video, onDelete, onEdit }) {
   const [thumbOk, setThumbOk] = useState(true);
   const [deleting, setDeleting] = useState(false);
 
@@ -40,6 +40,15 @@ export default function VideoCard({ video, onDelete }) {
         </div>
       </div>
       <div className="video-actions">
+        {onEdit && (
+          <button
+            className="del-btn"
+            title="Edit metadata"
+            onClick={() => onEdit(video)}
+          >
+            ✎
+          </button>
+        )}
         <button
           className="del-btn"
           title="Remove from vault"

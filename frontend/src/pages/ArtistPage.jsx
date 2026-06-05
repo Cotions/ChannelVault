@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom";
 import VideoCard from "../components/VideoCard";
 
-export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark }) {
+export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
@@ -13,7 +13,7 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate("/")}>← Back</button>
         <h2 className="artist-page-title">{artist}</h2>
         {artistVideos.length > 0 && (
           <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>
@@ -29,7 +29,7 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
       {artistVideos.length > 0 && (
         <div className="video-grid">
           {artistVideos.map(v => (
-            <VideoCard key={v.video_id} video={v} onDelete={onDelete} />
+            <VideoCard key={v.video_id} video={v} onDelete={onDelete} onEdit={onEdit} />
           ))}
         </div>
       )}

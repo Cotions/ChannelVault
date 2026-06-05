@@ -319,6 +319,24 @@ def browse():
         pass
     return jsonify({"ok": False, "directory": None})
 
+@app.get("/browse-file")
+def browse_file():
+    import subprocess
+    title = request.args.get("title", "Select video file")
+    try:
+        result = subprocess.run(
+            ["zenity", "--file-selection", f"--title={title}",
+             "--file-filter=Video files (mp4 mkv webm avi mov) | *.mp4 *.mkv *.webm *.avi *.mov",
+             "--file-filter=All files | *"],
+            capture_output=True, text=True, timeout=60
+        )
+        chosen = result.stdout.strip()
+        if chosen:
+            return jsonify({"ok": True, "file": chosen})
+    except Exception:
+        pass
+    return jsonify({"ok": False, "file": None})
+
 @app.post("/scan")
 def scan():
     cfg       = load_config()
@@ -521,6 +539,55 @@ def add_video_manual():
             body.get("recorded_date") or None,
             body.get("duration_secs") or None,
             body.get("file_size_bytes") or None,
+        ))
+        conn.commit()
+        conn.close()
+
+    return jsonify({"ok": True, "video_id": video_id})
+
+
+@app.post("/fetch-metadata/<video_id>")
+def fetch_metadata(video_id):
+    import subprocess, json as _json
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--dump-json", "--no-download", "--no-playlist", url],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode != 0:
+            return jsonify({"ok": False, "error": "yt-dlp failed"}), 502
+        info = _json.loads(result.stdout)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    upload_date = info.get("upload_date")  # YYYYMMDD
+    recorded_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}" if upload_date and len(upload_date) == 8 else None
+
+    with _db_lock:
+        conn = get_conn()
+        conn.execute('''
+            UPDATE downloaded_videos SET
+                title          = COALESCE(?, title),
+                channel_name   = COALESCE(?, channel_name),
+                url            = COALESCE(?, url),
+                description    = COALESCE(?, description),
+                recorded_date  = COALESCE(?, recorded_date),
+                duration_secs  = COALESCE(?, duration_secs),
+                view_count     = COALESCE(?, view_count),
+                like_count     = COALESCE(?, like_count),
+                stats_updated_at = CURRENT_TIMESTAMP
+            WHERE video_id = ?
+        ''', (
+            info.get("title") or None,
+            info.get("channel") or info.get("uploader") or None,
+            info.get("webpage_url") or url,
+            info.get("description") or None,
+            recorded_date,
+            info.get("duration") or None,
+            info.get("view_count") or None,
+            info.get("like_count") or None,
+            video_id,
         ))
         conn.commit()
         conn.close()

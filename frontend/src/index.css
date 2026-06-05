@@ -138,6 +138,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
 .field-hint   { font-size: 11px; color: var(--muted); }
 .required     { color: #ef9a9a; }
+.fetch-row    { display: flex; gap: 8px; }
+.fetch-row input { flex: 1; }
+.fetch-row .btn-secondary { white-space: nowrap; padding: 7px 14px; font-size: 13px; }
 
 .msg {
   margin-top: 10px;
