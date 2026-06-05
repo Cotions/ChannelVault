@@ -503,9 +503,15 @@ def serve_userscript():
 @app.post("/videos/manual")
 def add_video_manual():
     body     = request.get_json(silent=True) or {}
-    video_id = (body.get("video_id") or "").strip()
-    if not video_id:
+    raw_id   = (body.get("video_id") or "").strip()
+    if not raw_id:
         return jsonify({"ok": False, "error": "video_id is required"}), 400
+
+    # extract bare ID if caller passed a full URL
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", raw_id) or \
+        re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", raw_id) or \
+        re.search(r"/(?:shorts|embed|v)/([A-Za-z0-9_-]{11})", raw_id)
+    video_id = m.group(1) if m else raw_id
 
     url = body.get("url") or f"https://www.youtube.com/watch?v={video_id}"
 

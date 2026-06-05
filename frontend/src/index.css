@@ -333,6 +333,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   transition: color 0.15s, background 0.15s;
 }
 .del-btn:hover { color: #ef9a9a; background: #c6282822; }
+.del-btn-confirm { color: #81c784; }
+.del-btn-confirm:hover { color: #81c784; background: #1b5e2022; }
+.del-confirm-label { font-size: 11px; color: var(--muted); align-self: center; padding-right: 2px; }
 
 .empty { text-align: center; padding: 40px; color: var(--muted); }
 
