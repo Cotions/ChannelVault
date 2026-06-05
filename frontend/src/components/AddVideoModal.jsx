@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { addVideoManual, browseFile, fetchMetadata } from "../lib/api";
+import { addVideoManual, browseFile, fetchMetadata, readFileTags } from "../lib/api";
 
 function extractVideoId(input) {
   const s = input.trim();
@@ -70,6 +70,27 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
       }));
       setFetchStatus("err");
     }
+  }
+
+  async function applyFileTags(path) {
+    try {
+      const data = await readFileTags(path);
+      if (!data.ok) return;
+      setForm(f => ({
+        ...f,
+        video_id:     data.video_id     || f.video_id,
+        title:        data.title        || f.title,
+        channel_name: data.channel_name || f.channel_name,
+        url:          data.url          || f.url,
+        genre:        data.genre        || f.genre,
+        description:  data.description  || f.description,
+        recorded_date:data.recorded_date|| f.recorded_date,
+      }));
+      if (data.url || data.video_id) {
+        setUrlInput(data.url || `https://www.youtube.com/watch?v=${data.video_id}`);
+        setFetchStatus("ok");
+      }
+    } catch {}
   }
 
   function handleUrlBlur() {
@@ -150,18 +171,35 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
           <label>
             Local File Path
             <div className="fetch-row">
-              <input type="text" placeholder="/home/user/Downloads/video.mp4" value={form.file_path} onChange={e => set("file_path", e.target.value)} />
+              <input
+                type="text"
+                placeholder="/home/user/Downloads/video.mp4"
+                value={form.file_path}
+                onChange={e => set("file_path", e.target.value)}
+              />
               <button
                 type="button"
                 className="btn-secondary"
                 onClick={async () => {
                   try {
                     const data = await browseFile();
-                    if (data.ok && data.file) set("file_path", data.file);
+                    if (data.ok && data.file) {
+                      set("file_path", data.file);
+                      applyFileTags(data.file);
+                    }
                   } catch {}
                 }}
               >
                 Browse…
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={!form.file_path.trim()}
+                onClick={() => applyFileTags(form.file_path)}
+                title="Read metadata from file tags"
+              >
+                Read Tags
               </button>
             </div>
           </label>

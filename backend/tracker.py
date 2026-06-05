@@ -546,6 +546,50 @@ def add_video_manual():
     return jsonify({"ok": True, "video_id": video_id})
 
 
+@app.post("/read-file-tags")
+def read_file_tags():
+    body      = request.get_json(silent=True) or {}
+    file_path = (body.get("file_path") or "").strip()
+    if not file_path or not os.path.isfile(file_path):
+        return jsonify({"ok": False, "error": "File not found"}), 404
+    try:
+        tag = TinyTag.get(file_path)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    url      = tag.comment or ""
+    video_id = None
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url)
+    if m:
+        video_id = m.group(1)
+    else:
+        m = re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
+        if m:
+            video_id = m.group(1)
+
+    other       = tag.other if hasattr(tag, "other") and tag.other else {}
+    description = other.get("description") or other.get("longdesc") or other.get("long_description")
+    if isinstance(description, list):
+        description = description[0] if description else None
+
+    year = tag.year
+    if isinstance(year, list):
+        year = year[0] if year else None
+    recorded_date = str(year) if year else None
+
+    return jsonify({
+        "ok":           True,
+        "video_id":     video_id,
+        "title":        tag.title,
+        "channel_name": tag.artist,
+        "url":          url or (f"https://www.youtube.com/watch?v={video_id}" if video_id else None),
+        "genre":        tag.genre,
+        "description":  description,
+        "recorded_date":recorded_date,
+        "duration_secs":tag.duration,
+    })
+
+
 @app.post("/fetch-metadata/<video_id>")
 def fetch_metadata(video_id):
     import subprocess, json as _json
