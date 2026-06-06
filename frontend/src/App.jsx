@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Link } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark } from "./lib/api";
 import WatchFolder    from "./components/WatchFolder";
 import AddVideoModal  from "./components/AddVideoModal";
 import Overview       from "./pages/Overview";
 import ArtistPage     from "./pages/ArtistPage";
+import Stats          from "./pages/Stats";
 
 export default function App() {
   const [online,  setOnline]  = useState(false);
@@ -51,7 +52,10 @@ export default function App() {
         <div className={`status-dot ${online ? "online" : ""}`} />
         <h1>ChannelVault</h1>
         <span className="status-label">{online ? "Backend connected" : "Backend offline"}</span>
-        <button className="btn-ghost btn-ghost-add" onClick={() => setShowAddVideo(true)} title="Add video manually">
+        <Link to="/stats" className="btn-ghost btn-ghost-add" title="Library stats">
+          Stats
+        </Link>
+        <button className="btn-ghost" onClick={() => setShowAddVideo(true)} title="Add video manually">
           + Add Video
         </button>
         <button
@@ -85,6 +89,7 @@ export default function App() {
               />
             }
           />
+          <Route path="/stats" element={<Stats videos={videos} />} />
           <Route
             path="/artist/:name"
             element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} />}

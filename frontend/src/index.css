@@ -337,6 +337,58 @@ button:disabled { opacity: 0.45; cursor: default; }
 .del-btn-confirm:hover { color: #81c784; background: #1b5e2022; }
 .del-confirm-label { font-size: 11px; color: var(--muted); align-self: center; padding-right: 2px; }
 
+/* List view */
+.video-list { display: flex; flex-direction: column; gap: 8px; }
+.video-card.list { flex-direction: row; align-items: stretch; }
+.video-card.list .video-thumb-link { flex-shrink: 0; }
+.video-card.list .video-thumb,
+.video-card.list .video-thumb-placeholder { width: 160px; height: 100%; }
+.video-card.list .video-info { padding: 8px 12px; justify-content: center; }
+.video-card.list .video-title { -webkit-line-clamp: 1; }
+.video-card.list .video-actions { align-items: center; padding: 0 10px; }
+
+.layout-toggle { display: flex; gap: 2px; }
+.layout-toggle .btn-ghost { font-size: 14px; padding: 4px 8px; }
+.layout-toggle .btn-ghost.active { color: var(--text); background: var(--border); }
+
+/* Stats page */
+.btn-export { font-size: 12px; padding: 6px 12px; }
+.records-list { display: flex; flex-direction: column; gap: 6px; }
+.record-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.record-label { color: var(--muted); font-size: 12px; min-width: 110px; }
+.record-value { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.record-link {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.record-link:hover { color: #90caf9; }
+.record-num { color: var(--accent-hover); font-weight: 700; white-space: nowrap; margin-left: auto; }
+
+.stats-table { display: flex; flex-direction: column; gap: 4px; }
+.stats-table-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.stats-table-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stats-table-count { font-weight: 700; color: var(--accent-hover); }
+
 .empty { text-align: center; padding: 40px; color: var(--muted); }
 
 ::-webkit-scrollbar { width: 6px; }

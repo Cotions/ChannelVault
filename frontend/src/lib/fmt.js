@@ -5,6 +5,15 @@ export function fmt(n) {
   return n.toString();
 }
 
+export function fmtBytes(bytes) {
+  if (!bytes) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let n = bytes;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return `${i === 0 ? n : n.toFixed(1)} ${units[i]}`;
+}
+
 export function fmtDate(ts) {
   if (!ts) return "—";
   return new Date(ts).toLocaleDateString("en-CA");

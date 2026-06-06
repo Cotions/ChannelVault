@@ -1,5 +1,7 @@
 import os
+import io
 import re
+import csv
 import time
 import json
 import shutil
@@ -486,6 +488,41 @@ def list_videos():
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+EXPORT_FIELDS = [
+    "video_id", "title", "channel_name", "url", "file_path",
+    "genre", "description", "recorded_date", "duration_secs",
+    "file_size_bytes", "downloaded_at", "view_count", "like_count",
+    "stats_updated_at", "status",
+]
+
+def _export_rows():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM downloaded_videos ORDER BY downloaded_at DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+@app.get("/export/json")
+def export_json():
+    resp = Response(
+        json.dumps(_export_rows(), indent=2, ensure_ascii=False),
+        mimetype="application/json",
+    )
+    resp.headers["Content-Disposition"] = 'attachment; filename="channelvault-export.json"'
+    return resp
+
+@app.get("/export/csv")
+def export_csv():
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EXPORT_FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(_export_rows())
+    # BOM so Excel detects UTF-8
+    resp = Response("\ufeff" + buf.getvalue(), mimetype="text/csv")
+    resp.headers["Content-Disposition"] = 'attachment; filename="channelvault-export.csv"'
+    return resp
 
 @app.get("/userscript/channelvault.user.js")
 @app.get("/channelvault.user.js")

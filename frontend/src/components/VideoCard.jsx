@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { thumbUrl } from "../lib/api";
 import { fmt, fmtDuration } from "../lib/fmt";
 
-export default function VideoCard({ video, onDelete, onEdit }) {
+export default function VideoCard({ video, onDelete, onEdit, layout = "grid" }) {
   const [thumbOk,    setThumbOk]    = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
@@ -35,7 +35,7 @@ export default function VideoCard({ video, onDelete, onEdit }) {
   const dur   = fmtDuration(video.duration_secs);
 
   return (
-    <div className="video-card">
+    <div className={`video-card${layout === "list" ? " list" : ""}`}>
       <a href={ytUrl} target="_blank" rel="noreferrer" className="video-thumb-link">
         {thumbOk ? (
           <img

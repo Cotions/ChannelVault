@@ -1,10 +1,25 @@
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import VideoCard from "../components/VideoCard";
+
+function readLayout() {
+  try {
+    return localStorage.getItem("cv:layout") === "list" ? "list" : "grid";
+  } catch {
+    return "grid";
+  }
+}
 
 export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
+  const [layout, setLayout] = useState(readLayout);
+
+  function switchLayout(next) {
+    setLayout(next);
+    try { localStorage.setItem("cv:layout", next); } catch {}
+  }
 
   const artistVideos  = videos.filter(v => (v.channel_name || "Unknown") === artist);
   const artistWanted  = wanted.filter(v => (v.channel_name || "Unknown") === artist);
@@ -24,12 +39,30 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
         {artistIgnored.length > 0 && (
           <span className="artist-badge" style={{ background: "#b71c1c33", color: "#ef9a9a" }}>✕ {artistIgnored.length} skipped</span>
         )}
+        {artistVideos.length > 0 && (
+          <div className="layout-toggle">
+            <button
+              className={`btn-ghost${layout === "grid" ? " active" : ""}`}
+              onClick={() => switchLayout("grid")}
+              title="Grid view"
+            >
+              ▦
+            </button>
+            <button
+              className={`btn-ghost${layout === "list" ? " active" : ""}`}
+              onClick={() => switchLayout("list")}
+              title="List view"
+            >
+              ☰
+            </button>
+          </div>
+        )}
       </div>
 
       {artistVideos.length > 0 && (
-        <div className="video-grid">
+        <div className={layout === "list" ? "video-list" : "video-grid"}>
           {artistVideos.map(v => (
-            <VideoCard key={v.video_id} video={v} onDelete={onDelete} onEdit={onEdit} />
+            <VideoCard key={v.video_id} video={v} onDelete={onDelete} onEdit={onEdit} layout={layout} />
           ))}
         </div>
       )}

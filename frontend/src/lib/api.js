@@ -37,6 +37,8 @@ export function removeMark(id)     { return del(`/mark/${id}`); }
 export function getDuplicates()    { return get("/data-quality/duplicates"); }
 export function getMissing()       { return get("/data-quality/missing"); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
+export function exportCsvUrl()     { return `${BASE}/export/csv`; }
+export function exportJsonUrl()    { return `${BASE}/export/json`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
 
 export async function scan(onEvent) {
