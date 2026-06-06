@@ -5,6 +5,7 @@ import json
 import shutil
 import sqlite3
 import threading
+import unicodedata
 from tinytag import TinyTag
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -652,6 +653,61 @@ def delete_video(video_id):
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+@app.get("/data-quality/duplicates")
+def data_quality_duplicates():
+    cfg = load_config()
+    watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for root, _dirs, files in os.walk(watch_dir):
+        for fname in files:
+            if not fname.lower().endswith((".mp4", ".mkv")):
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                tag = TinyTag.get(fpath)
+                url = tag.comment or ""
+                m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url) or \
+                    re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
+                if m:
+                    groups[m.group(1)].append(fpath)
+            except Exception:
+                pass
+    duplicates = [
+        {"video_id": vid, "title": None, "files": paths}
+        for vid, paths in groups.items()
+        if len(paths) > 1
+    ]
+    if duplicates:
+        conn = get_conn()
+        for d in duplicates:
+            row = conn.execute(
+                "SELECT title, channel_name FROM downloaded_videos WHERE video_id = ?", (d["video_id"],)
+            ).fetchone()
+            if row:
+                d["title"] = row["title"]
+                d["channel_name"] = row["channel_name"]
+        conn.close()
+    return jsonify({"ok": True, "duplicates": duplicates})
+
+
+@app.get("/data-quality/missing")
+def data_quality_missing():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT video_id, title, channel_name, file_path FROM downloaded_videos "
+        "WHERE file_path IS NOT NULL AND status = 'downloaded'"
+    ).fetchall()
+    conn.close()
+    missing = [
+        {"video_id": r["video_id"], "title": r["title"],
+         "channel_name": r["channel_name"], "file_path": r["file_path"]}
+        for r in rows
+        if not any(os.path.isfile(unicodedata.normalize(f, r["file_path"])) for f in ("NFC", "NFD", "NFKC", "NFKD"))
+    ]
+    return jsonify({"ok": True, "missing": missing})
+
 
 @app.get("/artist-thumb/<path:name>")
 def serve_artist_thumb(name):

@@ -34,6 +34,8 @@ export function deleteVideo(id)    { return del(`/videos/${id}`); }
 export function addVideoManual(data) { return post("/videos/manual", data); }
 export function fetchMetadata(id)    { return post(`/fetch-metadata/${id}`, {}); }
 export function removeMark(id)     { return del(`/mark/${id}`); }
+export function getDuplicates()    { return get("/data-quality/duplicates"); }
+export function getMissing()       { return get("/data-quality/missing"); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
 
