@@ -52,11 +52,18 @@ export default function Stats({ videos }) {
     .filter(v => v.view_count != null)
     .reduce((best, v) => (best == null || v.view_count > best.view_count ? v : best), null);
 
+  const totalWatches = videos.reduce((sum, v) => sum + (v.watch_count || 0), 0);
+
+  const mostWatched = videos
+    .filter(v => v.watch_count > 0)
+    .reduce((best, v) => (best == null || v.watch_count > best.watch_count ? v : best), null);
+
   const heroStats = [
     { num: fmt(videos.length),                                   label: "videos vaulted" },
     { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < videos.length ? `on disk · ${withSize.length}/${videos.length} known` : "on disk" },
     { num: fmtHours(totalSecs),                                  label: "of footage" },
     { num: fmt(channels.length),                                 label: "channels" },
+    { num: fmt(totalWatches),                                    label: "total watches" },
   ];
 
   return (
@@ -81,7 +88,7 @@ export default function Stats({ videos }) {
             ))}
           </div>
 
-          {(longest || mostViewed) && (
+          {(longest || mostViewed || mostWatched) && (
             <div className="record-cards">
               <RecordCard
                 video={longest}
@@ -94,6 +101,12 @@ export default function Stats({ videos }) {
                 label="Most viewed"
                 statText={mostViewed ? `${fmt(mostViewed.view_count)} views` : ""}
                 delay={450}
+              />
+              <RecordCard
+                video={mostWatched}
+                label="Most watched"
+                statText={mostWatched ? `${mostWatched.watch_count}× watched` : ""}
+                delay={550}
               />
             </div>
           )}

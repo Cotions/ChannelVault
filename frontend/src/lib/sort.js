@@ -4,6 +4,7 @@ export const SORT_OPTIONS = [
   { value: "duration",  label: "Longest" },
   { value: "views",     label: "Most viewed" },
   { value: "size",      label: "Largest" },
+  { value: "watched",   label: "Most watched" },
   { value: "title",     label: "Title A–Z" },
 ];
 
@@ -25,6 +26,8 @@ export function sortVideos(videos, key) {
       return arr.sort((a, b) => num(b.view_count) - num(a.view_count));
     case "size":
       return arr.sort((a, b) => num(b.file_size_bytes) - num(a.file_size_bytes));
+    case "watched":
+      return arr.sort((a, b) => (b.watch_count || 0) - (a.watch_count || 0));
     case "title":
       return arr.sort((a, b) => (a.title || a.video_id).localeCompare(b.title || b.video_id, undefined, { sensitivity: "base" }));
     default:

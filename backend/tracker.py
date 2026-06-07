@@ -157,6 +157,19 @@ def init_db():
         )
     ''')
 
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS watch_sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id      TEXT NOT NULL,
+            started_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            watched_secs  REAL DEFAULT 0,
+            position_secs REAL DEFAULT 0,
+            duration_secs REAL,
+            completed     INTEGER DEFAULT 0
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -500,9 +513,18 @@ def list_ignored():
 @app.get("/videos")
 def list_videos():
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM downloaded_videos WHERE status='downloaded' ORDER BY downloaded_at DESC"
-    ).fetchall()
+    rows = conn.execute('''
+        SELECT v.*,
+               COALESCE(w.watch_count, 0) AS watch_count,
+               w.last_watched_at
+        FROM downloaded_videos v
+        LEFT JOIN (
+            SELECT video_id, COUNT(*) AS watch_count, MAX(updated_at) AS last_watched_at
+            FROM watch_sessions WHERE completed = 1
+            GROUP BY video_id
+        ) w ON w.video_id = v.video_id
+        WHERE v.status='downloaded' ORDER BY v.downloaded_at DESC
+    ''').fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -530,6 +552,78 @@ def stream_video(video_id):
     ext  = os.path.splitext(path)[1].lower()
     from flask import send_file
     return send_file(path, mimetype=_STREAM_MIMES.get(ext, "application/octet-stream"), conditional=True)
+
+# ---------------------------------------------------------------------------
+# Watch history
+# ---------------------------------------------------------------------------
+
+# A session only counts as "watched" once the user has actually played at
+# least this fraction of the video (accumulated playtime, not seek position).
+WATCHED_THRESHOLD = 0.7
+# Ignore trivially short sessions even when duration is unknown.
+MIN_WATCHED_SECS = 30
+
+@app.post("/watch-progress/<video_id>")
+def watch_progress(video_id):
+    body          = request.get_json(silent=True) or {}
+    session_id    = body.get("session_id")
+    watched_secs  = float(body.get("watched_secs") or 0)
+    position_secs = float(body.get("position_secs") or 0)
+    duration_secs = body.get("duration_secs")
+    duration_secs = float(duration_secs) if duration_secs else None
+
+    if duration_secs:
+        completed = 1 if watched_secs >= duration_secs * WATCHED_THRESHOLD else 0
+    else:
+        completed = 1 if watched_secs >= MIN_WATCHED_SECS else 0
+
+    with _db_lock:
+        conn = get_conn()
+        if session_id:
+            conn.execute('''
+                UPDATE watch_sessions SET
+                    watched_secs  = ?,
+                    position_secs = ?,
+                    duration_secs = COALESCE(?, duration_secs),
+                    completed     = MAX(completed, ?),
+                    updated_at    = CURRENT_TIMESTAMP
+                WHERE id = ? AND video_id = ?
+            ''', (watched_secs, position_secs, duration_secs, completed, session_id, video_id))
+        else:
+            cur = conn.execute('''
+                INSERT INTO watch_sessions (video_id, watched_secs, position_secs, duration_secs, completed)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (video_id, watched_secs, position_secs, duration_secs, completed))
+            session_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+    return jsonify({"ok": True, "session_id": session_id, "completed": bool(completed)})
+
+@app.get("/watch-history")
+def watch_history():
+    limit = min(int(request.args.get("limit", 50)), 200)
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT s.id, s.video_id, s.started_at, s.updated_at,
+               s.watched_secs, s.position_secs, s.duration_secs, s.completed,
+               v.title, v.channel_name
+        FROM watch_sessions s
+        LEFT JOIN downloaded_videos v ON v.video_id = s.video_id
+        WHERE s.completed = 1
+        ORDER BY s.updated_at DESC
+        LIMIT ?
+    ''', (limit,)).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.delete("/watch-history/<video_id>")
+def clear_watch_history(video_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM watch_sessions WHERE video_id = ?", (video_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 # ---------------------------------------------------------------------------
 # Playlists
@@ -814,6 +908,7 @@ def fetch_metadata(video_id):
 def delete_video(video_id):
     conn = get_conn()
     conn.execute("DELETE FROM downloaded_videos WHERE video_id = ?", (video_id,))
+    conn.execute("DELETE FROM watch_sessions WHERE video_id = ?", (video_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

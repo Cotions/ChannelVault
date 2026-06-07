@@ -49,6 +49,10 @@ export default function App() {
     setVideos(await getVideos());
   }
 
+  async function handleWatched() {
+    setVideos(await getVideos());
+  }
+
   async function handleCreatePlaylist(name) {
     const r = await createPlaylist(name);
     if (!r.ok) throw new Error(r.error || "create failed");
@@ -130,7 +134,7 @@ export default function App() {
           />
           <Route
             path="/video/:id"
-            element={<VideoPage videos={videos} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} />}
+            element={<VideoPage videos={videos} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} onWatched={handleWatched} />}
           />
           <Route
             path="/playlist/:id"

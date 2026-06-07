@@ -94,6 +94,11 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         ) : (
           <div className="video-thumb-placeholder">▶</div>
         )}
+        {video.watch_count > 0 && (
+          <span className="watched-badge" title={`Watched ${video.watch_count}×`}>
+            ✓{video.watch_count > 1 ? ` ${video.watch_count}` : ""}
+          </span>
+        )}
       </Link>
       <div className="video-info">
         <div className="video-title">

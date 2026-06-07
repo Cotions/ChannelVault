@@ -44,6 +44,8 @@ export function deletePlaylist(id)       { return del(`/playlists/${id}`); }
 export function getPlaylist(id)          { return get(`/playlists/${id}`); }
 export function addToPlaylist(id, videoId)      { return post(`/playlists/${id}/videos`, { video_id: videoId }); }
 export function removeFromPlaylist(id, videoId) { return del(`/playlists/${id}/videos/${videoId}`); }
+export function postWatchProgress(id, data) { return post(`/watch-progress/${id}`, data); }
+export function getWatchHistory()  { return get("/watch-history"); }
 export function exportCsvUrl()     { return `${BASE}/export/csv`; }
 export function exportJsonUrl()    { return `${BASE}/export/json`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }

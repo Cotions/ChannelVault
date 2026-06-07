@@ -274,7 +274,22 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 .video-card:hover { border-color: #555970; }
 
-.video-thumb-link { display: block; }
+.video-thumb-link { display: block; position: relative; }
+
+.watched-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 10px;
+  font-family: var(--mono);
+  font-weight: 700;
+  color: #81c784;
+  background: #0a0c14d9;
+  border: 1px solid #1b5e2066;
+  border-radius: 4px;
+  padding: 2px 6px;
+  pointer-events: none;
+}
 .video-thumb {
   width: 100%;
   aspect-ratio: 16/9;

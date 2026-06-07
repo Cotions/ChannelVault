@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { streamUrl, thumbUrl, artistThumbUrl } from "../lib/api";
+import { streamUrl, thumbUrl, artistThumbUrl, postWatchProgress } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 
-export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
+export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWatched }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [playErr,    setPlayErr]    = useState(false);
@@ -11,6 +11,54 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   const [elapsed,    setElapsed]    = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
+  const [justWatched, setJustWatched] = useState(false);
+
+  // --- Watch tracking: accumulate real playtime (seeks don't count) ---
+  const watchRef = useRef({ watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0 });
+
+  const reportProgress = useCallback(async (videoEl) => {
+    const w = watchRef.current;
+    if (w.watched < 1) return;
+    try {
+      const r = await postWatchProgress(id, {
+        session_id:    w.sessionId,
+        watched_secs:  w.watched,
+        position_secs: videoEl ? videoEl.currentTime : 0,
+        duration_secs: videoEl && videoEl.duration ? videoEl.duration : null,
+      });
+      w.sessionId = r.session_id;
+      w.reported  = w.watched;
+      if (r.completed && !w.completed) {
+        w.completed = true;
+        setJustWatched(true);
+        onWatched?.();
+      }
+    } catch {}
+  }, [id, onWatched]);
+
+  function handleTimeUpdate(e) {
+    const w = watchRef.current;
+    const t = e.target.currentTime;
+    if (w.lastTime != null) {
+      const delta = t - w.lastTime;
+      // timeupdate fires ~4×/s during playback; big jumps are seeks
+      if (delta > 0 && delta < 2) w.watched += delta;
+    }
+    w.lastTime = t;
+    // report every ~15s of accumulated playtime
+    if (w.watched - w.reported >= 15) reportProgress(e.target);
+  }
+
+  function handleSeeked(e) {
+    watchRef.current.lastTime = e.target.currentTime;
+  }
+
+  // reset tracker per video, flush on leave
+  useEffect(() => {
+    watchRef.current = { watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0 };
+    setJustWatched(false);
+    return () => reportProgress(null);
+  }, [id, reportProgress]);
 
   useEffect(() => {
     if (!confirming) return;
@@ -124,6 +172,10 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
           poster={thumbUrl(video.video_id)}
           src={streamUrl(video.video_id)}
           onError={() => setPlayErr(true)}
+          onTimeUpdate={handleTimeUpdate}
+          onSeeked={handleSeeked}
+          onPause={e => reportProgress(e.target)}
+          onEnded={e => reportProgress(e.target)}
         />
       )}
 
@@ -146,6 +198,10 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
             video.like_count    != null && { num: fmt(video.like_count),            label: "likes" },
             video.file_size_bytes != null && { num: fmtBytes(video.file_size_bytes), label: "on disk" },
             video.recorded_date && { num: video.recorded_date, label: "uploaded" },
+            (video.watch_count > 0 || justWatched) && {
+              num: `${Math.max(video.watch_count || 0, justWatched ? 1 : 0)}×`,
+              label: "watched",
+            },
           ].filter(Boolean).map((s, i) => (
             <div key={s.label} className="vp-stat" style={{ animationDelay: `${120 + i * 70}ms` }}>
               <span className="vp-stat-num">{s.num}</span>
