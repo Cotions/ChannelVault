@@ -6,6 +6,7 @@ import AddVideoModal  from "./components/AddVideoModal";
 import Overview       from "./pages/Overview";
 import ArtistPage     from "./pages/ArtistPage";
 import PlaylistPage   from "./pages/PlaylistPage";
+import VideoPage      from "./pages/VideoPage";
 import Stats          from "./pages/Stats";
 
 export default function App() {
@@ -126,6 +127,10 @@ export default function App() {
           <Route
             path="/artist/:name"
             element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+          />
+          <Route
+            path="/video/:id"
+            element={<VideoPage videos={videos} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} />}
           />
           <Route
             path="/playlist/:id"

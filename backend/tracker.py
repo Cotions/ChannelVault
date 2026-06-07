@@ -506,6 +506,31 @@ def list_videos():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+_STREAM_MIMES = {
+    ".mp4":  "video/mp4",
+    ".mkv":  "video/x-matroska",
+    ".webm": "video/webm",
+    ".avi":  "video/x-msvideo",
+    ".mov":  "video/quicktime",
+}
+
+@app.get("/stream/<video_id>")
+def stream_video(video_id):
+    conn = get_conn()
+    row  = conn.execute(
+        "SELECT file_path FROM downloaded_videos WHERE video_id = ? AND status = 'downloaded'",
+        (video_id,)
+    ).fetchone()
+    conn.close()
+    if not row or not row["file_path"]:
+        return jsonify({"ok": False, "error": "no file for video"}), 404
+    path = row["file_path"]
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "file missing on disk"}), 404
+    ext  = os.path.splitext(path)[1].lower()
+    from flask import send_file
+    return send_file(path, mimetype=_STREAM_MIMES.get(ext, "application/octet-stream"), conditional=True)
+
 # ---------------------------------------------------------------------------
 # Playlists
 # ---------------------------------------------------------------------------

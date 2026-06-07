@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { thumbUrl } from "../lib/api";
 import { fmt, fmtDuration } from "../lib/fmt";
 
@@ -77,13 +78,12 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
     }
   }
 
-  const ytUrl = `https://www.youtube.com/watch?v=${video.video_id}`;
   const dur   = fmtDuration(video.duration_secs);
   const date  = video.recorded_date || null;
 
   return (
     <div className={`video-card${layout === "list" ? " list" : ""}`}>
-      <a href={ytUrl} target="_blank" rel="noreferrer" className="video-thumb-link">
+      <Link to={`/video/${video.video_id}`} className="video-thumb-link">
         {thumbOk ? (
           <img
             className="video-thumb"
@@ -94,10 +94,10 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         ) : (
           <div className="video-thumb-placeholder">▶</div>
         )}
-      </a>
+      </Link>
       <div className="video-info">
         <div className="video-title">
-          <a href={ytUrl} target="_blank" rel="noreferrer">{video.title || video.video_id}</a>
+          <Link to={`/video/${video.video_id}`}>{video.title || video.video_id}</Link>
         </div>
         <div className="video-meta">
           {dur && <span>{dur}</span>}

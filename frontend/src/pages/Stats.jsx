@@ -1,12 +1,39 @@
-import { useNavigate } from "react-router-dom";
-import { exportCsvUrl, exportJsonUrl } from "../lib/api";
+import { useNavigate, Link } from "react-router-dom";
+import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
+
+function fmtHours(secs) {
+  if (!secs) return "—";
+  const h = secs / 3600;
+  if (h >= 1) return `${h.toFixed(1)}h`;
+  return `${Math.round(secs / 60)}min`;
+}
+
+function RecordCard({ video, label, statText, delay }) {
+  if (!video) return null;
+  return (
+    <Link
+      to={`/video/${video.video_id}`}
+      className="record-card"
+      style={{ animationDelay: `${delay}ms` }}
+    >
+      <img className="record-card-bg" src={thumbUrl(video.video_id)} alt="" onError={e => { e.target.style.display = "none"; }} />
+      <div className="record-card-overlay" />
+      <div className="record-card-content">
+        <span className="record-card-label">{label}</span>
+        <span className="record-card-title">{video.title || video.video_id}</span>
+        <span className="record-card-stat">{statText}</span>
+      </div>
+    </Link>
+  );
+}
 
 export default function Stats({ videos }) {
   const navigate = useNavigate();
 
-  const withSize = videos.filter(v => v.file_size_bytes != null);
+  const withSize   = videos.filter(v => v.file_size_bytes != null);
   const totalBytes = withSize.reduce((sum, v) => sum + v.file_size_bytes, 0);
+  const totalSecs  = videos.reduce((sum, v) => sum + (v.duration_secs || 0), 0);
 
   const channelCounts = {};
   for (const v of videos) {
@@ -14,6 +41,8 @@ export default function Stats({ videos }) {
     channelCounts[ch] = (channelCounts[ch] || 0) + 1;
   }
   const channels = Object.entries(channelCounts).sort((a, b) => b[1] - a[1]);
+  const maxCount = channels.length > 0 ? channels[0][1] : 1;
+  const TOP = 15;
 
   const longest = videos
     .filter(v => v.duration_secs != null)
@@ -23,19 +52,15 @@ export default function Stats({ videos }) {
     .filter(v => v.view_count != null)
     .reduce((best, v) => (best == null || v.view_count > best.view_count ? v : best), null);
 
-  const ytLink = v => (
-    <a
-      href={`https://www.youtube.com/watch?v=${v.video_id}`}
-      target="_blank"
-      rel="noreferrer"
-      className="record-link"
-    >
-      {v.title || v.video_id}
-    </a>
-  );
+  const heroStats = [
+    { num: fmt(videos.length),                                   label: "videos vaulted" },
+    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < videos.length ? `on disk · ${withSize.length}/${videos.length} known` : "on disk" },
+    { num: fmtHours(totalSecs),                                  label: "of footage" },
+    { num: fmt(channels.length),                                 label: "channels" },
+  ];
 
   return (
-    <div className="card">
+    <div className="stats-page">
       <div className="artist-page-header">
         <button className="btn-secondary btn-back" onClick={() => navigate("/")}>← Back</button>
         <h2 className="artist-page-title">Stats</h2>
@@ -44,54 +69,58 @@ export default function Stats({ videos }) {
       </div>
 
       {videos.length === 0 ? (
-        <div className="empty">No data yet.</div>
+        <div className="card"><div className="empty">No data yet.</div></div>
       ) : (
         <>
-          <div className="stats-row">
-            <div className="stat">
-              <div className="stat-num">{videos.length}</div>
-              <div className="stat-label">Videos</div>
-            </div>
-            <div className="stat">
-              <div className="stat-num">{withSize.length > 0 ? fmtBytes(totalBytes) : "—"}</div>
-              <div className="stat-label">
-                Disk size{withSize.length < videos.length ? ` (${withSize.length} of ${videos.length} known)` : ""}
-              </div>
-            </div>
-            <div className="stat">
-              <div className="stat-num">{channels.length}</div>
-              <div className="stat-label">Channels</div>
-            </div>
-          </div>
-
-          <div className="card-title" style={{ marginTop: 20 }}>Records</div>
-          <div className="records-list">
-            <div className="record-row">
-              <span className="record-label">Longest video</span>
-              {longest ? (
-                <span className="record-value">
-                  {ytLink(longest)} <span className="record-num">{fmtDuration(longest.duration_secs)}</span>
-                </span>
-              ) : <span className="record-value">—</span>}
-            </div>
-            <div className="record-row">
-              <span className="record-label">Most viewed</span>
-              {mostViewed ? (
-                <span className="record-value">
-                  {ytLink(mostViewed)} <span className="record-num">{fmt(mostViewed.view_count)} views</span>
-                </span>
-              ) : <span className="record-value">—</span>}
-            </div>
-          </div>
-
-          <div className="card-title" style={{ marginTop: 20 }}>Videos per channel</div>
-          <div className="stats-table">
-            {channels.map(([name, count]) => (
-              <div key={name} className="stats-table-row">
-                <span className="stats-table-name">{name}</span>
-                <span className="stats-table-count">{count}</span>
+          <div className="stats-hero">
+            {heroStats.map((s, i) => (
+              <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${i * 90}ms` }}>
+                <span className="stats-hero-num">{s.num}</span>
+                <span className="stats-hero-label">{s.label}</span>
               </div>
             ))}
+          </div>
+
+          {(longest || mostViewed) && (
+            <div className="record-cards">
+              <RecordCard
+                video={longest}
+                label="Longest video"
+                statText={longest ? fmtDuration(longest.duration_secs) : ""}
+                delay={350}
+              />
+              <RecordCard
+                video={mostViewed}
+                label="Most viewed"
+                statText={mostViewed ? `${fmt(mostViewed.view_count)} views` : ""}
+                delay={450}
+              />
+            </div>
+          )}
+
+          <div className="card stats-channels">
+            <div className="card-title">Videos per channel</div>
+            <div className="channel-bars">
+              {channels.slice(0, TOP).map(([name, count], i) => (
+                <Link
+                  key={name}
+                  to={`/artist/${encodeURIComponent(name)}`}
+                  className="channel-bar-row"
+                  style={{ "--d": `${500 + i * 50}ms`, animationDelay: `var(--d)` }}
+                >
+                  <span className="channel-bar-name">{name}</span>
+                  <span className="channel-bar-track">
+                    <span className="channel-bar-fill" style={{ width: `${(count / maxCount) * 100}%` }} />
+                  </span>
+                  <span className="channel-bar-count">{count}</span>
+                </Link>
+              ))}
+            </div>
+            {channels.length > TOP && (
+              <div className="channel-bars-more">
+                + {channels.length - TOP} more channel{channels.length - TOP !== 1 ? "s" : ""} · {channels.slice(TOP).reduce((s, [, c]) => s + c, 0)} videos
+              </div>
+            )}
           </div>
         </>
       )}

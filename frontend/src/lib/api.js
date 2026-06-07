@@ -37,6 +37,7 @@ export function removeMark(id)     { return del(`/mark/${id}`); }
 export function getDuplicates()    { return get("/data-quality/duplicates"); }
 export function getMissing()       { return get("/data-quality/missing"); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
+export function streamUrl(id)      { return `${BASE}/stream/${id}`; }
 export function getPlaylists()           { return get("/playlists"); }
 export function createPlaylist(name)     { return post("/playlists", { name }); }
 export function deletePlaylist(id)       { return del(`/playlists/${id}`); }
