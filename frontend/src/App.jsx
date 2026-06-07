@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Routes, Route, Link } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark } from "./lib/api";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata } from "./lib/api";
 import WatchFolder    from "./components/WatchFolder";
 import AddVideoModal  from "./components/AddVideoModal";
 import Overview       from "./pages/Overview";
@@ -37,6 +37,12 @@ export default function App() {
   async function handleDelete(id) {
     await deleteVideo(id);
     setVideos(prev => prev.filter(v => v.video_id !== id));
+  }
+
+  async function handleFetchMeta(id) {
+    const r = await fetchMetadata(id);
+    if (!r.ok) throw new Error(r.error || "fetch failed");
+    setVideos(await getVideos());
   }
 
   async function handleRemoveMark(id) {
@@ -92,7 +98,7 @@ export default function App() {
           <Route path="/stats" element={<Stats videos={videos} />} />
           <Route
             path="/artist/:name"
-            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} />}
+            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
           />
         </Routes>
       </main>

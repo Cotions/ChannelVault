@@ -10,7 +10,7 @@ function readLayout() {
   }
 }
 
-export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit }) {
+export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit, onFetchMeta }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
@@ -62,7 +62,7 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
       {artistVideos.length > 0 && (
         <div className={layout === "list" ? "video-list" : "video-grid"}>
           {artistVideos.map(v => (
-            <VideoCard key={v.video_id} video={v} onDelete={onDelete} onEdit={onEdit} layout={layout} />
+            <VideoCard key={v.video_id} video={v} onDelete={onDelete} onEdit={onEdit} onFetchMeta={onFetchMeta} layout={layout} />
           ))}
         </div>
       )}

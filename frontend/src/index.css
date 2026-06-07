@@ -333,6 +333,17 @@ button:disabled { opacity: 0.45; cursor: default; }
   transition: color 0.15s, background 0.15s;
 }
 .del-btn:hover { color: #ef9a9a; background: #c6282822; }
+.fetch-timer {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+  align-self: center;
+  padding-right: 2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.fetch-btn.spinning { animation: spin 1s linear infinite; color: #90caf9; }
+.fetch-btn.fetch-err { color: #ef9a9a; }
+.fetch-btn:hover:not(:disabled) { color: #90caf9; background: #1565c022; }
 .del-btn-confirm { color: #81c784; }
 .del-btn-confirm:hover { color: #81c784; background: #1b5e2022; }
 .del-confirm-label { font-size: 11px; color: var(--muted); align-self: center; padding-right: 2px; }

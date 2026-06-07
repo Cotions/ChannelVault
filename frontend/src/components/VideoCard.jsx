@@ -2,10 +2,21 @@ import { useState, useEffect, useRef } from "react";
 import { thumbUrl } from "../lib/api";
 import { fmt, fmtDuration } from "../lib/fmt";
 
-export default function VideoCard({ video, onDelete, onEdit, layout = "grid" }) {
+export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, layout = "grid" }) {
   const [thumbOk,    setThumbOk]    = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
+  const [fetching,   setFetching]   = useState(false);
+  const [fetchErr,   setFetchErr]   = useState(false);
+  const [elapsed,    setElapsed]    = useState(null);
+
+  useEffect(() => {
+    if (!fetching) return;
+    const start = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed((Date.now() - start) / 1000), 100);
+    return () => clearInterval(id);
+  }, [fetching]);
   const confirmRef = useRef(null);
 
   useEffect(() => {
@@ -31,8 +42,23 @@ export default function VideoCard({ video, onDelete, onEdit, layout = "grid" }) 
     }
   }
 
+  async function handleFetchMeta() {
+    setFetching(true);
+    setFetchErr(false);
+    try {
+      await onFetchMeta(video.video_id);
+    } catch {
+      setFetchErr(true);
+      setTimeout(() => setFetchErr(false), 3000);
+    } finally {
+      setFetching(false);
+      setTimeout(() => setElapsed(null), 5000);
+    }
+  }
+
   const ytUrl = `https://www.youtube.com/watch?v=${video.video_id}`;
   const dur   = fmtDuration(video.duration_secs);
+  const date  = video.recorded_date || null;
 
   return (
     <div className={`video-card${layout === "list" ? " list" : ""}`}>
@@ -54,6 +80,7 @@ export default function VideoCard({ video, onDelete, onEdit, layout = "grid" }) 
         </div>
         <div className="video-meta">
           {dur && <span>{dur}</span>}
+          {date && <span>{date}</span>}
           {video.view_count != null && <span>{fmt(video.view_count)} views</span>}
           {video.like_count  != null && <span>{fmt(video.like_count)} likes</span>}
         </div>
@@ -81,6 +108,19 @@ export default function VideoCard({ video, onDelete, onEdit, layout = "grid" }) 
           </>
         ) : (
           <>
+            {onFetchMeta && elapsed != null && (
+              <span className="fetch-timer">{elapsed.toFixed(1)}s</span>
+            )}
+            {onFetchMeta && (
+              <button
+                className={`del-btn fetch-btn${fetching ? " spinning" : ""}${fetchErr ? " fetch-err" : ""}`}
+                title={fetchErr ? "Fetch failed" : "Fetch metadata from YouTube"}
+                disabled={fetching}
+                onClick={handleFetchMeta}
+              >
+                {fetchErr ? "!" : "⟳"}
+              </button>
+            )}
             {onEdit && (
               <button className="del-btn" title="Edit metadata" onClick={() => onEdit(video)}>
                 ✎
