@@ -1,6 +1,58 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { artistThumbUrl, getDuplicates, getMissing } from "../lib/api";
+import VideoCard from "../components/VideoCard";
+
+function PlaylistsCard({ playlists, onCreate, onDeletePlaylist }) {
+  const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    const n = name.trim();
+    if (!n) return;
+    setBusy(true);
+    try {
+      await onCreate(n);
+      setName("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="card-title">Playlists</div>
+      <form className="folder-row" onSubmit={handleCreate}>
+        <input
+          type="text"
+          placeholder="New playlist name…"
+          value={name}
+          onChange={e => setName(e.target.value)}
+        />
+        <button className="btn-secondary" type="submit" disabled={busy || !name.trim()}>Create</button>
+      </form>
+      {playlists.length > 0 && (
+        <div className="playlist-list">
+          {playlists.map(pl => (
+            <div key={pl.id} className="playlist-row" onClick={() => navigate(`/playlist/${pl.id}`)}>
+              <span className="playlist-name">{pl.name}</span>
+              <span className="playlist-count">{pl.video_count}</span>
+              <button
+                className="del-btn"
+                title="Delete playlist"
+                onClick={e => { e.stopPropagation(); onDeletePlaylist(pl.id); }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ArtistCard({ name, stats, onClick }) {
   const [hasThumb, setHasThumb] = useState(true);
@@ -136,8 +188,19 @@ function DataQualityCard() {
   );
 }
 
-export default function Overview({ videos, wanted, ignored }) {
+export default function Overview({ videos, wanted, ignored, playlists, onCreatePlaylist, onDeletePlaylist, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
   const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return null;
+    return videos.filter(v =>
+      (v.title || "").toLowerCase().includes(q) ||
+      (v.channel_name || "").toLowerCase().includes(q) ||
+      (v.description || "").toLowerCase().includes(q)
+    );
+  }, [query, videos]);
 
   const artistStats = {};
   for (const v of videos) {
@@ -160,6 +223,42 @@ export default function Overview({ videos, wanted, ignored }) {
   return (
     <>
       <div className="card">
+        <input
+          type="text"
+          className="search-input"
+          placeholder="Search title, channel, description…"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+        />
+        {results && (
+          <div style={{ marginTop: 14 }}>
+            <div className="card-title">{results.length} result{results.length !== 1 ? "s" : ""}</div>
+            {results.length === 0 ? (
+              <div className="empty">No matches.</div>
+            ) : (
+              <div className="video-grid">
+                {results.slice(0, 60).map(v => (
+                  <VideoCard
+                    key={v.video_id}
+                    video={v}
+                    onDelete={onDelete}
+                    onEdit={onEdit}
+                    onFetchMeta={onFetchMeta}
+                    playlists={playlists}
+                    onAddToPlaylist={onAddToPlaylist}
+                  />
+                ))}
+              </div>
+            )}
+            {results.length > 60 && (
+              <div className="empty" style={{ padding: 12 }}>Showing first 60 of {results.length} — refine search.</div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {!results && (<>
+      <div className="card">
         <div className="card-title">Library</div>
         <div className="stats-row">
           <div className="stat">
@@ -181,6 +280,8 @@ export default function Overview({ videos, wanted, ignored }) {
         </div>
       </div>
 
+      <PlaylistsCard playlists={playlists} onCreate={onCreatePlaylist} onDeletePlaylist={onDeletePlaylist} />
+
       <DataQualityCard />
 
       <div className="card">
@@ -200,6 +301,7 @@ export default function Overview({ videos, wanted, ignored }) {
           </div>
         )}
       </div>
+      </>)}
     </>
   );
 }

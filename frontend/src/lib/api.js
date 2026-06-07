@@ -37,6 +37,12 @@ export function removeMark(id)     { return del(`/mark/${id}`); }
 export function getDuplicates()    { return get("/data-quality/duplicates"); }
 export function getMissing()       { return get("/data-quality/missing"); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
+export function getPlaylists()           { return get("/playlists"); }
+export function createPlaylist(name)     { return post("/playlists", { name }); }
+export function deletePlaylist(id)       { return del(`/playlists/${id}`); }
+export function getPlaylist(id)          { return get(`/playlists/${id}`); }
+export function addToPlaylist(id, videoId)      { return post(`/playlists/${id}/videos`, { video_id: videoId }); }
+export function removeFromPlaylist(id, videoId) { return del(`/playlists/${id}/videos/${videoId}`); }
 export function exportCsvUrl()     { return `${BASE}/export/csv`; }
 export function exportJsonUrl()    { return `${BASE}/export/json`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }

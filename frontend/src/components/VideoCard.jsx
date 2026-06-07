@@ -2,13 +2,34 @@ import { useState, useEffect, useRef } from "react";
 import { thumbUrl } from "../lib/api";
 import { fmt, fmtDuration } from "../lib/fmt";
 
-export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, layout = "grid" }) {
+export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid" }) {
   const [thumbOk,    setThumbOk]    = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
   const [fetching,   setFetching]   = useState(false);
   const [fetchErr,   setFetchErr]   = useState(false);
   const [elapsed,    setElapsed]    = useState(null);
+  const [plOpen,     setPlOpen]     = useState(false);
+  const [plAdded,    setPlAdded]    = useState(null);
+  const plRef = useRef(null);
+
+  useEffect(() => {
+    if (!plOpen) return;
+    function onDown(e) {
+      if (plRef.current && !plRef.current.contains(e.target)) setPlOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [plOpen]);
+
+  async function handleAddToPlaylist(plId) {
+    setPlOpen(false);
+    try {
+      await onAddToPlaylist(plId, video.video_id);
+      setPlAdded(plId);
+      setTimeout(() => setPlAdded(null), 2000);
+    } catch {}
+  }
 
   useEffect(() => {
     if (!fetching) return;
@@ -121,19 +142,54 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, layout
                 {fetchErr ? "!" : "⟳"}
               </button>
             )}
+            {onAddToPlaylist && playlists && (
+              <div className="pl-menu-wrap" ref={plRef}>
+                <button
+                  className={`del-btn pl-btn${plAdded ? " pl-added" : ""}`}
+                  title="Add to playlist"
+                  onClick={() => setPlOpen(o => !o)}
+                >
+                  {plAdded ? "✓" : "+"}
+                </button>
+                {plOpen && (
+                  <div className="pl-menu">
+                    {playlists.length === 0 ? (
+                      <div className="pl-menu-empty">No playlists yet</div>
+                    ) : (
+                      playlists.map(pl => (
+                        <button key={pl.id} className="pl-menu-item" onClick={() => handleAddToPlaylist(pl.id)}>
+                          {pl.name}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             {onEdit && (
               <button className="del-btn" title="Edit metadata" onClick={() => onEdit(video)}>
                 ✎
               </button>
             )}
-            <button
-              className="del-btn"
-              title="Remove from vault"
-              disabled={deleting}
-              onClick={() => setConfirming(true)}
-            >
-              ✕
-            </button>
+            {onRemoveFromList && (
+              <button
+                className="del-btn"
+                title="Remove from playlist"
+                onClick={() => onRemoveFromList(video.video_id)}
+              >
+                −
+              </button>
+            )}
+            {onDelete && (
+              <button
+                className="del-btn"
+                title="Remove from vault"
+                disabled={deleting}
+                onClick={() => setConfirming(true)}
+              >
+                ✕
+              </button>
+            )}
           </>
         )}
       </div>

@@ -140,6 +140,23 @@ def init_db():
         ''')
         conn.execute("DROP TABLE wanted_videos")
 
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS playlists (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS playlist_items (
+            playlist_id INTEGER NOT NULL,
+            video_id    TEXT NOT NULL,
+            added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (playlist_id, video_id),
+            FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -488,6 +505,91 @@ def list_videos():
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+# ---------------------------------------------------------------------------
+# Playlists
+# ---------------------------------------------------------------------------
+
+@app.get("/playlists")
+def list_playlists():
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT p.id, p.name, p.created_at, COUNT(pi.video_id) AS video_count
+        FROM playlists p
+        LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        GROUP BY p.id
+        ORDER BY p.created_at ASC
+    ''').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+@app.post("/playlists")
+def create_playlist():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    conn = get_conn()
+    cur  = conn.execute("INSERT INTO playlists (name) VALUES (?)", (name,))
+    conn.commit()
+    new_id = cur.lastrowid
+    conn.close()
+    return jsonify({"ok": True, "id": new_id, "name": name})
+
+@app.delete("/playlists/<int:playlist_id>")
+def delete_playlist(playlist_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM playlist_items WHERE playlist_id = ?", (playlist_id,))
+    conn.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.get("/playlists/<int:playlist_id>")
+def get_playlist(playlist_id):
+    conn = get_conn()
+    pl = conn.execute("SELECT * FROM playlists WHERE id = ?", (playlist_id,)).fetchone()
+    if not pl:
+        conn.close()
+        return jsonify({"ok": False, "error": "not found"}), 404
+    rows = conn.execute('''
+        SELECT v.*, pi.added_at AS playlist_added_at
+        FROM playlist_items pi
+        JOIN downloaded_videos v ON v.video_id = pi.video_id
+        WHERE pi.playlist_id = ?
+        ORDER BY pi.added_at ASC
+    ''', (playlist_id,)).fetchall()
+    conn.close()
+    return jsonify({"ok": True, "playlist": dict(pl), "videos": [dict(r) for r in rows]})
+
+@app.post("/playlists/<int:playlist_id>/videos")
+def add_playlist_video(playlist_id):
+    body     = request.get_json(silent=True) or {}
+    video_id = (body.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"ok": False, "error": "video_id required"}), 400
+    conn = get_conn()
+    if not conn.execute("SELECT 1 FROM playlists WHERE id = ?", (playlist_id,)).fetchone():
+        conn.close()
+        return jsonify({"ok": False, "error": "playlist not found"}), 404
+    conn.execute(
+        "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id) VALUES (?, ?)",
+        (playlist_id, video_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+@app.delete("/playlists/<int:playlist_id>/videos/<video_id>")
+def remove_playlist_video(playlist_id, video_id):
+    conn = get_conn()
+    conn.execute(
+        "DELETE FROM playlist_items WHERE playlist_id = ? AND video_id = ?",
+        (playlist_id, video_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 EXPORT_FIELDS = [
     "video_id", "title", "channel_name", "url", "file_path",

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { Routes, Route, Link } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata } from "./lib/api";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist } from "./lib/api";
 import WatchFolder    from "./components/WatchFolder";
 import AddVideoModal  from "./components/AddVideoModal";
 import Overview       from "./pages/Overview";
 import ArtistPage     from "./pages/ArtistPage";
+import PlaylistPage   from "./pages/PlaylistPage";
 import Stats          from "./pages/Stats";
 
 export default function App() {
@@ -16,16 +17,18 @@ export default function App() {
   const [videos,  setVideos]  = useState([]);
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
+  const [playlists, setPlaylists] = useState([]);
 
   async function load() {
     try {
-      const [c, v, w, i] = await Promise.all([
-        getConfig(), getVideos(), getWanted(), getIgnored(),
+      const [c, v, w, i, p] = await Promise.all([
+        getConfig(), getVideos(), getWanted(), getIgnored(), getPlaylists(),
       ]);
       setCfg(c);
       setVideos(v);
       setWanted(w);
       setIgnored(i);
+      setPlaylists(p);
       setOnline(true);
     } catch {
       setOnline(false);
@@ -43,6 +46,23 @@ export default function App() {
     const r = await fetchMetadata(id);
     if (!r.ok) throw new Error(r.error || "fetch failed");
     setVideos(await getVideos());
+  }
+
+  async function handleCreatePlaylist(name) {
+    const r = await createPlaylist(name);
+    if (!r.ok) throw new Error(r.error || "create failed");
+    setPlaylists(await getPlaylists());
+  }
+
+  async function handleDeletePlaylist(id) {
+    await deletePlaylist(id);
+    setPlaylists(prev => prev.filter(p => p.id !== id));
+  }
+
+  async function handleAddToPlaylist(playlistId, videoId) {
+    const r = await addToPlaylist(playlistId, videoId);
+    if (!r.ok) throw new Error(r.error || "add failed");
+    setPlaylists(await getPlaylists());
   }
 
   async function handleRemoveMark(id) {
@@ -92,13 +112,24 @@ export default function App() {
                 videos={videos}
                 wanted={wanted}
                 ignored={ignored}
+                playlists={playlists}
+                onCreatePlaylist={handleCreatePlaylist}
+                onDeletePlaylist={handleDeletePlaylist}
+                onAddToPlaylist={handleAddToPlaylist}
+                onDelete={handleDelete}
+                onEdit={setEditVideo}
+                onFetchMeta={handleFetchMeta}
               />
             }
           />
           <Route path="/stats" element={<Stats videos={videos} />} />
           <Route
             path="/artist/:name"
-            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
+            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+          />
+          <Route
+            path="/playlist/:id"
+            element={<PlaylistPage onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
           />
         </Routes>
       </main>

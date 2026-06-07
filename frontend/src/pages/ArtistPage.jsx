@@ -1,24 +1,19 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { readLayout, saveLayout } from "../lib/layout";
+import { SORT_OPTIONS, sortVideos } from "../lib/sort";
 import VideoCard from "../components/VideoCard";
 
-function readLayout() {
-  try {
-    return localStorage.getItem("cv:layout") === "list" ? "list" : "grid";
-  } catch {
-    return "grid";
-  }
-}
-
-export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit, onFetchMeta }) {
+export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
   const [layout, setLayout] = useState(readLayout);
+  const [sort,   setSort]   = useState("date");
 
   function switchLayout(next) {
     setLayout(next);
-    try { localStorage.setItem("cv:layout", next); } catch {}
+    saveLayout(next);
   }
 
   const artistVideos  = videos.filter(v => (v.channel_name || "Unknown") === artist);
@@ -38,6 +33,11 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
         )}
         {artistIgnored.length > 0 && (
           <span className="artist-badge" style={{ background: "#b71c1c33", color: "#ef9a9a" }}>✕ {artistIgnored.length} skipped</span>
+        )}
+        {artistVideos.length > 1 && (
+          <select className="sort-select" value={sort} onChange={e => setSort(e.target.value)}>
+            {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
         )}
         {artistVideos.length > 0 && (
           <div className="layout-toggle">
@@ -61,8 +61,17 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
 
       {artistVideos.length > 0 && (
         <div className={layout === "list" ? "video-list" : "video-grid"}>
-          {artistVideos.map(v => (
-            <VideoCard key={v.video_id} video={v} onDelete={onDelete} onEdit={onEdit} onFetchMeta={onFetchMeta} layout={layout} />
+          {sortVideos(artistVideos, sort).map(v => (
+            <VideoCard
+              key={v.video_id}
+              video={v}
+              onDelete={onDelete}
+              onEdit={onEdit}
+              onFetchMeta={onFetchMeta}
+              playlists={playlists}
+              onAddToPlaylist={onAddToPlaylist}
+              layout={layout}
+            />
           ))}
         </div>
       )}
