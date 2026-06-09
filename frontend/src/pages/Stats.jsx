@@ -1,4 +1,4 @@
-import { useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 
@@ -30,13 +30,19 @@ function RecordCard({ video, label, statText, delay }) {
 
 export default function Stats({ videos }) {
   const navigate = useNavigate();
+  const { name } = useParams();
+  const artist   = name != null ? decodeURIComponent(name) : null;
 
-  const withSize   = videos.filter(v => v.file_size_bytes != null);
+  const scopeVideos = artist
+    ? videos.filter(v => (v.channel_name || "Unknown") === artist)
+    : videos;
+
+  const withSize   = scopeVideos.filter(v => v.file_size_bytes != null);
   const totalBytes = withSize.reduce((sum, v) => sum + v.file_size_bytes, 0);
-  const totalSecs  = videos.reduce((sum, v) => sum + (v.duration_secs || 0), 0);
+  const totalSecs  = scopeVideos.reduce((sum, v) => sum + (v.duration_secs || 0), 0);
 
   const channelCounts = {};
-  for (const v of videos) {
+  for (const v of scopeVideos) {
     const ch = v.channel_name || "Unknown";
     channelCounts[ch] = (channelCounts[ch] || 0) + 1;
   }
@@ -44,38 +50,45 @@ export default function Stats({ videos }) {
   const maxCount = channels.length > 0 ? channels[0][1] : 1;
   const TOP = 15;
 
-  const longest = videos
+  const longest = scopeVideos
     .filter(v => v.duration_secs != null)
     .reduce((best, v) => (best == null || v.duration_secs > best.duration_secs ? v : best), null);
 
-  const mostViewed = videos
+  const mostViewed = scopeVideos
     .filter(v => v.view_count != null)
     .reduce((best, v) => (best == null || v.view_count > best.view_count ? v : best), null);
 
-  const totalWatches = videos.reduce((sum, v) => sum + (v.watch_count || 0), 0);
+  const totalWatches = scopeVideos.reduce((sum, v) => sum + (v.watch_count || 0), 0);
 
-  const mostWatched = videos
+  const mostWatched = scopeVideos
     .filter(v => v.watch_count > 0)
     .reduce((best, v) => (best == null || v.watch_count > best.watch_count ? v : best), null);
 
   const heroStats = [
-    { num: fmt(videos.length),                                   label: "videos vaulted" },
-    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < videos.length ? `on disk · ${withSize.length}/${videos.length} known` : "on disk" },
+    { num: fmt(scopeVideos.length),                              label: "videos vaulted" },
+    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < scopeVideos.length ? `on disk · ${withSize.length}/${scopeVideos.length} known` : "on disk" },
     { num: fmtHours(totalSecs),                                  label: "of footage" },
-    { num: fmt(channels.length),                                 label: "channels" },
+    ...(artist ? [] : [{ num: fmt(channels.length),              label: "channels" }]),
     { num: fmt(totalWatches),                                    label: "total watches" },
   ];
+
+  const title    = artist ? `${artist} · Stats` : "Stats";
+  const backTo   = artist ? `/artist/${encodeURIComponent(artist)}` : "/";
 
   return (
     <div className="stats-page">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate("/")}>← Back</button>
-        <h2 className="artist-page-title">Stats</h2>
-        <a href={exportCsvUrl()} download className="btn-secondary btn-export">Export CSV</a>
-        <a href={exportJsonUrl()} download className="btn-secondary btn-export">Export JSON</a>
+        <button className="btn-secondary btn-back" onClick={() => navigate(backTo)}>← Back</button>
+        <h2 className="artist-page-title">{title}</h2>
+        {!artist && (
+          <>
+            <a href={exportCsvUrl()} download className="btn-secondary btn-export">Export CSV</a>
+            <a href={exportJsonUrl()} download className="btn-secondary btn-export">Export JSON</a>
+          </>
+        )}
       </div>
 
-      {videos.length === 0 ? (
+      {scopeVideos.length === 0 ? (
         <div className="card"><div className="empty">No data yet.</div></div>
       ) : (
         <>
@@ -111,30 +124,32 @@ export default function Stats({ videos }) {
             </div>
           )}
 
-          <div className="card stats-channels">
-            <div className="card-title">Videos per channel</div>
-            <div className="channel-bars">
-              {channels.slice(0, TOP).map(([name, count], i) => (
-                <Link
-                  key={name}
-                  to={`/artist/${encodeURIComponent(name)}`}
-                  className="channel-bar-row"
-                  style={{ "--d": `${500 + i * 50}ms`, animationDelay: `var(--d)` }}
-                >
-                  <span className="channel-bar-name">{name}</span>
-                  <span className="channel-bar-track">
-                    <span className="channel-bar-fill" style={{ width: `${(count / maxCount) * 100}%` }} />
-                  </span>
-                  <span className="channel-bar-count">{count}</span>
-                </Link>
-              ))}
-            </div>
-            {channels.length > TOP && (
-              <div className="channel-bars-more">
-                + {channels.length - TOP} more channel{channels.length - TOP !== 1 ? "s" : ""} · {channels.slice(TOP).reduce((s, [, c]) => s + c, 0)} videos
+          {!artist && (
+            <div className="card stats-channels">
+              <div className="card-title">Videos per channel</div>
+              <div className="channel-bars">
+                {channels.slice(0, TOP).map(([name, count], i) => (
+                  <Link
+                    key={name}
+                    to={`/artist/${encodeURIComponent(name)}`}
+                    className="channel-bar-row"
+                    style={{ "--d": `${500 + i * 50}ms`, animationDelay: `var(--d)` }}
+                  >
+                    <span className="channel-bar-name">{name}</span>
+                    <span className="channel-bar-track">
+                      <span className="channel-bar-fill" style={{ width: `${(count / maxCount) * 100}%` }} />
+                    </span>
+                    <span className="channel-bar-count">{count}</span>
+                  </Link>
+                ))}
               </div>
-            )}
-          </div>
+              {channels.length > TOP && (
+                <div className="channel-bars-more">
+                  + {channels.length - TOP} more channel{channels.length - TOP !== 1 ? "s" : ""} · {channels.slice(TOP).reduce((s, [, c]) => s + c, 0)} videos
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { readLayout, saveLayout } from "../lib/layout";
 import { SORT_OPTIONS, sortVideos } from "../lib/sort";
 import VideoCard from "../components/VideoCard";
@@ -33,6 +33,9 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
         )}
         {artistIgnored.length > 0 && (
           <span className="artist-badge" style={{ background: "#b71c1c33", color: "#ef9a9a" }}>✕ {artistIgnored.length} skipped</span>
+        )}
+        {artistVideos.length > 0 && (
+          <Link to={`/artist/${encodeURIComponent(artist)}/stats`} className="btn-secondary btn-export">Stats</Link>
         )}
         {artistVideos.length > 1 && (
           <select className="sort-select" value={sort} onChange={e => setSort(e.target.value)}>
