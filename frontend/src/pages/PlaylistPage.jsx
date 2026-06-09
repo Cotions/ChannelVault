@@ -2,10 +2,12 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getPlaylist, removeFromPlaylist } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
-import { SORT_OPTIONS, sortVideos } from "../lib/sort";
+import { sortVideos, videoMatches } from "../lib/sort";
+import SortControls from "../components/SortControls";
+import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 
-export default function PlaylistPage({ onDelete, onEdit, onFetchMeta }) {
+export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [playlist, setPlaylist] = useState(null);
@@ -13,6 +15,8 @@ export default function PlaylistPage({ onDelete, onEdit, onFetchMeta }) {
   const [error,    setError]    = useState(null);
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useState("date");
+  const [dir,    setDir]    = useState("desc");
+  const [page,   setPage]   = useState(1);
 
   const load = useCallback(async () => {
     try {
@@ -26,6 +30,10 @@ export default function PlaylistPage({ onDelete, onEdit, onFetchMeta }) {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  const q = (query || "").trim();
+  // Reset to page 1 when playlist, search, or ordering changes.
+  useEffect(() => { setPage(1); }, [id, q, sort, dir]);
 
   function switchLayout(next) {
     setLayout(next);
@@ -54,7 +62,10 @@ export default function PlaylistPage({ onDelete, onEdit, onFetchMeta }) {
     );
   }
 
-  const sorted = sortVideos(videos, sort);
+  const sorted = sortVideos(q ? videos.filter(v => videoMatches(v, q)) : videos, sort, dir);
+  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pageVideos = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   return (
     <div className="card">
@@ -65,9 +76,7 @@ export default function PlaylistPage({ onDelete, onEdit, onFetchMeta }) {
           <span className="artist-badge">{videos.length} video{videos.length !== 1 ? "s" : ""}</span>
         )}
         {videos.length > 1 && (
-          <select className="sort-select" value={sort} onChange={e => setSort(e.target.value)}>
-            {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+          <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />
         )}
         {videos.length > 0 && (
           <div className="layout-toggle">
@@ -79,19 +88,24 @@ export default function PlaylistPage({ onDelete, onEdit, onFetchMeta }) {
 
       {videos.length === 0 ? (
         <div className="empty">Playlist is empty. Add videos with the + button on any video card.</div>
+      ) : sorted.length === 0 ? (
+        <div className="empty">No videos match "{q}".</div>
       ) : (
-        <div className={layout === "list" ? "video-list" : "video-grid"}>
-          {sorted.map(v => (
-            <VideoCard
-              key={v.video_id}
-              video={v}
-              onEdit={onEdit}
-              onFetchMeta={handleFetchMeta}
-              onRemoveFromList={handleRemove}
-              layout={layout}
-            />
-          ))}
-        </div>
+        <>
+          <div className={layout === "list" ? "video-list" : "video-grid"}>
+            {pageVideos.map(v => (
+              <VideoCard
+                key={v.video_id}
+                video={v}
+                onEdit={onEdit}
+                onFetchMeta={handleFetchMeta}
+                onRemoveFromList={handleRemove}
+                layout={layout}
+              />
+            ))}
+          </div>
+          <Pagination page={safePage} count={pageCount} onPage={setPage} />
+        </>
       )}
     </div>
   );

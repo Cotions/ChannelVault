@@ -1,22 +1,35 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { readLayout, saveLayout } from "../lib/layout";
-import { SORT_OPTIONS, sortVideos } from "../lib/sort";
+import { sortVideos, videoMatches } from "../lib/sort";
+import SortControls from "../components/SortControls";
+import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 
-export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist }) {
+export default function ArtistPage({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useState("date");
+  const [dir,    setDir]    = useState("desc");
+  const [page,   setPage]   = useState(1);
 
   function switchLayout(next) {
     setLayout(next);
     saveLayout(next);
   }
 
-  const artistVideos  = videos.filter(v => (v.channel_name || "Unknown") === artist);
+  const q = (query || "").trim();
+  const artistVideos  = sortVideos(
+    videos.filter(v => (v.channel_name || "Unknown") === artist && videoMatches(v, q)),
+    sort, dir
+  );
+
+  const pageCount = Math.max(1, Math.ceil(artistVideos.length / PAGE_SIZE));
+  useEffect(() => { setPage(1); }, [artist, q, sort, dir]);
+  const safePage = Math.min(page, pageCount);
+  const pageVideos = artistVideos.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const artistWanted  = wanted.filter(v => (v.channel_name || "Unknown") === artist);
   const artistIgnored = ignored.filter(v => (v.channel_name || "Unknown") === artist);
 
@@ -38,9 +51,7 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
           <Link to={`/artist/${encodeURIComponent(artist)}/stats`} className="btn-secondary btn-export">Stats</Link>
         )}
         {artistVideos.length > 1 && (
-          <select className="sort-select" value={sort} onChange={e => setSort(e.target.value)}>
-            {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
+          <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />
         )}
         {artistVideos.length > 0 && (
           <div className="layout-toggle">
@@ -63,20 +74,23 @@ export default function ArtistPage({ videos, wanted, ignored, onDelete, onRemove
       </div>
 
       {artistVideos.length > 0 && (
-        <div className={layout === "list" ? "video-list" : "video-grid"}>
-          {sortVideos(artistVideos, sort).map(v => (
-            <VideoCard
-              key={v.video_id}
-              video={v}
-              onDelete={onDelete}
-              onEdit={onEdit}
-              onFetchMeta={onFetchMeta}
-              playlists={playlists}
-              onAddToPlaylist={onAddToPlaylist}
-              layout={layout}
-            />
-          ))}
-        </div>
+        <>
+          <div className={layout === "list" ? "video-list" : "video-grid"}>
+            {pageVideos.map(v => (
+              <VideoCard
+                key={v.video_id}
+                video={v}
+                onDelete={onDelete}
+                onEdit={onEdit}
+                onFetchMeta={onFetchMeta}
+                playlists={playlists}
+                onAddToPlaylist={onAddToPlaylist}
+                layout={layout}
+              />
+            ))}
+          </div>
+          <Pagination page={safePage} count={pageCount} onPage={setPage} />
+        </>
       )}
 
       {artistWanted.length > 0 && (

@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
-import { Routes, Route, Link } from "react-router-dom";
+import { Routes, Route, NavLink } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist } from "./lib/api";
-import WatchFolder    from "./components/WatchFolder";
-import AddVideoModal  from "./components/AddVideoModal";
-import Overview       from "./pages/Overview";
-import ArtistPage     from "./pages/ArtistPage";
-import PlaylistPage   from "./pages/PlaylistPage";
-import VideoPage      from "./pages/VideoPage";
-import Stats          from "./pages/Stats";
+import SettingsModal   from "./components/SettingsModal";
+import AddVideoModal   from "./components/AddVideoModal";
+import Overview        from "./pages/Overview";
+import ArtistPage      from "./pages/ArtistPage";
+import ArtistsPage     from "./pages/ArtistsPage";
+import PlaylistPage    from "./pages/PlaylistPage";
+import PlaylistsPage   from "./pages/PlaylistsPage";
+import DataQualityPage from "./pages/DataQualityPage";
+import VideoPage       from "./pages/VideoPage";
+import Stats           from "./pages/Stats";
 
 export default function App() {
   const [online,  setOnline]  = useState(false);
@@ -15,6 +18,7 @@ export default function App() {
   const [showWatchFolder, setShowWatchFolder] = useState(false);
   const [showAddVideo,    setShowAddVideo]    = useState(false);
   const [editVideo,       setEditVideo]       = useState(null);
+  const [query,   setQuery]   = useState("");
   const [videos,  setVideos]  = useState([]);
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
@@ -80,24 +84,33 @@ export default function App() {
   return (
     <>
       <header>
-        <div className={`status-dot ${online ? "online" : ""}`} />
+        <div
+          className={`status-dot ${online ? "online" : ""}`}
+          title={online ? "Backend connected" : "Backend offline"}
+        />
         <h1>ChannelVault</h1>
-        <span className="status-label">{online ? "Backend connected" : "Backend offline"}</span>
-        <Link to="/stats" className="btn-ghost btn-ghost-add" title="Library stats">
-          Stats
-        </Link>
-        <button className="btn-ghost" onClick={() => setShowAddVideo(true)} title="Add video manually">
-          + Add Video
-        </button>
-        <button
-          className="btn-ghost"
-          onClick={() => setShowWatchFolder(v => !v)}
-          title="Toggle watch folder settings"
-        >
-          {showWatchFolder ? "▲ Settings" : "▼ Settings"}
-        </button>
+        <div className="header-search-wrap">
+          <input
+            type="text"
+            className="header-search"
+            placeholder="Search title, channel, description…"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+          />
+          {query && (
+            <button className="btn-ghost" onClick={() => setQuery("")} title="Clear search">✕</button>
+          )}
+        </div>
       </header>
 
+      {showWatchFolder && (
+        <SettingsModal
+          onClose={() => setShowWatchFolder(false)}
+          initialDir={cfg.watch_directory}
+          initialDataDir={cfg.data_directory}
+          onScanDone={load}
+        />
+      )}
       {showAddVideo && (
         <AddVideoModal onClose={() => setShowAddVideo(false)} onAdded={load} />
       )}
@@ -105,44 +118,60 @@ export default function App() {
         <AddVideoModal onClose={() => setEditVideo(null)} onAdded={load} initialVideo={editVideo} />
       )}
 
-      <main>
-        {showWatchFolder && (
-          <WatchFolder initialDir={cfg.watch_directory} initialDataDir={cfg.data_directory} onScanDone={load} />
-        )}
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <Overview
-                videos={videos}
-                wanted={wanted}
-                ignored={ignored}
-                playlists={playlists}
-                onCreatePlaylist={handleCreatePlaylist}
-                onDeletePlaylist={handleDeletePlaylist}
-                onAddToPlaylist={handleAddToPlaylist}
-                onDelete={handleDelete}
-                onEdit={setEditVideo}
-                onFetchMeta={handleFetchMeta}
-              />
-            }
-          />
-          <Route path="/stats" element={<Stats videos={videos} />} />
-          <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
-          <Route
-            path="/artist/:name"
-            element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
-          />
-          <Route
-            path="/video/:id"
-            element={<VideoPage videos={videos} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} onWatched={handleWatched} />}
-          />
-          <Route
-            path="/playlist/:id"
-            element={<PlaylistPage onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
-          />
-        </Routes>
-      </main>
+      <div className="app-body">
+        <nav className="sidebar">
+          <NavLink to="/" end className="side-link">🏠 Home</NavLink>
+          <NavLink to="/playlists" className="side-link">🎵 Playlists</NavLink>
+          <NavLink to="/artists" className="side-link">👤 Artists</NavLink>
+          <NavLink to="/data-quality" className="side-link">🩺 Data Quality</NavLink>
+          <NavLink to="/stats" className="side-link">📊 Stats</NavLink>
+          <div className="side-sep" />
+          <button className="side-link" onClick={() => setShowAddVideo(true)}>➕ Add Video</button>
+          <button className="side-link" onClick={() => setShowWatchFolder(true)}>⚙ Settings</button>
+        </nav>
+
+        <main>
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <Overview
+                  videos={videos}
+                  playlists={playlists}
+                  query={query}
+                  onAddToPlaylist={handleAddToPlaylist}
+                  onDelete={handleDelete}
+                  onEdit={setEditVideo}
+                  onFetchMeta={handleFetchMeta}
+                />
+              }
+            />
+            <Route
+              path="/playlists"
+              element={<PlaylistsPage playlists={playlists} query={query} onCreatePlaylist={handleCreatePlaylist} onDeletePlaylist={handleDeletePlaylist} />}
+            />
+            <Route
+              path="/artists"
+              element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} />}
+            />
+            <Route path="/data-quality" element={<DataQualityPage />} />
+            <Route path="/stats" element={<Stats videos={videos} wanted={wanted} ignored={ignored} />} />
+            <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
+            <Route
+              path="/artist/:name"
+              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+            />
+            <Route
+              path="/video/:id"
+              element={<VideoPage videos={videos} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} onWatched={handleWatched} />}
+            />
+            <Route
+              path="/playlist/:id"
+              element={<PlaylistPage query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
+            />
+          </Routes>
+        </main>
+      </div>
     </>
   );
 }

@@ -28,7 +28,7 @@ function RecordCard({ video, label, statText, delay }) {
   );
 }
 
-export default function Stats({ videos }) {
+export default function Stats({ videos, wanted = [], ignored = [] }) {
   const navigate = useNavigate();
   const { name } = useParams();
   const artist   = name != null ? decodeURIComponent(name) : null;
@@ -65,11 +65,16 @@ export default function Stats({ videos }) {
     .reduce((best, v) => (best == null || v.watch_count > best.watch_count ? v : best), null);
 
   const heroStats = [
+    // Row 1: count, breadth, coverage, queue
     { num: fmt(scopeVideos.length),                              label: "videos vaulted" },
+    ...(artist ? [] : [{ num: fmt(channels.length),              label: "channels" }]),
+    { num: fmt(scopeVideos.filter(v => v.view_count != null).length), label: "with stats" },
+    ...(artist ? [] : [{ num: fmt(wanted.length),                label: "wanted", color: "#90caf9" }]),
+    // Row 2: engagement, data, time, state (ignored last)
+    { num: fmt(totalWatches),                                    label: "total watches" },
     { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < scopeVideos.length ? `on disk · ${withSize.length}/${scopeVideos.length} known` : "on disk" },
     { num: fmtHours(totalSecs),                                  label: "of footage" },
-    ...(artist ? [] : [{ num: fmt(channels.length),              label: "channels" }]),
-    { num: fmt(totalWatches),                                    label: "total watches" },
+    ...(artist ? [] : [{ num: fmt(ignored.length),               label: "ignored", color: "#ef9a9a" }]),
   ];
 
   const title    = artist ? `${artist} · Stats` : "Stats";
@@ -95,7 +100,7 @@ export default function Stats({ videos }) {
           <div className="stats-hero">
             {heroStats.map((s, i) => (
               <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${i * 90}ms` }}>
-                <span className="stats-hero-num">{s.num}</span>
+                <span className="stats-hero-num" style={s.color ? { color: s.color } : undefined}>{s.num}</span>
                 <span className="stats-hero-label">{s.label}</span>
               </div>
             ))}

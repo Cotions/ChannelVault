@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { saveConfig, saveDataDir, browse, browseData, scan } from "../lib/api";
 
-export default function WatchFolder({ initialDir, initialDataDir, onScanDone }) {
+export default function WatchFolder({ initialDir, initialDataDir, onScanDone, embedded = false }) {
   const [dir,     setDir]     = useState(initialDir     || "");
   const [dataDir, setDataDir] = useState(initialDataDir || "");
 
@@ -95,7 +95,7 @@ export default function WatchFolder({ initialDir, initialDataDir, onScanDone }) 
   }
 
   return (
-    <div className="card">
+    <div className={embedded ? "watch-folder-body" : "card"}>
       <div className="card-title">Watch Folder</div>
       <div className="folder-row">
         <input
