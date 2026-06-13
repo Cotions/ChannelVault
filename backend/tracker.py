@@ -1156,6 +1156,42 @@ def _download_bytes(url):
         return r.read()
 
 
+def _to_webp(raw):
+    """Re-encode arbitrary image bytes to webp; None if Pillow can't decode."""
+    try:
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(raw))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, "WEBP", quality=80, method=6)
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def _fetch_youtube_thumb(video_id, fallback_url=None):
+    """Return (bytes, ext). Prefers YouTube's native webp (matches Open Video
+    Downloader byte-for-byte); falls back to the resolved url re-encoded to webp."""
+    for variant in ("maxresdefault", "sddefault", "hqdefault"):
+        try:
+            return _download_bytes(f"https://i.ytimg.com/vi_webp/{video_id}/{variant}.webp"), ".webp"
+        except Exception:
+            continue
+    if fallback_url and fallback_url not in ("", "NA"):
+        raw = _download_bytes(fallback_url)          # may raise → caller handles
+        conv = _to_webp(raw)
+        if conv is not None:
+            return conv, ".webp"
+        ext = ".jpg"
+        m = re.search(r"\.(jpg|jpeg|png|webp)(\?|$)", fallback_url, re.I)
+        if m:
+            ext = "." + m.group(1).lower()
+        return raw, ext
+    raise ValueError("no thumbnail available")
+
+
 # Perceptual dedup: byte hashing misses the same image saved in a different
 # format/resolution (e.g. original .webp vs fetched maxres .jpg). A dHash
 # compares the actual pixels so visually-identical thumbnails are caught.
@@ -1205,10 +1241,8 @@ def fetch_thumbnail(video_id):
         return jsonify({"ok": False, "error": "yt-dlp failed"}), 502
 
     thumb_url = (res.stdout or "").strip().splitlines()[0] if res.stdout.strip() else ""
-    if not thumb_url or thumb_url == "NA":
-        return jsonify({"ok": False, "error": "no thumbnail url"}), 502
     try:
-        data = _download_bytes(thumb_url)
+        data, ext = _fetch_youtube_thumb(video_id, thumb_url)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 502
 
@@ -1240,10 +1274,6 @@ def fetch_thumbnail(video_id):
     if _phash_matches(_dhash(bytes(data)), existing_paths):
         return jsonify({"ok": True, "added": False, "reason": "duplicate-visual", "hash": digest})
 
-    ext = ".jpg"
-    m = re.search(r"\.(jpg|jpeg|png|webp)(\?|$)", thumb_url, re.I)
-    if m:
-        ext = "." + m.group(1).lower()
     os.makedirs(vdir, exist_ok=True)
     with open(os.path.join(vdir, digest + ext), "wb") as fh:
         fh.write(data)
