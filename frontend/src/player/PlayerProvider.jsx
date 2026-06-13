@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect, useCallback } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { streamUrl, thumbUrl, postWatchProgress, watchBeacon } from "../lib/api";
 import { PlayerCtx } from "./playerContext";
@@ -14,32 +13,25 @@ export default function PlayerProvider({ onCompleted, children }) {
   const [poster,      setPoster]      = useState(null);
   const [error,       setError]       = useState(false);
   const [completedId, setCompletedId] = useState(null);
-  const [dockEl,      setDockEl]      = useState(null);
-  const [miniBodyEl,  setMiniBodyEl]  = useState(null);
 
   const videoRef = useRef(null);
+  const shellRef = useRef(null);
+  const dockRef  = useRef(null);   // the placeholder slot on the video page
   const watchRef = useRef(fresh());
 
-  // Stable refs so the context callbacks never change identity (keeps VideoPage effects simple).
+  // Stable mirrors so the rAF loop / context callbacks read latest without re-subscribing.
   const activeIdRef    = useRef(null);
+  const modeRef        = useRef("inline");
   const onCompletedRef = useRef(onCompleted);
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { onCompletedRef.current = onCompleted; }, [onCompleted]);
-
-  // A detached <div> React always portals into. We move THIS node between the page
-  // dock and the mini frame with appendChild — React never reparents the <video>,
-  // so playback is never reloaded.
-  const hostRef = useRef(null);
-  if (hostRef.current === null && typeof document !== "undefined") {
-    hostRef.current = document.createElement("div");
-    hostRef.current.className = "cv-player-host";
-  }
 
   const reportProgress = useCallback(async () => {
     const w = watchRef.current;
     const vid = activeIdRef.current;
     if (!vid || w.watched < 1) return;
-    if (w.posting && w.sessionId == null) return; // avoid creating a 2nd session in-flight (StrictMode)
+    if (w.posting && w.sessionId == null) return; // avoid a 2nd session in-flight (StrictMode)
     const el = videoRef.current;
     w.posting = true;
     try {
@@ -68,10 +60,8 @@ export default function PlayerProvider({ onCompleted, children }) {
   }, [reportProgress]);
 
   const openInline = useCallback((id, meta = {}) => {
-    if (activeIdRef.current && activeIdRef.current !== id) {
-      reportProgress();                 // flush the previous video's session
-      watchRef.current = fresh();
-    } else if (activeIdRef.current !== id) {
+    if (activeIdRef.current !== id) {
+      if (activeIdRef.current) reportProgress(); // flush previous video
       watchRef.current = fresh();
     }
     setActiveId(id);
@@ -86,16 +76,36 @@ export default function PlayerProvider({ onCompleted, children }) {
     else stop();                                         // paused/ended → close
   }, [stop]);
 
-  const setDock   = useCallback((el) => setDockEl(el), []);
+  const setDock      = useCallback((el) => { dockRef.current = el; }, []);
   const setPosterUrl = useCallback((url) => setPoster(url || null), []);
 
-  // Move the persistent host into whichever container is active.
+  // Clear inline positioning when leaving inline so the .cv-shell-mini CSS takes over.
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host || !activeId) return;
-    const target = mode === "inline" ? dockEl : miniBodyEl;
-    if (target && host.parentNode !== target) target.appendChild(host);
-  }, [activeId, mode, dockEl, miniBodyEl]);
+    if (mode !== "inline" && shellRef.current) {
+      const s = shellRef.current.style;
+      s.left = s.top = s.width = s.height = "";
+    }
+  }, [mode]);
+
+  // Keep the never-unmounted shell overlaying the page dock while inline.
+  // The <video> stays in the shell the whole time, so it never pauses on navigation.
+  useEffect(() => {
+    let raf;
+    const place = () => {
+      const shell = shellRef.current;
+      const dock  = dockRef.current;
+      if (shell && activeIdRef.current && modeRef.current === "inline" && dock) {
+        const r = dock.getBoundingClientRect();
+        shell.style.left   = `${r.left}px`;
+        shell.style.top    = `${r.top}px`;
+        shell.style.width  = `${r.width}px`;
+        shell.style.height = `${r.height}px`;
+      }
+      raf = requestAnimationFrame(place);
+    };
+    raf = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // Best-effort flush if the tab/window closes (fetch wouldn't finish).
   useEffect(() => {
@@ -126,7 +136,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     if (w.watched - w.reported >= 15) reportProgress();
   }
   function handleSeeked(e) { watchRef.current.lastTime = e.target.currentTime; }
-  function handleError() { if (mode === "mini") stop(); else setError(true); }
+  function handleError() { if (modeRef.current === "mini") stop(); else setError(true); }
 
   const ctx = {
     activeId, mode, error, completedId,
@@ -137,33 +147,31 @@ export default function PlayerProvider({ onCompleted, children }) {
     <PlayerCtx.Provider value={ctx}>
       {children}
 
-      {activeId && mode === "mini" && (
-        <div className="cv-mini">
-          <div className="cv-mini-bar">
-            <button className="cv-mini-btn" title="Expand" onClick={() => navigate(`/video/${activeId}`)}>⤢</button>
-            <span className="cv-mini-title">{title}</span>
-            <button className="cv-mini-btn" title="Close" onClick={stop}>✕</button>
-          </div>
-          <div className="cv-mini-body" ref={setMiniBodyEl} />
+      {activeId && (
+        <div ref={shellRef} className={`cv-shell cv-shell-${mode}`}>
+          {mode === "mini" && (
+            <div className="cv-mini-bar" key="bar">
+              <button className="cv-mini-btn" title="Expand" onClick={() => navigate(`/video/${activeId}`)}>⤢</button>
+              <span className="cv-mini-title">{title}</span>
+              <button className="cv-mini-btn" title="Close" onClick={stop}>✕</button>
+            </div>
+          )}
+          <video
+            key="cv-video"
+            ref={videoRef}
+            className="cv-video"
+            controls
+            preload="metadata"
+            poster={poster || thumbUrl(activeId)}
+            src={streamUrl(activeId)}
+            onError={handleError}
+            onPlay={() => setError(false)}
+            onTimeUpdate={handleTimeUpdate}
+            onSeeked={handleSeeked}
+            onPause={reportProgress}
+            onEnded={reportProgress}
+          />
         </div>
-      )}
-
-      {activeId && hostRef.current && createPortal(
-        <video
-          ref={videoRef}
-          className="cv-video"
-          controls
-          preload="metadata"
-          poster={poster || thumbUrl(activeId)}
-          src={streamUrl(activeId)}
-          onError={handleError}
-          onPlay={() => setError(false)}
-          onTimeUpdate={handleTimeUpdate}
-          onSeeked={handleSeeked}
-          onPause={reportProgress}
-          onEnded={reportProgress}
-        />,
-        hostRef.current,
       )}
     </PlayerCtx.Provider>
   );

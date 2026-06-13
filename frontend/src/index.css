@@ -793,34 +793,32 @@ button:disabled { opacity: 0.4; cursor: default; }
   transition: background 0.15s, box-shadow 0.15s;
 }
 .btn-yt:hover { background: #cc0000; box-shadow: 0 8px 20px -10px rgba(255, 0, 0, 0.7); }
-.vp-player-wrap { position: relative; }
+/* Wrap sits above the inline shell (z1) so the cycle button stays clickable;
+   the dock is a transparent placeholder the shell overlays. */
+.vp-player-wrap { position: relative; z-index: 2; }
 .vp-player-dock {
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: #000;
+  background: transparent;
   border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 30px 70px -40px rgba(0, 0, 0, 0.9);
 }
-/* The persistent host node + its <video>; fills whatever container it's moved into. */
-.cv-player-host { width: 100%; height: 100%; }
-.cv-video { width: 100%; height: 100%; display: block; background: #000; }
 
-/* Floating miniplayer (bottom-right) */
-.cv-mini {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  width: 360px;
-  max-width: calc(100vw - 32px);
-  z-index: 60;
-  background: #000;
+/* Persistent player shell — never unmounts (so the <video> never pauses on nav).
+   Repositioned over the dock while inline; fixed bottom-right while mini. */
+.cv-shell { position: fixed; background: #000; border-radius: 12px; overflow: hidden; }
+.cv-shell-inline { z-index: 1; box-shadow: 0 30px 70px -40px rgba(0, 0, 0, 0.9); }
+.cv-shell-mini {
+  left: auto; top: auto;
+  right: 16px; bottom: 16px;
+  width: 360px; max-width: calc(100vw - 32px); height: auto;
+  z-index: 61;
   border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
   box-shadow: 0 24px 60px -18px rgba(0, 0, 0, 0.85);
   animation: statRise 0.25s cubic-bezier(0.2, 0.7, 0.3, 1) both;
 }
+.cv-video { display: block; width: 100%; height: 100%; background: #000; }
+.cv-shell-mini .cv-video { height: auto; aspect-ratio: 16 / 9; }
+
 .cv-mini-bar {
   display: flex;
   align-items: center;
@@ -852,7 +850,6 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: 14px;
 }
 .cv-mini-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
-.cv-mini-body { width: 100%; aspect-ratio: 16 / 9; background: #000; }
 .vp-thumb-cycle {
   position: absolute;
   top: 12px;
