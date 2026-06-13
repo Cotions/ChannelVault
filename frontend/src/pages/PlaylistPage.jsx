@@ -14,7 +14,7 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   const [videos,   setVideos]   = useState([]);
   const [error,    setError]    = useState(null);
   const [layout, setLayout] = useState(readLayout);
-  const [sort,   setSort]   = useState("date");
+  const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");
   const [page,   setPage]   = useState(1);
 

@@ -13,7 +13,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
   const [layout, setLayout] = useState(readLayout);
-  const [sort,   setSort]   = useState("date");
+  const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");
   const [page,   setPage]   = useState(1);
   const [creator, setCreator] = useState(null);
