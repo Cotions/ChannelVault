@@ -50,7 +50,7 @@ export function exportCsvUrl()     { return `${BASE}/export/csv`; }
 export function exportJsonUrl()    { return `${BASE}/export/json`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
 export function getThumbnails(id)    { return get(`/thumbnails/${id}`); }
-export function fetchThumbnail(id)   { return post(`/fetch-thumbnail/${id}`, {}); }
+export function fetchThumbnail(id, force = false) { return post(`/fetch-thumbnail/${id}`, force ? { force: true } : {}); }
 export function thumbnailVersionUrl(id, file) { return `${BASE}/thumbnail-version/${id}/${file}`; }
 export function getCreators()      { return get("/creators"); }
 export async function getCreator(name) {

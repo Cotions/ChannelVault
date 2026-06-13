@@ -1195,7 +1195,9 @@ def _fetch_youtube_thumb(video_id, fallback_url=None):
 # Perceptual dedup: byte hashing misses the same image saved in a different
 # format/resolution (e.g. original .webp vs fetched maxres .jpg). A dHash
 # compares the actual pixels so visually-identical thumbnails are caught.
-_PHASH_THRESHOLD = 6  # max Hamming distance still considered "same image"
+# dHash is coarse (8x8), so use two bands:
+_PHASH_STRONG    = 2  # <= this: definitely the same image → silent dedup
+_PHASH_THRESHOLD = 6  # STRONG < d <= this: ambiguous → ask the user (modal)
 
 
 def _dhash(img_source):
@@ -1216,18 +1218,23 @@ def _dhash(img_source):
         return None
 
 
-def _phash_matches(new_hash, paths):
+def _phash_min_distance(new_hash, paths):
+    """Smallest Hamming distance from new_hash to any existing image; None if uncomparable."""
     if new_hash is None:
-        return False
+        return None
+    best = None
     for p in paths:
         h = _dhash(p)
-        if h is not None and bin(new_hash ^ h).count("1") <= _PHASH_THRESHOLD:
-            return True
-    return False
+        if h is not None:
+            d = bin(new_hash ^ h).count("1")
+            best = d if best is None else min(best, d)
+    return best
 
 
 @app.post("/fetch-thumbnail/<video_id>")
 def fetch_thumbnail(video_id):
+    body  = request.get_json(silent=True) or {}
+    force = bool(body.get("force")) or request.args.get("force") in ("1", "true")
     url = f"https://www.youtube.com/watch?v={video_id}"
     res = subprocess.run(
         ["yt-dlp", "--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url],
@@ -1270,9 +1277,20 @@ def fetch_thumbnail(video_id):
     if digest in seen:
         return jsonify({"ok": True, "added": False, "reason": "duplicate", "hash": digest})
 
-    # 2) perceptual match — same image in a different format/resolution.
-    if _phash_matches(_dhash(bytes(data)), existing_paths):
-        return jsonify({"ok": True, "added": False, "reason": "duplicate-visual", "hash": digest})
+    # 2) perceptual bands — same image in a different format/resolution.
+    if not force:
+        dist = _phash_min_distance(_dhash(bytes(data)), existing_paths)
+        if dist is not None and dist <= _PHASH_STRONG:
+            return jsonify({"ok": True, "added": False, "reason": "duplicate-visual", "hash": digest})
+        if dist is not None and dist <= _PHASH_THRESHOLD:
+            # Looks similar but might be a genuinely new thumbnail — let the user decide.
+            import base64
+            mime = "image/webp" if ext == ".webp" else ("image/png" if ext == ".png" else "image/jpeg")
+            preview = "data:%s;base64,%s" % (mime, base64.b64encode(bytes(data)).decode())
+            return jsonify({
+                "ok": True, "added": False, "reason": "maybe-duplicate",
+                "hash": digest, "distance": dist, "preview": preview,
+            })
 
     os.makedirs(vdir, exist_ok=True)
     with open(os.path.join(vdir, digest + ext), "wb") as fh:

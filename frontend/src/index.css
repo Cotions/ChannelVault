@@ -836,6 +836,38 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .vp-below { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
 
+.video-page-spacer { flex: 1; min-width: 0; }
+.vp-title {
+  font-family: var(--display);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  line-height: 1.25;
+  margin-bottom: 2px;
+}
+
+.dup-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.dup-compare figure { display: flex; flex-direction: column; gap: 6px; }
+.dup-compare img {
+  width: 100%;
+  aspect-ratio: 16/9;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #000;
+  border: 1px solid var(--border);
+}
+.dup-compare figcaption {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1.4px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .vp-channel {
   display: inline-flex;
   align-items: center;

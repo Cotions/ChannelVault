@@ -16,6 +16,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
   const [thumbIdx,   setThumbIdx]   = useState(0);
   const [thumbBusy,  setThumbBusy]  = useState(false);
   const [thumbMsg,   setThumbMsg]   = useState(null);
+  const [dupPrompt,  setDupPrompt]  = useState(null);
 
   const loadThumbs = useCallback(async () => {
     try {
@@ -41,7 +42,28 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
       const r = await fetchThumbnail(id);
       if (r.availability) setThumbMsg("Unavailable on YouTube");
       else if (!r.ok)     setThumbMsg("Fetch failed");
+      else if (r.reason === "maybe-duplicate") {
+        setDupPrompt({ preview: r.preview, distance: r.distance, current: thumbs[thumbIdx] || thumbUrl(id) });
+      }
       else if (r.added) {
+        const list = await loadThumbs();
+        setThumbIdx(Math.max(0, list.length - 1));
+        setThumbMsg("New thumbnail saved");
+      } else setThumbMsg("Already have this one");
+    } catch {
+      setThumbMsg("Fetch failed");
+    } finally {
+      setThumbBusy(false);
+      setTimeout(() => setThumbMsg(null), 3000);
+    }
+  }
+
+  async function confirmSaveThumb() {
+    setDupPrompt(null);
+    setThumbBusy(true);
+    try {
+      const r = await fetchThumbnail(id, true);
+      if (r.added) {
         const list = await loadThumbs();
         setThumbIdx(Math.max(0, list.length - 1));
         setThumbMsg("New thumbnail saved");
@@ -158,7 +180,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
     <div className="card">
       <div className="artist-page-header">
         <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
-        <h2 className="artist-page-title video-page-title">{video.title || video.video_id}</h2>
+        <div className="video-page-spacer" />
         <a href={ytUrl} target="_blank" rel="noreferrer" className="btn-yt" title="Open on YouTube">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
             <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.6 15.6V8.4L15.8 12l-6.2 3.6z"/>
@@ -242,6 +264,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
       })()}
 
       <div className="vp-below">
+        <h1 className="vp-title">{video.title || video.video_id}</h1>
         <Link to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel" style={{ animationDelay: "60ms" }}>
           <img
             className="vp-channel-avatar"
@@ -279,6 +302,35 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
           </div>
         )}
       </div>
+
+      {dupPrompt && (
+        <div className="modal-overlay" onClick={() => setDupPrompt(null)}>
+          <div className="modal modal-wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">Looks similar — keep it anyway?</div>
+              <button className="modal-close" onClick={() => setDupPrompt(null)}>✕</button>
+            </div>
+            <div className="field-hint">
+              The fetched thumbnail looks close to one you already have (visual distance {dupPrompt.distance}),
+              but YouTube is serving a different file. Compare and decide.
+            </div>
+            <div className="dup-compare">
+              <figure>
+                <img src={dupPrompt.current} alt="" />
+                <figcaption>Current</figcaption>
+              </figure>
+              <figure>
+                <img src={dupPrompt.preview} alt="" />
+                <figcaption>New from YouTube</figcaption>
+              </figure>
+            </div>
+            <div className="modal-actions">
+              <button className="btn-secondary" onClick={() => setDupPrompt(null)}>Discard</button>
+              <button className="btn-primary" onClick={confirmSaveThumb}>Keep both</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
