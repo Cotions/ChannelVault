@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { streamUrl, thumbUrl, artistThumbUrl, postWatchProgress } from "../lib/api";
+import { streamUrl, thumbUrl, artistThumbUrl, postWatchProgress, getThumbnails, fetchThumbnail, thumbnailVersionUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 
 export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWatched }) {
@@ -12,6 +12,47 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
   const [justWatched, setJustWatched] = useState(false);
+  const [thumbs,     setThumbs]     = useState([]);
+  const [thumbIdx,   setThumbIdx]   = useState(0);
+  const [thumbBusy,  setThumbBusy]  = useState(false);
+  const [thumbMsg,   setThumbMsg]   = useState(null);
+
+  const loadThumbs = useCallback(async () => {
+    try {
+      const r = await getThumbnails(id);
+      const list = (r.thumbnails || []).map(t =>
+        t.kind === "original" ? thumbUrl(id) : thumbnailVersionUrl(id, t.file)
+      );
+      setThumbs(list);
+      return list;
+    } catch { setThumbs([]); return []; }
+  }, [id]);
+
+  useEffect(() => {
+    setThumbIdx(0);
+    setThumbMsg(null);
+    loadThumbs();
+  }, [id, loadThumbs]);
+
+  async function handleFetchThumbnail() {
+    setThumbBusy(true);
+    setThumbMsg(null);
+    try {
+      const r = await fetchThumbnail(id);
+      if (r.availability) setThumbMsg("Unavailable on YouTube");
+      else if (!r.ok)     setThumbMsg("Fetch failed");
+      else if (r.added) {
+        const list = await loadThumbs();
+        setThumbIdx(Math.max(0, list.length - 1));
+        setThumbMsg("New thumbnail saved");
+      } else setThumbMsg("Already have this one");
+    } catch {
+      setThumbMsg("Fetch failed");
+    } finally {
+      setThumbBusy(false);
+      setTimeout(() => setThumbMsg(null), 3000);
+    }
+  }
 
   // --- Watch tracking: accumulate real playtime (seeks don't count) ---
   const watchRef = useRef({ watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0 });
@@ -128,6 +169,10 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
         <button className="btn-secondary btn-export" onClick={handleFetchMeta} disabled={fetching}>
           {fetching ? "Fetching…" : "⟳ Fetch metadata"}
         </button>
+        <button className="btn-secondary btn-export" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
+          {thumbBusy ? "…" : "⬇ Thumbnail"}
+        </button>
+        {thumbMsg && <span className="fetch-timer">{thumbMsg}</span>}
         <button className="btn-secondary btn-export" onClick={() => onEdit(video)}>✎ Edit</button>
         {confirming ? (
           <>
@@ -156,28 +201,45 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
         )}
       </div>
 
-      {playErr ? (
-        <div className="player-fallback">
-          <img src={thumbUrl(video.video_id)} alt="" onError={e => { e.target.style.display = "none"; }} />
-          <div className="empty">
-            Browser can't play this file{video.file_path ? ` (${video.file_path.split(".").pop()})` : ""}.{" "}
-            <a href={ytUrl} target="_blank" rel="noreferrer" style={{ color: "#90caf9" }}>Watch on YouTube</a>
+      {(() => {
+        const poster = thumbs[thumbIdx] || thumbUrl(video.video_id);
+        const cycle  = () => thumbs.length > 1 && setThumbIdx(i => (i + 1) % thumbs.length);
+        return (
+          <div className="vp-player-wrap">
+            {playErr ? (
+              <div className="player-fallback">
+                <img src={poster} alt="" onError={e => { e.target.style.display = "none"; }} />
+                <div className="empty">
+                  Browser can't play this file{video.file_path ? ` (${video.file_path.split(".").pop()})` : ""}.{" "}
+                  <a href={ytUrl} target="_blank" rel="noreferrer" style={{ color: "#90caf9" }}>Watch on YouTube</a>
+                </div>
+              </div>
+            ) : (
+              <video
+                className="video-player"
+                controls
+                preload="metadata"
+                poster={poster}
+                src={streamUrl(video.video_id)}
+                onError={() => setPlayErr(true)}
+                onTimeUpdate={handleTimeUpdate}
+                onSeeked={handleSeeked}
+                onPause={e => reportProgress(e.target)}
+                onEnded={e => reportProgress(e.target)}
+              />
+            )}
+            {thumbs.length > 1 && (
+              <button
+                className="vp-thumb-cycle"
+                onClick={cycle}
+                title="Cycle thumbnail"
+              >
+                ⤿ <span className="vp-thumb-count">{thumbIdx + 1}/{thumbs.length}</span>
+              </button>
+            )}
           </div>
-        </div>
-      ) : (
-        <video
-          className="video-player"
-          controls
-          preload="metadata"
-          poster={thumbUrl(video.video_id)}
-          src={streamUrl(video.video_id)}
-          onError={() => setPlayErr(true)}
-          onTimeUpdate={handleTimeUpdate}
-          onSeeked={handleSeeked}
-          onPause={e => reportProgress(e.target)}
-          onEnded={e => reportProgress(e.target)}
-        />
-      )}
+        );
+      })()}
 
       <div className="vp-below">
         <Link to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel" style={{ animationDelay: "60ms" }}>

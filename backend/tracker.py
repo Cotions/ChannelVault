@@ -6,7 +6,9 @@ import time
 import json
 import shutil
 import sqlite3
+import hashlib
 import subprocess
+import urllib.request
 import threading
 import unicodedata
 from tinytag import TinyTag
@@ -1118,6 +1120,112 @@ def serve_thumb(video_id):
             if os.path.exists(candidate):
                 return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
     return ("", 404)
+
+# ---------------------------------------------------------------------------
+# Thumbnail versions (original stays with the video; fetched ones kept here)
+# ---------------------------------------------------------------------------
+
+def _thumb_versions_dir(video_id):
+    return os.path.join(load_config()["data_directory"], "thumb_versions", video_id)
+
+
+def _original_thumb_path(video_id):
+    """Path of the original thumbnail (artist-folder copy, then file sidecar)."""
+    conn = get_conn()
+    row  = conn.execute(
+        "SELECT channel_name, file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
+    ).fetchone()
+    conn.close()
+    if row and row["channel_name"]:
+        ad = os.path.join(get_artist_thumbs_dir(), _safe_dirname(row["channel_name"]))
+        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+            p = os.path.join(ad, f"{video_id}{ext}")
+            if os.path.exists(p):
+                return p
+    if row and row["file_path"]:
+        base = os.path.splitext(row["file_path"])[0]
+        for ext in (".jpg", ".jpeg", ".webp", ".png"):
+            if os.path.exists(base + ext):
+                return base + ext
+    return None
+
+
+def _download_bytes(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return r.read()
+
+
+@app.post("/fetch-thumbnail/<video_id>")
+def fetch_thumbnail(video_id):
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    res = subprocess.run(
+        ["yt-dlp", "--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url],
+        capture_output=True, text=True, timeout=30,
+    )
+    if res.returncode != 0:
+        avail = _classify_unavailable(res.stderr)
+        if avail:
+            _set_availability(video_id, avail)
+            return jsonify({"ok": False, "error": "yt-dlp failed", "availability": avail}), 200
+        return jsonify({"ok": False, "error": "yt-dlp failed"}), 502
+
+    thumb_url = (res.stdout or "").strip().splitlines()[0] if res.stdout.strip() else ""
+    if not thumb_url or thumb_url == "NA":
+        return jsonify({"ok": False, "error": "no thumbnail url"}), 502
+    try:
+        data = _download_bytes(thumb_url)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 502
+
+    digest = hashlib.sha1(data).hexdigest()[:12]
+    # Dedup against the original and any previously fetched version.
+    seen = set()
+    op = _original_thumb_path(video_id)
+    if op:
+        try:
+            with open(op, "rb") as fh:
+                seen.add(hashlib.sha1(fh.read()).hexdigest()[:12])
+        except OSError:
+            pass
+    vdir = _thumb_versions_dir(video_id)
+    if os.path.isdir(vdir):
+        for f in os.listdir(vdir):
+            seen.add(os.path.splitext(f)[0])
+    if digest in seen:
+        return jsonify({"ok": True, "added": False, "reason": "duplicate", "hash": digest})
+
+    ext = ".jpg"
+    m = re.search(r"\.(jpg|jpeg|png|webp)(\?|$)", thumb_url, re.I)
+    if m:
+        ext = "." + m.group(1).lower()
+    os.makedirs(vdir, exist_ok=True)
+    with open(os.path.join(vdir, digest + ext), "wb") as fh:
+        fh.write(data)
+    return jsonify({"ok": True, "added": True, "hash": digest, "file": digest + ext})
+
+
+@app.get("/thumbnails/<video_id>")
+def list_thumbnails(video_id):
+    items = []
+    if _original_thumb_path(video_id):
+        items.append({"kind": "original", "url": f"/thumb/{video_id}"})
+    vdir = _thumb_versions_dir(video_id)
+    if os.path.isdir(vdir):
+        files = sorted(os.listdir(vdir), key=lambda n: os.path.getmtime(os.path.join(vdir, n)))
+        for f in files:
+            items.append({"kind": "fetched", "file": f, "url": f"/thumbnail-version/{video_id}/{f}"})
+    return jsonify({"ok": True, "thumbnails": items})
+
+
+@app.get("/thumbnail-version/<video_id>/<path:fname>")
+def serve_thumbnail_version(video_id, fname):
+    vdir = _thumb_versions_dir(video_id)
+    safe = os.path.basename(fname)
+    if os.path.exists(os.path.join(vdir, safe)):
+        return send_from_directory(vdir, safe)
+    return ("", 404)
+
 
 # ---------------------------------------------------------------------------
 # Creator profiles (scraped from channel "About" panel)
