@@ -6,6 +6,7 @@ import time
 import json
 import shutil
 import sqlite3
+import subprocess
 import threading
 import unicodedata
 from tinytag import TinyTag
@@ -177,11 +178,70 @@ def init_db():
 # Metadata extraction
 # ---------------------------------------------------------------------------
 
+def _meta_from_tinytag(file_path):
+    """Read tags via TinyTag (mp4/m4a/etc). Raises on unsupported containers."""
+    tag = TinyTag.get(file_path)
+    other       = tag.other if hasattr(tag, "other") and tag.other else {}
+    description = other.get("description") or other.get("longdesc") or other.get("long_description")
+    if isinstance(description, list):
+        description = description[0] if description else None
+    year = tag.year
+    if isinstance(year, list):
+        year = year[0] if year else None
+    return {
+        "url":           tag.comment,
+        "title":         tag.title,
+        "artist":        tag.artist,
+        "genre":         tag.genre,
+        "description":   description,
+        "recorded_date": str(year) if year else None,
+        "duration":      tag.duration,
+        "filesize":      tag.filesize,
+    }
+
+
+def _meta_from_ffprobe(file_path):
+    """Fallback reader for containers TinyTag can't parse (webm/mkv)."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
+        capture_output=True, text=True,
+    )
+    fmt  = (json.loads(out.stdout or "{}")).get("format", {})
+    tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
+    date = tags.get("date") or ""
+    year = date[:4] if len(date) >= 4 and date[:4].isdigit() else None
+    try:
+        filesize = int(fmt.get("size"))
+    except (TypeError, ValueError):
+        filesize = os.path.getsize(file_path)
+    try:
+        duration = float(fmt.get("duration"))
+    except (TypeError, ValueError):
+        duration = None
+    return {
+        "url":           tags.get("comment") or tags.get("purl"),
+        "title":         tags.get("title"),
+        "artist":        tags.get("artist"),
+        "genre":         tags.get("genre"),
+        "description":   tags.get("description") or tags.get("synopsis"),
+        "recorded_date": year,
+        "duration":      duration,
+        "filesize":      filesize,
+    }
+
+
 def process_video_file(file_path):
     result = {"file": file_path, "status": None, "title": None, "video_id": None}
     try:
-        tag = TinyTag.get(file_path)
-        url = tag.comment
+        try:
+            meta = _meta_from_tinytag(file_path)
+        except Exception:
+            meta = None
+        # TinyTag failed (unsupported container) or has no URL → try ffprobe.
+        if not meta or not meta.get("url"):
+            meta = _meta_from_ffprobe(file_path)
+
+        url = meta.get("url")
         if not url or "youtube.com" not in url:
             result["status"] = "skipped"
             return result
@@ -192,14 +252,10 @@ def process_video_file(file_path):
             return result
         video_id = match.group(1)
 
-        other         = tag.other if hasattr(tag, "other") and tag.other else {}
-        description   = other.get("description") or other.get("longdesc") or other.get("long_description")
-        if isinstance(description, list):
-            description = description[0] if description else None
-        year          = tag.year
-        if isinstance(year, list):
-            year = year[0] if year else None
-        recorded_date = str(year) if year else None
+        title         = meta.get("title")
+        artist        = meta.get("artist")
+        description   = meta.get("description")
+        recorded_date = meta.get("recorded_date")
 
         with _db_lock:
             conn = get_conn()
@@ -222,16 +278,16 @@ def process_video_file(file_path):
                     downloaded_at=CURRENT_TIMESTAMP,
                     status='downloaded'
                 WHERE downloaded_videos.status != 'downloaded'
-            ''', (video_id, tag.title, tag.artist, url, file_path,
-                  tag.genre, description, recorded_date, tag.duration, tag.filesize))
+            ''', (video_id, title, artist, url, file_path,
+                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize")))
             conn.commit()
             conn.close()
 
-        result.update({"status": "tracked", "title": tag.title, "video_id": video_id})
-        print(f"[tracker] Tracked: {tag.title} ({video_id})")
+        result.update({"status": "tracked", "title": title, "video_id": video_id})
+        print(f"[tracker] Tracked: {title} ({video_id})")
         # Copy thumbnail directly to artist folder
-        if tag.artist:
-            artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(tag.artist))
+        if artist:
+            artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(artist))
             os.makedirs(artist_dir, exist_ok=True)
             base = os.path.splitext(file_path)[0]
             for ext in (".jpg", ".jpeg", ".webp", ".png"):
@@ -818,11 +874,16 @@ def read_file_tags():
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"ok": False, "error": "File not found"}), 404
     try:
-        tag = TinyTag.get(file_path)
+        try:
+            meta = _meta_from_tinytag(file_path)
+        except Exception:
+            meta = None
+        if not meta or not meta.get("url"):
+            meta = _meta_from_ffprobe(file_path)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    url      = tag.comment or ""
+    url      = meta.get("url") or ""
     video_id = None
     m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url)
     if m:
@@ -832,26 +893,16 @@ def read_file_tags():
         if m:
             video_id = m.group(1)
 
-    other       = tag.other if hasattr(tag, "other") and tag.other else {}
-    description = other.get("description") or other.get("longdesc") or other.get("long_description")
-    if isinstance(description, list):
-        description = description[0] if description else None
-
-    year = tag.year
-    if isinstance(year, list):
-        year = year[0] if year else None
-    recorded_date = str(year) if year else None
-
     return jsonify({
         "ok":           True,
         "video_id":     video_id,
-        "title":        tag.title,
-        "channel_name": tag.artist,
+        "title":        meta.get("title"),
+        "channel_name": meta.get("artist"),
         "url":          url or (f"https://www.youtube.com/watch?v={video_id}" if video_id else None),
-        "genre":        tag.genre,
-        "description":  description,
-        "recorded_date":recorded_date,
-        "duration_secs":tag.duration,
+        "genre":        meta.get("genre"),
+        "description":  meta.get("description"),
+        "recorded_date":meta.get("recorded_date"),
+        "duration_secs":meta.get("duration"),
     })
 
 
@@ -925,8 +976,13 @@ def data_quality_duplicates():
                 continue
             fpath = os.path.join(root, fname)
             try:
-                tag = TinyTag.get(fpath)
-                url = tag.comment or ""
+                try:
+                    meta = _meta_from_tinytag(fpath)
+                except Exception:
+                    meta = None
+                if not meta or not meta.get("url"):
+                    meta = _meta_from_ffprobe(fpath)
+                url = meta.get("url") or ""
                 m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url) or \
                     re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
                 if m:
