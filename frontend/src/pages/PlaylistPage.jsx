@@ -54,7 +54,7 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
     return (
       <div className="card">
         <div className="artist-page-header">
-          <button className="btn-secondary btn-back" onClick={() => navigate("/")}>← Back</button>
+          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
           <h2 className="artist-page-title">Playlist</h2>
         </div>
         <div className="empty">{error}</div>
@@ -70,7 +70,7 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate("/")}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
         <h2 className="artist-page-title">{playlist ? playlist.name : "…"}</h2>
         {videos.length > 0 && (
           <span className="artist-badge">{videos.length} video{videos.length !== 1 ? "s" : ""}</span>

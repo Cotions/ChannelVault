@@ -78,12 +78,11 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   ];
 
   const title    = artist ? `${artist} · Stats` : "Stats";
-  const backTo   = artist ? `/artist/${encodeURIComponent(artist)}` : "/";
 
   return (
     <div className="stats-page">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(backTo)}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
         <h2 className="artist-page-title">{title}</h2>
         {!artist && (
           <>

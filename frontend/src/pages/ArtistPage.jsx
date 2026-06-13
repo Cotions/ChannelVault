@@ -45,7 +45,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate("/")}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
         <h2 className="artist-page-title">{artist}</h2>
         {artistVideos.length > 0 && (
           <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>

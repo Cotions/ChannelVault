@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist } from "./lib/api";
+import ScrollManager   from "./components/ScrollManager";
 import SettingsModal   from "./components/SettingsModal";
 import AddVideoModal   from "./components/AddVideoModal";
 import Overview        from "./pages/Overview";
@@ -85,6 +86,7 @@ export default function App() {
 
   return (
     <>
+      <ScrollManager />
       <header>
         <div
           className={`status-dot ${online ? "online" : ""}`}
