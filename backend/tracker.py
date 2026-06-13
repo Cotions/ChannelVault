@@ -266,7 +266,7 @@ def _is_ignored(path):
 
 class VideoDownloadHandler(FileSystemEventHandler):
     def on_created(self, event):
-        if not event.is_directory and event.src_path.endswith((".mp4", ".mkv")):
+        if not event.is_directory and event.src_path.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
             if _is_ignored(event.src_path):
                 return
             time.sleep(2)
@@ -383,7 +383,7 @@ def scan():
             dirs.clear()
             continue
         for f in filenames:
-            if f.endswith((".mp4", ".mkv")):
+            if f.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
                 files.append(os.path.join(root_dir, f))
 
     BATCH = 10
@@ -921,7 +921,7 @@ def data_quality_duplicates():
     groups = defaultdict(list)
     for root, _dirs, files in os.walk(watch_dir):
         for fname in files:
-            if not fname.lower().endswith((".mp4", ".mkv")):
+            if not fname.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
                 continue
             fpath = os.path.join(root, fname)
             try:
