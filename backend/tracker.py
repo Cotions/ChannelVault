@@ -171,6 +171,25 @@ def init_db():
         )
     ''')
 
+    # Creator profiles scraped from the channel "About" panel (latest snapshot).
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS creators (
+            channel_name     TEXT PRIMARY KEY,
+            handle           TEXT,
+            channel_url      TEXT,
+            description      TEXT,
+            country          TEXT,
+            joined_date      TEXT,
+            subscriber_count INTEGER,
+            subscribers_text TEXT,
+            video_count      INTEGER,
+            total_views      INTEGER,
+            links            TEXT,
+            email            TEXT,
+            captured_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -1058,6 +1077,91 @@ def serve_thumb(video_id):
             if os.path.exists(candidate):
                 return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
     return ("", 404)
+
+# ---------------------------------------------------------------------------
+# Creator profiles (scraped from channel "About" panel)
+# ---------------------------------------------------------------------------
+
+_CREATOR_FIELDS = [
+    "handle", "channel_url", "description", "country", "joined_date",
+    "subscriber_count", "subscribers_text", "video_count", "total_views",
+    "links", "email",
+]
+
+
+def _creator_row_to_dict(row):
+    d = dict(row)
+    try:
+        d["links"] = json.loads(d["links"]) if d.get("links") else []
+    except (TypeError, ValueError):
+        d["links"] = []
+    return d
+
+
+@app.post("/creator")
+def upsert_creator():
+    body         = request.get_json(silent=True) or {}
+    channel_name = (body.get("channel_name") or "").strip()
+    if not channel_name:
+        return jsonify({"ok": False, "error": "channel_name required"}), 400
+
+    links = body.get("links")
+    links_json = json.dumps(links) if isinstance(links, (list, dict)) else (links or None)
+    vals = {
+        "channel_name":     channel_name,
+        "handle":           body.get("handle"),
+        "channel_url":      body.get("channel_url"),
+        "description":      body.get("description"),
+        "country":          body.get("country"),
+        "joined_date":      body.get("joined_date"),
+        "subscriber_count": body.get("subscriber_count"),
+        "subscribers_text": body.get("subscribers_text"),
+        "video_count":      body.get("video_count"),
+        "total_views":      body.get("total_views"),
+        "links":            links_json,
+        "email":            body.get("email"),
+    }
+    # Only overwrite a stored field when the new payload actually carries a value,
+    # so a partial capture never blanks out previously-saved data.
+    set_clauses = ", ".join(
+        f"{f}=COALESCE(excluded.{f}, creators.{f})" for f in _CREATOR_FIELDS
+    )
+    with _db_lock:
+        conn = get_conn()
+        conn.execute(f'''
+            INSERT INTO creators
+                (channel_name, handle, channel_url, description, country, joined_date,
+                 subscriber_count, subscribers_text, video_count, total_views, links, email)
+            VALUES (:channel_name, :handle, :channel_url, :description, :country, :joined_date,
+                    :subscriber_count, :subscribers_text, :video_count, :total_views, :links, :email)
+            ON CONFLICT(channel_name) DO UPDATE SET
+                {set_clauses},
+                captured_at=CURRENT_TIMESTAMP
+        ''', vals)
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.get("/creators")
+def list_creators():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM creators ORDER BY channel_name").fetchall()
+    conn.close()
+    return jsonify([_creator_row_to_dict(r) for r in rows])
+
+
+@app.get("/creator/<path:channel_name>")
+def get_creator(channel_name):
+    conn = get_conn()
+    row  = conn.execute(
+        "SELECT * FROM creators WHERE channel_name = ?", (channel_name,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    return jsonify(_creator_row_to_dict(row))
+
 
 # ---------------------------------------------------------------------------
 # Entry point

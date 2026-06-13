@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { getCreator, artistThumbUrl } from "../lib/api";
+import { fmt } from "../lib/fmt";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -14,6 +16,13 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   const [sort,   setSort]   = useState("date");
   const [dir,    setDir]    = useState("desc");
   const [page,   setPage]   = useState(1);
+  const [creator, setCreator] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    getCreator(artist).then(c => { if (alive) setCreator(c); });
+    return () => { alive = false; };
+  }, [artist]);
 
   function switchLayout(next) {
     setLayout(next);
@@ -72,6 +81,77 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
           </div>
         )}
       </div>
+
+      {creator && (
+        <div className="creator-profile">
+          <div className="creator-profile-top">
+            <img
+              className="creator-profile-avatar"
+              src={artistThumbUrl(artist)}
+              alt=""
+              onError={e => { e.currentTarget.style.visibility = "hidden"; }}
+            />
+            <div className="creator-profile-id">
+              <div className="creator-profile-name">{artist}</div>
+              {creator.channel_url ? (
+                <a className="creator-profile-handle" href={creator.channel_url} target="_blank" rel="noreferrer">
+                  {creator.handle || creator.channel_url}
+                </a>
+              ) : creator.handle && (
+                <span className="creator-profile-handle">{creator.handle}</span>
+              )}
+            </div>
+          </div>
+
+          <div className="creator-profile-stats">
+            {creator.subscriber_count != null && (
+              <div className="creator-profile-stat">
+                <span className="cp-num">{fmt(creator.subscriber_count)}</span>
+                <span className="cp-label">Subscribers</span>
+              </div>
+            )}
+            {creator.video_count != null && (
+              <div className="creator-profile-stat">
+                <span className="cp-num">{fmt(creator.video_count)}</span>
+                <span className="cp-label">Videos</span>
+              </div>
+            )}
+            {creator.total_views != null && (
+              <div className="creator-profile-stat">
+                <span className="cp-num">{fmt(creator.total_views)}</span>
+                <span className="cp-label">Total views</span>
+              </div>
+            )}
+            {creator.country && (
+              <div className="creator-profile-stat">
+                <span className="cp-num cp-text">{creator.country}</span>
+                <span className="cp-label">Country</span>
+              </div>
+            )}
+            {creator.joined_date && (
+              <div className="creator-profile-stat">
+                <span className="cp-num cp-text">{creator.joined_date}</span>
+                <span className="cp-label">Joined</span>
+              </div>
+            )}
+          </div>
+
+          {creator.description && (
+            <p className="creator-profile-desc">{creator.description}</p>
+          )}
+
+          {(creator.email || (creator.links && creator.links.length > 0)) && (
+            <div className="creator-profile-links">
+              {creator.email && (
+                <a className="cp-link" href={`mailto:${creator.email}`}>✉ {creator.email}</a>
+              )}
+              {(creator.links || []).map((l, i) => (
+                <a key={i} className="cp-link" href={l.url} target="_blank" rel="noreferrer">🔗 {l.title}</a>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {artistVideos.length > 0 && (
         <>

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.3.14
+// @version      1.4.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -668,12 +668,132 @@ document.addEventListener("click", (e) => {
 }, true);
 
 // ---------------------------------------------------------------------------
+// Creator capture — "About this channel" panel
+// ---------------------------------------------------------------------------
+
+GM_addStyle(`
+  .cv-save-creator {
+    font-family: "Roboto","Arial",sans-serif;
+    font-size: 1.4rem; font-weight: 500;
+    color: #fff; background: #2e7d32;
+    border: none; border-radius: 18px;
+    padding: 0 16px; height: 36px; line-height: 36px;
+    margin-right: 8px; cursor: pointer; white-space: nowrap;
+  }
+  .cv-save-creator:hover { background: #388e3c; }
+  .cv-save-creator:disabled { opacity: .7; cursor: default; }
+  .cv-save-creator.cv-saved { background: #1b5e20; }
+`);
+
+function parseAbbrevCount(text) {
+  if (!text) return null;
+  const m = text.replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (isNaN(n)) return null;
+  const suf = (m[2] || "").toUpperCase();
+  const mult = suf === "K" ? 1e3 : suf === "M" ? 1e6 : suf === "B" ? 1e9 : 1;
+  return Math.round(n * mult);
+}
+
+function scrapeCreator(renderer) {
+  const dialog = renderer.closest("ytd-engagement-panel-section-list-renderer") || document;
+  const name = (dialog.querySelector("#title-text, h2#title")?.textContent || "").trim();
+  const description = (renderer.querySelector("#description-container")?.textContent || "").trim();
+
+  const data = {
+    channel_name: name,
+    description: description || null,
+    country: null, joined_date: null,
+    subscriber_count: null, subscribers_text: null,
+    video_count: null, total_views: null,
+    handle: null, channel_url: null, email: null,
+    links: [],
+  };
+
+  renderer.querySelectorAll("tr.description-item").forEach((tr) => {
+    if (tr.hidden) return;
+    const icon  = tr.querySelector("yt-icon")?.getAttribute("icon") || "";
+    const valTd = tr.querySelector("td:last-child");
+    const text  = (valTd?.textContent || "").trim();
+    switch (icon) {
+      case "privacy_public": data.country = text || null; break;
+      case "info_outline":   data.joined_date = text.replace(/^Joined\s+/i, "") || null; break;
+      case "person_radar":
+        data.subscribers_text = text || null;
+        data.subscriber_count = parseAbbrevCount(text);
+        break;
+      case "my_videos":  data.video_count = parseAbbrevCount(text); break;
+      case "trending_up": data.total_views = parseAbbrevCount(text); break;
+      case "youtube": {
+        const a = tr.querySelector("a");
+        const href = a?.getAttribute("href") || a?.textContent || "";
+        if (href) data.channel_url = href.startsWith("http") ? href : "https://" + href.replace(/^\/+/, "");
+        const hm = href.match(/@[\w.-]+/);
+        if (hm) data.handle = hm[0];
+        break;
+      }
+      case "mail": {
+        const a = tr.querySelector("a#email, a[href^='mailto']");
+        const v = (a?.textContent || a?.getAttribute("href") || "").replace(/^mailto:/, "").trim();
+        if (v) data.email = v;
+        break;
+      }
+    }
+  });
+
+  renderer.querySelectorAll("#link-list-container a, #links-container a").forEach((a) => {
+    const url = a.getAttribute("href");
+    if (!url) return;
+    data.links.push({ title: (a.textContent || "").trim() || url, url });
+  });
+
+  return data;
+}
+
+function injectCreatorButton() {
+  document.querySelectorAll("ytd-about-channel-renderer").forEach((renderer) => {
+    if (renderer.querySelector(".cv-save-creator")) return;
+    const container = renderer.querySelector("#button-container");
+    if (!container) return;
+    const btn = document.createElement("button");
+    btn.className = "cv-save-creator";
+    btn.type = "button";
+    btn.textContent = "Save to Vault";
+    btn.addEventListener("click", async () => {
+      const data = scrapeCreator(renderer);
+      if (!data.channel_name) { btn.textContent = "No name found"; return; }
+      btn.disabled = true;
+      btn.textContent = "Saving…";
+      try {
+        await gmPost(`${API_BASE}/creator`, data);
+        btn.textContent = "✓ Saved to Vault";
+        btn.classList.add("cv-saved");
+      } catch (_) {
+        btn.textContent = "Save failed";
+        btn.disabled = false;
+      }
+    });
+    container.insertBefore(btn, container.firstChild);
+  });
+}
+
+let _creatorScheduled = false;
+function scheduleCreatorInject() {
+  if (_creatorScheduled) return;
+  _creatorScheduled = true;
+  requestAnimationFrame(() => { _creatorScheduled = false; injectCreatorButton(); });
+}
+new MutationObserver(scheduleCreatorInject).observe(document.body, { childList: true, subtree: true });
+
+// ---------------------------------------------------------------------------
 // YouTube SPA navigation
 // ---------------------------------------------------------------------------
 
 function onNavigate() {
   checkAndAnnotate();
   initCardAnnotation();
+  injectCreatorButton();
 }
 
 window.addEventListener("yt-navigate-finish", onNavigate);

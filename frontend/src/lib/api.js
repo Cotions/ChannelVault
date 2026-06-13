@@ -49,6 +49,11 @@ export function getWatchHistory()  { return get("/watch-history"); }
 export function exportCsvUrl()     { return `${BASE}/export/csv`; }
 export function exportJsonUrl()    { return `${BASE}/export/json`; }
 export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
+export function getCreators()      { return get("/creators"); }
+export async function getCreator(name) {
+  try { return await get(`/creator/${encodeURIComponent(name)}`); }
+  catch { return null; }
+}
 
 export async function scan(onEvent) {
   const r = await fetch(`${BASE}/scan`, { method: "POST" });
