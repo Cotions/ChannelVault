@@ -81,6 +81,13 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
   const dur   = fmtDuration(video.duration_secs);
   const date  = video.recorded_date || null;
 
+  const AVAIL_LABELS = {
+    private: "Private", deleted: "Deleted", members: "Members",
+    geo: "Geo-blocked", unavailable: "Unavailable",
+  };
+  const dead       = video.availability && video.availability !== "available";
+  const availLabel = dead ? (AVAIL_LABELS[video.availability] || "Unavailable") : null;
+
   return (
     <div className={`video-card${layout === "list" ? " list" : ""}`}>
       <Link to={`/video/${video.video_id}`} className="video-thumb-link">
@@ -134,19 +141,27 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
           </>
         ) : (
           <>
-            {onFetchMeta && elapsed != null && (
-              <span className="fetch-timer">{elapsed.toFixed(1)}s</span>
-            )}
-            {onFetchMeta && (
-              <button
-                className={`del-btn fetch-btn${fetching ? " spinning" : ""}${fetchErr ? " fetch-err" : ""}`}
-                title={fetchErr ? "Fetch failed" : "Fetch metadata from YouTube"}
-                disabled={fetching}
-                onClick={handleFetchMeta}
-              >
-                {fetchErr ? "!" : "⟳"}
-              </button>
-            )}
+            <div className="va-left">
+              {onFetchMeta && (
+                <button
+                  className={`del-btn fetch-btn${fetching ? " spinning" : ""}${fetchErr ? " fetch-err" : ""}${dead ? " fetch-dead" : ""}`}
+                  title={fetchErr ? "Fetch failed" : dead ? `${availLabel} — fetch may fail` : "Fetch metadata from YouTube"}
+                  disabled={fetching}
+                  onClick={handleFetchMeta}
+                >
+                  {fetchErr ? "!" : "⟳"}
+                </button>
+              )}
+              {availLabel && (
+                <span className={`avail-badge avail-${video.availability}`} title={`${availLabel} on YouTube`}>
+                  {availLabel}
+                </span>
+              )}
+              {onFetchMeta && elapsed != null && (
+                <span className="fetch-timer">{elapsed.toFixed(1)}s</span>
+              )}
+            </div>
+            <div className="va-right">
             {onAddToPlaylist && playlists && (
               <div className="pl-menu-wrap" ref={plRef}>
                 <button
@@ -195,6 +210,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
                 ✕
               </button>
             )}
+            </div>
           </>
         )}
       </div>

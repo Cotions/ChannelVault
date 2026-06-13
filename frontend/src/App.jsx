@@ -49,8 +49,10 @@ export default function App() {
 
   async function handleFetchMeta(id) {
     const r = await fetchMetadata(id);
-    if (!r.ok) throw new Error(r.error || "fetch failed");
     setVideos(await getVideos());
+    // A detected private/deleted video returns ok:false WITH availability — not a
+    // transient error, so refresh (to show the badge) but don't surface a failure.
+    if (!r.ok && !r.availability) throw new Error(r.error || "fetch failed");
   }
 
   async function handleWatched() {

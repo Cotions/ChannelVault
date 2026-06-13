@@ -1,6 +1,7 @@
 export const SORT_OPTIONS = [
   { value: "upload",   label: "Upload date" },
   { value: "date",     label: "Date added" },
+  { value: "stale",    label: "Oldest fetch" },
   { value: "views",    label: "Views" },
   { value: "watched",  label: "My views" },
   { value: "likes",    label: "Likes" },
@@ -32,11 +33,22 @@ function recDate(v) {
   return (v || "").replace(/\D/g, "");
 }
 
+// A video we can't refetch (private/deleted/etc). NULL or "available" = fetchable.
+function isDead(v) {
+  return !!v.availability && v.availability !== "available";
+}
+
 // Descending comparator per key (newest / most / largest / Z–A first).
 function cmpDesc(key, a, b) {
   switch (key) {
     case "upload":   return (recDate(b.recorded_date) || "0").localeCompare(recDate(a.recorded_date) || "0");
     case "date":     return (b.downloaded_at || "").localeCompare(a.downloaded_at || "");
+    // "stale" default (desc) order: never-fetched first, then oldest fetch, dead videos last.
+    case "stale": {
+      const da = isDead(a), db = isDead(b);
+      if (da !== db) return da ? 1 : -1;
+      return (a.stats_updated_at || "").localeCompare(b.stats_updated_at || "");
+    }
     case "duration": return num(b.duration_secs) - num(a.duration_secs);
     case "views":    return num(b.view_count) - num(a.view_count);
     case "likes":    return num(b.like_count) - num(a.like_count);

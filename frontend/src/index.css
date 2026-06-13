@@ -562,7 +562,31 @@ button:disabled { opacity: 0.4; cursor: default; }
   flex-wrap: wrap;
 }
 
-.video-actions { display: flex; justify-content: flex-end; padding: 0 6px 6px; }
+.video-actions { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 6px 6px; }
+.va-left  { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.va-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+
+.avail-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  color: #ffb3b5;
+  background: rgba(229, 72, 77, 0.14);
+  border: 1px solid rgba(229, 72, 77, 0.35);
+}
+.avail-badge.avail-members,
+.avail-badge.avail-geo {
+  color: #ffd591;
+  background: rgba(214, 158, 46, 0.16);
+  border-color: rgba(214, 158, 46, 0.4);
+}
+.fetch-btn.fetch-dead { opacity: 0.4; }
+.fetch-btn.fetch-dead:hover:not(:disabled) { opacity: 0.7; }
 
 .del-btn {
   background: none;

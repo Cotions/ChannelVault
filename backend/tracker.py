@@ -120,7 +120,8 @@ def init_db():
             view_count       INTEGER,
             like_count       INTEGER,
             stats_updated_at TIMESTAMP,
-            status           TEXT DEFAULT 'downloaded'
+            status           TEXT DEFAULT 'downloaded',
+            availability     TEXT
         )
     ''')
 
@@ -129,6 +130,10 @@ def init_db():
     if "status" not in cols:
         conn.execute("ALTER TABLE downloaded_videos ADD COLUMN status TEXT DEFAULT 'downloaded'")
         conn.execute("UPDATE downloaded_videos SET status='downloaded' WHERE status IS NULL")
+
+    # Migrate: availability — NULL/'available' = ok; 'private'/'deleted'/'members'/'geo'/'unavailable' = can't fetch
+    if "availability" not in cols:
+        conn.execute("ALTER TABLE downloaded_videos ADD COLUMN availability TEXT")
 
     # Migrate: absorb wanted_videos table if it still exists
     existing = conn.execute(
@@ -925,6 +930,37 @@ def read_file_tags():
     })
 
 
+def _classify_unavailable(text):
+    """Map a yt-dlp error message to an availability state, or None if it looks transient."""
+    t = (text or "").lower()
+    if "private video" in t or "this video is private" in t:
+        return "private"
+    if ("members-only" in t or "members only" in t or "join this channel" in t):
+        return "members"
+    if "not available in your country" in t or "geo" in t and "restrict" in t:
+        return "geo"
+    if ("video unavailable" in t or "no longer available" in t
+            or "has been removed" in t or "removed by the uploader" in t
+            or "account associated with this video has been terminated" in t
+            or "account associated with this video has been closed" in t
+            or "this video has been removed" in t
+            or "video has been deleted" in t):
+        return "deleted"
+    # Other failures (network, rate limit, sign-in/age gate) are likely transient → don't mark.
+    return None
+
+
+def _set_availability(video_id, availability):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute(
+            "UPDATE downloaded_videos SET availability = ? WHERE video_id = ?",
+            (availability, video_id),
+        )
+        conn.commit()
+        conn.close()
+
+
 @app.post("/fetch-metadata/<video_id>")
 def fetch_metadata(video_id):
     import subprocess, json as _json
@@ -935,6 +971,10 @@ def fetch_metadata(video_id):
             capture_output=True, text=True, timeout=30
         )
         if result.returncode != 0:
+            availability = _classify_unavailable(result.stderr)
+            if availability:
+                _set_availability(video_id, availability)
+                return jsonify({"ok": False, "error": "yt-dlp failed", "availability": availability}), 200
             return jsonify({"ok": False, "error": "yt-dlp failed"}), 502
         info = _json.loads(result.stdout)
     except Exception as e:
@@ -955,7 +995,8 @@ def fetch_metadata(video_id):
                 duration_secs  = COALESCE(?, duration_secs),
                 view_count     = COALESCE(?, view_count),
                 like_count     = COALESCE(?, like_count),
-                stats_updated_at = CURRENT_TIMESTAMP
+                stats_updated_at = CURRENT_TIMESTAMP,
+                availability   = 'available'
             WHERE video_id = ?
         ''', (
             info.get("title") or None,
