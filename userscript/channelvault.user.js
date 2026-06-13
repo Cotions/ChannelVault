@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.4.0
+// @version      1.4.1
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -599,24 +599,34 @@ function injectCVMenuItemsPopup(popup) {
   }, 100);
 }
 
+// A channel name never reads like a view/subscriber/time stat.
+function looksLikeStat(s) {
+  return /\b(views?|subscribers?|watching|waiting|streamed|premieres?)\b/i.test(s)
+      || /\bago\b/i.test(s);
+}
+
 function extractChannelFromCard(card) {
-  // Sidebar/recommended layout: channel is a text node inside the first metadata row span
+  // A channel-link anchor is the reliable source — try it first.
+  const anchor = (card.querySelector("a[href*='/@'], a[href*='/channel/'], a[href*='/user/']")?.textContent || "").trim();
+  if (anchor && !looksLikeStat(anchor)) return anchor;
+
+  // Fallbacks: reject anything that reads like a stat row (was the "34K views" bug).
+  const fallbacks = [
+    card.querySelector("a.ytLockupMetadataViewModelSubtitle")?.textContent,
+    card.querySelector(".ytLockupMetadataViewModelChannelName")?.textContent,
+    card.querySelector("ytd-channel-name a")?.textContent,
+    card.querySelector(".ytd-channel-name a")?.textContent,
+    card.querySelector("#channel-name a")?.textContent,
+    card.querySelector("yt-formatted-string.ytd-channel-name")?.textContent,
+  ];
   const metaText = card.querySelector(".ytContentMetadataViewModelMetadataRow .ytContentMetadataViewModelMetadataText");
-  if (metaText) {
-    const raw = (metaText.firstChild?.nodeValue || metaText.textContent || "").trim();
-    if (raw) return raw;
+  if (metaText) fallbacks.push(metaText.firstChild?.nodeValue || metaText.textContent);
+
+  for (const c of fallbacks) {
+    const v = (c || "").trim();
+    if (v && !looksLikeStat(v)) return v;
   }
-  return (
-    card.querySelector("a.ytLockupMetadataViewModelSubtitle")?.textContent.trim() ||
-    card.querySelector(".ytLockupMetadataViewModelChannelName")?.textContent.trim() ||
-    card.querySelector("ytd-channel-name a")?.textContent.trim() ||
-    card.querySelector(".ytd-channel-name a")?.textContent.trim() ||
-    card.querySelector("#channel-name a")?.textContent.trim() ||
-    card.querySelector("yt-formatted-string.ytd-channel-name")?.textContent.trim() ||
-    card.querySelector("a[href*='/@']")?.textContent.trim() ||
-    card.querySelector("a[href*='/channel/']")?.textContent.trim() ||
-    null
-  );
+  return null;
 }
 
 function captureMenuContext(btn) {
