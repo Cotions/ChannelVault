@@ -1156,6 +1156,40 @@ def _download_bytes(url):
         return r.read()
 
 
+# Perceptual dedup: byte hashing misses the same image saved in a different
+# format/resolution (e.g. original .webp vs fetched maxres .jpg). A dHash
+# compares the actual pixels so visually-identical thumbnails are caught.
+_PHASH_THRESHOLD = 6  # max Hamming distance still considered "same image"
+
+
+def _dhash(img_source):
+    """64-bit difference hash from raw bytes or a file path; None if undecodable."""
+    try:
+        import io
+        from PIL import Image
+        src = io.BytesIO(img_source) if isinstance(img_source, (bytes, bytearray)) else img_source
+        img = Image.open(src).convert("L").resize((9, 8))
+        px = list(img.getdata())
+        bits = 0
+        for row in range(8):
+            base = row * 9
+            for col in range(8):
+                bits = (bits << 1) | (1 if px[base + col] > px[base + col + 1] else 0)
+        return bits
+    except Exception:
+        return None
+
+
+def _phash_matches(new_hash, paths):
+    if new_hash is None:
+        return False
+    for p in paths:
+        h = _dhash(p)
+        if h is not None and bin(new_hash ^ h).count("1") <= _PHASH_THRESHOLD:
+            return True
+    return False
+
+
 @app.post("/fetch-thumbnail/<video_id>")
 def fetch_thumbnail(video_id):
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -1179,21 +1213,32 @@ def fetch_thumbnail(video_id):
         return jsonify({"ok": False, "error": str(e)}), 502
 
     digest = hashlib.sha1(data).hexdigest()[:12]
-    # Dedup against the original and any previously fetched version.
-    seen = set()
+    # Collect existing thumbnails: the original plus any fetched version.
+    existing_paths = []
     op = _original_thumb_path(video_id)
+    if op:
+        existing_paths.append(op)
+    vdir = _thumb_versions_dir(video_id)
+    if os.path.isdir(vdir):
+        existing_paths += [os.path.join(vdir, f) for f in os.listdir(vdir)]
+
+    # 1) exact byte match (fast).
+    seen = set()
     if op:
         try:
             with open(op, "rb") as fh:
                 seen.add(hashlib.sha1(fh.read()).hexdigest()[:12])
         except OSError:
             pass
-    vdir = _thumb_versions_dir(video_id)
     if os.path.isdir(vdir):
         for f in os.listdir(vdir):
             seen.add(os.path.splitext(f)[0])
     if digest in seen:
         return jsonify({"ok": True, "added": False, "reason": "duplicate", "hash": digest})
+
+    # 2) perceptual match — same image in a different format/resolution.
+    if _phash_matches(_dhash(bytes(data)), existing_paths):
+        return jsonify({"ok": True, "added": False, "reason": "duplicate-visual", "hash": digest})
 
     ext = ".jpg"
     m = re.search(r"\.(jpg|jpeg|png|webp)(\?|$)", thumb_url, re.I)
