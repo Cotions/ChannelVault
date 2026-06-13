@@ -45,6 +45,12 @@ export function getPlaylist(id)          { return get(`/playlists/${id}`); }
 export function addToPlaylist(id, videoId)      { return post(`/playlists/${id}/videos`, { video_id: videoId }); }
 export function removeFromPlaylist(id, videoId) { return del(`/playlists/${id}/videos/${videoId}`); }
 export function postWatchProgress(id, data) { return post(`/watch-progress/${id}`, data); }
+export function watchBeacon(id, data) {
+  try {
+    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    return navigator.sendBeacon(`${BASE}/watch-progress/${id}`, blob);
+  } catch { return false; }
+}
 export function getWatchHistory()  { return get("/watch-history"); }
 export function exportCsvUrl()     { return `${BASE}/export/csv`; }
 export function exportJsonUrl()    { return `${BASE}/export/json`; }

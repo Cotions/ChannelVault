@@ -1,17 +1,19 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { streamUrl, thumbUrl, artistThumbUrl, postWatchProgress, getThumbnails, fetchThumbnail, thumbnailVersionUrl } from "../lib/api";
+import { thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
+import { usePlayer } from "../player/playerContext";
 
-export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWatched }) {
+export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [playErr,    setPlayErr]    = useState(false);
+  const player = usePlayer();
+  // Stable callbacks (useCallback in the provider) — safe as effect deps.
+  const { openInline, onLeavePage, setPoster, close: closePlayer, setDock } = player;
   const [fetching,   setFetching]   = useState(false);
   const [elapsed,    setElapsed]    = useState(null);
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
-  const [justWatched, setJustWatched] = useState(false);
   const [thumbs,     setThumbs]     = useState([]);
   const [thumbIdx,   setThumbIdx]   = useState(0);
   const [thumbBusy,  setThumbBusy]  = useState(false);
@@ -34,6 +36,20 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
     setThumbMsg(null);
     loadThumbs();
   }, [id, loadThumbs]);
+
+  const video = videos.find(v => v.video_id === id);
+
+  // Hand the video off to the persistent player; minimize/close on leave.
+  useEffect(() => {
+    if (video) openInline(id, { title: video.title || id });
+    // Re-open only when the video id or its title changes, not on every videos[] refresh.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, video?.title, openInline]);
+  useEffect(() => () => onLeavePage(), [onLeavePage]);
+  // Keep the player's poster in sync with the cycled thumbnail.
+  useEffect(() => {
+    setPoster(thumbs[thumbIdx] || thumbUrl(id));
+  }, [thumbs, thumbIdx, id, setPoster]);
 
   async function handleFetchThumbnail() {
     setThumbBusy(true);
@@ -76,53 +92,6 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
     }
   }
 
-  // --- Watch tracking: accumulate real playtime (seeks don't count) ---
-  const watchRef = useRef({ watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0 });
-
-  const reportProgress = useCallback(async (videoEl) => {
-    const w = watchRef.current;
-    if (w.watched < 1) return;
-    try {
-      const r = await postWatchProgress(id, {
-        session_id:    w.sessionId,
-        watched_secs:  w.watched,
-        position_secs: videoEl ? videoEl.currentTime : 0,
-        duration_secs: videoEl && videoEl.duration ? videoEl.duration : null,
-      });
-      w.sessionId = r.session_id;
-      w.reported  = w.watched;
-      if (r.completed && !w.completed) {
-        w.completed = true;
-        setJustWatched(true);
-        onWatched?.();
-      }
-    } catch {}
-  }, [id, onWatched]);
-
-  function handleTimeUpdate(e) {
-    const w = watchRef.current;
-    const t = e.target.currentTime;
-    if (w.lastTime != null) {
-      const delta = t - w.lastTime;
-      // timeupdate fires ~4×/s during playback; big jumps are seeks
-      if (delta > 0 && delta < 2) w.watched += delta;
-    }
-    w.lastTime = t;
-    // report every ~15s of accumulated playtime
-    if (w.watched - w.reported >= 15) reportProgress(e.target);
-  }
-
-  function handleSeeked(e) {
-    watchRef.current.lastTime = e.target.currentTime;
-  }
-
-  // reset tracker per video, flush on leave
-  useEffect(() => {
-    watchRef.current = { watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0 };
-    setJustWatched(false);
-    return () => reportProgress(null);
-  }, [id, reportProgress]);
-
   useEffect(() => {
     if (!confirming) return;
     function onKey(e) {
@@ -140,8 +109,6 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
     return () => clearInterval(t);
   }, [fetching]);
 
-  const video = videos.find(v => v.video_id === id);
-
   if (!video) {
     return (
       <div className="card">
@@ -156,10 +123,13 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
 
   const ytUrl  = `https://www.youtube.com/watch?v=${video.video_id}`;
   const artist = video.channel_name || "Unknown";
+  const poster = thumbs[thumbIdx] || thumbUrl(video.video_id);
+  const cycle  = () => thumbs.length > 1 && setThumbIdx(i => (i + 1) % thumbs.length);
+  const watched = video.watch_count > 0 || player.completedId === video.video_id;
 
   async function handleFetchMeta() {
     setFetching(true);
-    try { await onFetchMeta(video.video_id); } catch {} finally {
+    try { await onFetchMeta(video.video_id); } catch { /* ignore */ } finally {
       setFetching(false);
       setTimeout(() => setElapsed(null), 5000);
     }
@@ -169,6 +139,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
     setConfirming(false);
     setDeleting(true);
     try {
+      closePlayer();
       await onDelete(video.video_id);
       navigate(-1);
     } catch {
@@ -223,45 +194,24 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
         )}
       </div>
 
-      {(() => {
-        const poster = thumbs[thumbIdx] || thumbUrl(video.video_id);
-        const cycle  = () => thumbs.length > 1 && setThumbIdx(i => (i + 1) % thumbs.length);
-        return (
-          <div className="vp-player-wrap">
-            {playErr ? (
-              <div className="player-fallback">
-                <img src={poster} alt="" onError={e => { e.target.style.display = "none"; }} />
-                <div className="empty">
-                  Browser can't play this file{video.file_path ? ` (${video.file_path.split(".").pop()})` : ""}.{" "}
-                  <a href={ytUrl} target="_blank" rel="noreferrer" style={{ color: "#90caf9" }}>Watch on YouTube</a>
-                </div>
-              </div>
-            ) : (
-              <video
-                className="video-player"
-                controls
-                preload="metadata"
-                poster={poster}
-                src={streamUrl(video.video_id)}
-                onError={() => setPlayErr(true)}
-                onTimeUpdate={handleTimeUpdate}
-                onSeeked={handleSeeked}
-                onPause={e => reportProgress(e.target)}
-                onEnded={e => reportProgress(e.target)}
-              />
-            )}
-            {thumbs.length > 1 && (
-              <button
-                className="vp-thumb-cycle"
-                onClick={cycle}
-                title="Cycle thumbnail"
-              >
-                ⤿ <span className="vp-thumb-count">{thumbIdx + 1}/{thumbs.length}</span>
-              </button>
-            )}
+      <div className="vp-player-wrap">
+        {player.error ? (
+          <div className="player-fallback">
+            <img src={poster} alt="" onError={e => { e.target.style.display = "none"; }} />
+            <div className="empty">
+              Browser can't play this file{video.file_path ? ` (${video.file_path.split(".").pop()})` : ""}.{" "}
+              <a href={ytUrl} target="_blank" rel="noreferrer" style={{ color: "#90caf9" }}>Watch on YouTube</a>
+            </div>
           </div>
-        );
-      })()}
+        ) : (
+          <div className="vp-player-dock" ref={setDock} />
+        )}
+        {thumbs.length > 1 && !player.error && (
+          <button className="vp-thumb-cycle" onClick={cycle} title="Cycle thumbnail">
+            ⤿ <span className="vp-thumb-count">{thumbIdx + 1}/{thumbs.length}</span>
+          </button>
+        )}
+      </div>
 
       <div className="vp-below">
         <h1 className="vp-title">{video.title || video.video_id}</h1>
@@ -283,8 +233,8 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete, onWat
             video.like_count    != null && { num: fmt(video.like_count),            label: "likes" },
             video.file_size_bytes != null && { num: fmtBytes(video.file_size_bytes), label: "on disk" },
             video.recorded_date && { num: video.recorded_date, label: "uploaded" },
-            (video.watch_count > 0 || justWatched) && {
-              num: `${Math.max(video.watch_count || 0, justWatched ? 1 : 0)}×`,
+            watched && {
+              num: `${Math.max(video.watch_count || 0, 1)}×`,
               label: "watched",
             },
           ].filter(Boolean).map((s, i) => (
