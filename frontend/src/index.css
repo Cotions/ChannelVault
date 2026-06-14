@@ -208,7 +208,10 @@ main {
 }
 @keyframes pageIn {
   from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+  /* No transform in the resting (to) state: with animation-fill-mode:both a
+     translateY(0) here would persist and make <main> a stacking context,
+     trapping page z-index below the fixed miniplayer shell. */
+  to   { opacity: 1; }
 }
 
 @media (max-width: 640px) {

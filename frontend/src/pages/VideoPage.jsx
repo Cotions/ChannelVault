@@ -32,9 +32,9 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   }, [id]);
 
   useEffect(() => {
-    setThumbIdx(0);
     setThumbMsg(null);
-    loadThumbs();
+    // Default to the newest thumbnail (last in the list: original first, fetched by age).
+    loadThumbs().then(list => setThumbIdx(Math.max(0, list.length - 1)));
   }, [id, loadThumbs]);
 
   const video = videos.find(v => v.video_id === id);
