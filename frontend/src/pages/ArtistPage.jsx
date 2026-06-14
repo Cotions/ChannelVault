@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useRememberedPage } from "../lib/usePagination";
 import { getCreator, artistThumbUrl } from "../lib/api";
 import { fmt } from "../lib/fmt";
 import SortControls from "../components/SortControls";
@@ -15,7 +16,6 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");
-  const [page,   setPage]   = useState(1);
   const [creator, setCreator] = useState(null);
 
   useEffect(() => {
@@ -30,13 +30,13 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   }
 
   const q = (query || "").trim();
+  const [page, setPage] = useRememberedPage(`artist:${artist}`, [q, sort, dir]);
   const artistVideos  = sortVideos(
     videos.filter(v => (v.channel_name || "Unknown") === artist && videoMatches(v, q)),
     sort, dir
   );
 
   const pageCount = Math.max(1, Math.ceil(artistVideos.length / PAGE_SIZE));
-  useEffect(() => { setPage(1); }, [artist, q, sort, dir]);
   const safePage = Math.min(page, pageCount);
   const pageVideos = artistVideos.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const artistWanted  = wanted.filter(v => (v.channel_name || "Unknown") === artist);

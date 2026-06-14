@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getPlaylist, removeFromPlaylist } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -16,7 +17,6 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");
-  const [page,   setPage]   = useState(1);
 
   const load = useCallback(async () => {
     try {
@@ -32,8 +32,7 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   useEffect(() => { load(); }, [load]);
 
   const q = (query || "").trim();
-  // Reset to page 1 when playlist, search, or ordering changes.
-  useEffect(() => { setPage(1); }, [id, q, sort, dir]);
+  const [page, setPage] = useRememberedPage(`playlist:${id}`, [q, sort, dir]);
 
   function switchLayout(next) {
     setLayout(next);

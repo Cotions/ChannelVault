@@ -1,5 +1,6 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -7,17 +8,15 @@ import VideoCard from "../components/VideoCard";
 export default function Overview({ videos, playlists, query, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
   const [browseSort, setBrowseSort] = useState("upload");
   const [browseDir,  setBrowseDir]  = useState("desc");
-  const [page,       setPage]       = useState(1);
 
   const q = (query || "").trim();
+  const [page, setPage] = useRememberedPage("home", [q, browseSort, browseDir]);
   const browse = useMemo(() => {
     const filtered = q ? videos.filter(v => videoMatches(v, q)) : videos;
     return sortVideos(filtered, q ? "upload" : browseSort, q ? "desc" : browseDir);
   }, [videos, browseSort, browseDir, q]);
 
   const pageCount = Math.max(1, Math.ceil(browse.length / PAGE_SIZE));
-  // Reset to page 1 when the result set or ordering changes.
-  useEffect(() => { setPage(1); }, [q, browseSort, browseDir]);
   const safePage = Math.min(page, pageCount);
   const pageVideos = browse.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 

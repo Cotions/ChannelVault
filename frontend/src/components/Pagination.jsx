@@ -15,9 +15,10 @@ function pageItems(page, count) {
 
 export default function Pagination({ page, count, onPage }) {
   if (count <= 1) return null;
+  const go = (p) => { onPage(p); window.scrollTo({ top: 0, behavior: "smooth" }); };
   return (
     <div className="pagination">
-      <button className="page-btn" onClick={() => onPage(page - 1)} disabled={page === 1} title="Previous">‹</button>
+      <button className="page-btn" onClick={() => go(page - 1)} disabled={page === 1} title="Previous">‹</button>
       {pageItems(page, count).map((it, i) =>
         it === "…" ? (
           <span key={`gap${i}`} className="page-gap">…</span>
@@ -25,13 +26,13 @@ export default function Pagination({ page, count, onPage }) {
           <button
             key={it}
             className={`page-btn${it === page ? " active" : ""}`}
-            onClick={() => onPage(it)}
+            onClick={() => go(it)}
           >
             {it}
           </button>
         )
       )}
-      <button className="page-btn" onClick={() => onPage(page + 1)} disabled={page === count} title="Next">›</button>
+      <button className="page-btn" onClick={() => go(page + 1)} disabled={page === count} title="Next">›</button>
     </div>
   );
 }
