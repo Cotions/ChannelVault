@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { thumbUrl } from "../lib/api";
+import { latestThumbUrl } from "../lib/api";
 import { fmt, fmtDuration } from "../lib/fmt";
 
 export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid" }) {
@@ -94,7 +94,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         {thumbOk ? (
           <img
             className="video-thumb"
-            src={thumbUrl(video.video_id)}
+            src={latestThumbUrl(video.video_id)}
             alt=""
             onError={() => setThumbOk(false)}
           />

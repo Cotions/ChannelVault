@@ -1121,6 +1121,21 @@ def serve_thumb(video_id):
                 return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
     return ("", 404)
 
+
+@app.get("/thumb-latest/<video_id>")
+def serve_thumb_latest(video_id):
+    """Newest fetched thumbnail if one exists, else the original."""
+    vdir = _thumb_versions_dir(video_id)
+    if os.path.isdir(vdir):
+        files = [f for f in os.listdir(vdir) if f.lower().endswith((".jpg", ".jpeg", ".webp", ".png"))]
+        if files:
+            newest = max(files, key=lambda f: os.path.getmtime(os.path.join(vdir, f)))
+            return send_from_directory(vdir, newest)
+    op = _original_thumb_path(video_id)
+    if op:
+        return send_from_directory(os.path.dirname(op), os.path.basename(op))
+    return ("", 404)
+
 # ---------------------------------------------------------------------------
 # Thumbnail versions (original stays with the video; fetched ones kept here)
 # ---------------------------------------------------------------------------
