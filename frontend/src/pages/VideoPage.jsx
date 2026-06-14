@@ -165,6 +165,11 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
         <button className="btn-secondary btn-export" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
           {thumbBusy ? "…" : "⬇ Thumbnail"}
         </button>
+        {thumbs.length > 1 && (
+          <button className="btn-secondary btn-export" onClick={cycle} title="Cycle thumbnail (newest first)">
+            ⤿ {thumbIdx + 1}/{thumbs.length}
+          </button>
+        )}
         {thumbMsg && <span className="fetch-timer">{thumbMsg}</span>}
         <button className="btn-secondary btn-export" onClick={() => onEdit(video)}>✎ Edit</button>
         {confirming ? (
@@ -205,11 +210,6 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
           </div>
         ) : (
           <div className="vp-player-dock" ref={setDock} />
-        )}
-        {thumbs.length > 1 && !player.error && (
-          <button className="vp-thumb-cycle" onClick={cycle} title="Cycle thumbnail">
-            ⤿ <span className="vp-thumb-count">{thumbIdx + 1}/{thumbs.length}</span>
-          </button>
         )}
       </div>
 
