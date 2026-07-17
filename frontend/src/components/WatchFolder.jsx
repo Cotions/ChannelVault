@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
-import { saveConfig, saveDataDir, browse, browseData, scan } from "../lib/api";
+import { saveConfig, saveDataDir, saveMediaRoots, browse, browseData, scan } from "../lib/api";
 
-export default function WatchFolder({ initialDir, initialDataDir, onScanDone, embedded = false }) {
+export default function WatchFolder({ initialDir, initialDataDir, initialRoots, onScanDone, embedded = false }) {
   const [dir,     setDir]     = useState(initialDir     || "");
   const [dataDir, setDataDir] = useState(initialDataDir || "");
+  const [roots,   setRoots]   = useState(initialRoots   || []);
 
   useEffect(() => { if (initialDir)     setDir(initialDir); },     [initialDir]);
   useEffect(() => { if (initialDataDir) setDataDir(initialDataDir); }, [initialDataDir]);
+  useEffect(() => { if (initialRoots)   setRoots(initialRoots); },   [initialRoots]);
   const [msg,     setMsg]     = useState(null);
   const [scanLog, setScanLog] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -58,6 +60,32 @@ export default function WatchFolder({ initialDir, initialDataDir, onScanDone, em
     try {
       const data = await saveDataDir(dataDir);
       if (data.ok) flash(`Data directory: ${data.data_directory}`, "ok");
+      else flash(data.error, "err");
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
+  }
+
+  function setRoot(i, val) {
+    setRoots(prev => prev.map((r, idx) => (idx === i ? val : r)));
+  }
+  function addRoot()     { setRoots(prev => [...prev, ""]); }
+  function removeRoot(i) { setRoots(prev => prev.filter((_, idx) => idx !== i)); }
+
+  async function browseRoot(i) {
+    try {
+      const data = await browse();
+      if (data.ok && data.directory) setRoot(i, data.directory);
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
+  }
+
+  async function handleSaveRoots() {
+    try {
+      const clean = roots.map(r => r.trim()).filter(Boolean);
+      const data  = await saveMediaRoots(clean);
+      if (data.ok) { setRoots(clean); flash(`Saved ${clean.length} media root(s)`, "ok"); }
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");
@@ -124,6 +152,29 @@ export default function WatchFolder({ initialDir, initialDataDir, onScanDone, em
       </div>
       <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "6px" }}>
         Stores the database and thumbnail copies. Changing this migrates the existing DB.
+      </div>
+
+      <div className="card-title" style={{ marginTop: "16px" }}>Media Roots</div>
+      {roots.map((r, i) => (
+        <div className="folder-row" key={i} style={{ marginBottom: "6px" }}>
+          <input
+            type="text"
+            value={r}
+            onChange={e => setRoot(i, e.target.value)}
+            placeholder="/mnt/media/ASMR  or  D:\\Media\\ASMR"
+          />
+          <button className="btn-secondary" onClick={() => browseRoot(i)}>Browse…</button>
+          <button className="btn-ghost" onClick={() => removeRoot(i)} title="Remove">✕</button>
+        </div>
+      ))}
+      <div className="folder-row">
+        <button className="btn-secondary" onClick={addRoot}>+ Add root</button>
+        <button className="btn-primary" onClick={handleSaveRoots}>Save Roots</button>
+      </div>
+      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "6px" }}>
+        Folders where your videos live. Files are matched even if moved or stored across
+        several drives. Add both Windows and Linux paths — missing ones are ignored, so one
+        config works on either machine. The watch folder is always searched too.
       </div>
 
       {msg && <div className={`msg show ${msg.type}`}>{msg.text}</div>}

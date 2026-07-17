@@ -27,7 +27,7 @@ When a video is parsed, the agent must extract metadata fields mapped from the i
 
 * Movie name (TinyTag: tag.title) -> Video Title
 * Performer (TinyTag: tag.artist) -> YouTube Channel Name
-* Comment (TinyTag: tag.comment) -> YouTube Source URL (e.g., https://www.youtube.com/watch?v=r_pLGeFLWIQ)
+* Comment (TinyTag: tag.comment) -> YouTube Source URL (e.g., https://www.youtube.com/watch?v=VIDEO_ID)
 
 ### Extraction Logic:
 The unique YouTube Video ID must be extracted cleanly from the Comment URL string using the following regex pattern: v=([a-zA-Z0-9_-]{11}). This Video ID serves as the PRIMARY KEY in the database.

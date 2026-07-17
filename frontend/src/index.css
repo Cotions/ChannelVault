@@ -140,6 +140,9 @@ input[type="text"].header-search:focus {
   display: flex;
   align-items: stretch;
   min-height: calc(100vh - 64px);
+  /* Full-height column divider at the sidebar's 200px edge. The sidebar is
+     sticky (shrinks to content) so its own border can't span the page. */
+  background: linear-gradient(90deg, transparent 199px, var(--border) 199px, var(--border) 200px, transparent 200px);
 }
 
 /* ── Sidebar ────────────────────────────────────────────── */
@@ -150,8 +153,13 @@ input[type="text"].header-search:focus {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  border-right: 1px solid var(--border);
   background: linear-gradient(180deg, rgba(20, 23, 31, 0.6), rgba(13, 16, 23, 0.35));
+  /* Pin below the 64px sticky header so it follows on scroll. */
+  position: sticky;
+  top: 64px;
+  align-self: flex-start;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
 }
 
 .side-link {
@@ -919,6 +927,11 @@ button:disabled { opacity: 0.4; cursor: default; }
   text-align: center;
 }
 
+.vp-channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .vp-channel {
   display: inline-flex;
   align-items: center;

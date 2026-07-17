@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl } from "../lib/api";
+import { artistsOf } from "../lib/artists";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 import { usePlayer } from "../player/playerContext";
 
@@ -122,7 +123,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   }
 
   const ytUrl  = `https://www.youtube.com/watch?v=${video.video_id}`;
-  const artist = video.channel_name || "Unknown";
+  const artists = artistsOf(video);
   const poster = thumbs[thumbIdx] || thumbUrl(video.video_id);
   const cycle  = () => thumbs.length > 1 && setThumbIdx(i => (i + 1) % thumbs.length);
   const watched = video.watch_count > 0 || player.completedId === video.video_id;
@@ -215,16 +216,20 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
 
       <div className="vp-below">
         <h1 className="vp-title">{video.title || video.video_id}</h1>
-        <Link to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel" style={{ animationDelay: "60ms" }}>
-          <img
-            className="vp-channel-avatar"
-            src={artistThumbUrl(artist)}
-            alt=""
-            onError={e => { e.target.style.visibility = "hidden"; }}
-          />
-          <span className="vp-channel-name">{artist}</span>
-          <span className="vp-channel-arrow">→</span>
-        </Link>
+        <div className="vp-channels" style={{ animationDelay: "60ms" }}>
+          {artists.map(artist => (
+            <Link key={artist} to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel">
+              <img
+                className="vp-channel-avatar"
+                src={artistThumbUrl(artist)}
+                alt=""
+                onError={e => { e.target.style.visibility = "hidden"; }}
+              />
+              <span className="vp-channel-name">{artist}</span>
+              <span className="vp-channel-arrow">→</span>
+            </Link>
+          ))}
+        </div>
 
         <div className="vp-stats">
           {[

@@ -37,6 +37,7 @@ def load_config():
             cfg = json.load(f)
     cfg.setdefault("watch_directory", DEFAULT_WATCH)
     cfg.setdefault("data_directory", DEFAULT_DATA)
+    cfg.setdefault("media_roots", [])
     return cfg
 
 def save_config(cfg):
@@ -58,6 +59,17 @@ _INVALID_CHARS = re.compile(r'[/\\:*?"<>|]')
 def _safe_dirname(name):
     return _INVALID_CHARS.sub("-", name).strip()
 
+def _artist_names(channel):
+    """Split a collab credit ("A, B") into individual artist names.
+
+    A video's channel_name may credit multiple collaborating artists as a
+    comma-separated list; each should get its own artist folder/thumbnail so
+    the video surfaces under every collaborator.
+    """
+    if not channel:
+        return []
+    return [n.strip() for n in channel.split(",") if n.strip()]
+
 def sync_artist_folders():
     from collections import defaultdict
     cfg = load_config()
@@ -74,8 +86,12 @@ def sync_artist_folders():
         conn.close()
         channels = defaultdict(list)
         for row in rows:
-            channels[row["channel_name"]].append(row["video_id"])
+            for name in _artist_names(row["channel_name"]):
+                channels[name].append(row["video_id"])
 
+        # A collab thumb belongs to several artists, so copy it into each
+        # artist folder rather than move; the source is removed afterwards.
+        distributed = set()
         for name, video_ids in channels.items():
             safe = _safe_dirname(name)
             artist_dir = os.path.join(artist_thumbs_dir, safe)
@@ -84,8 +100,27 @@ def sync_artist_folders():
                 for ext in (".jpg", ".jpeg", ".webp", ".png"):
                     src = os.path.join(thumbs_dir, f"{video_id}{ext}")
                     dest = os.path.join(artist_dir, f"{video_id}{ext}")
-                    if os.path.exists(src) and not os.path.exists(dest):
-                        shutil.move(src, dest)
+                    if os.path.exists(src):
+                        if not os.path.exists(dest):
+                            shutil.copy2(src, dest)
+                        distributed.add(src)
+
+        for src in distributed:
+            try:
+                os.remove(src)
+            except OSError:
+                pass
+
+        # Prune orphaned artist folders: anything not backed by a current
+        # (split) artist name. Catches old combined collab folders and artists
+        # whose videos are all gone. Thumbs are a cache, rebuilt next scan.
+        valid = {_safe_dirname(name) for name in channels}
+        if os.path.isdir(artist_thumbs_dir):
+            for entry in os.listdir(artist_thumbs_dir):
+                path = os.path.join(artist_thumbs_dir, entry)
+                if os.path.isdir(path) and entry not in valid:
+                    shutil.rmtree(path, ignore_errors=True)
+                    print(f"[artist_folders] Pruned orphan: {entry}")
 
         # Remove thumbs dir if now empty
         if os.path.isdir(thumbs_dir) and not os.listdir(thumbs_dir):
@@ -93,6 +128,94 @@ def sync_artist_folders():
             print("[artist_folders] Removed empty thumbs dir")
     except Exception as e:
         print(f"[artist_folders] {e}")
+
+# ---------------------------------------------------------------------------
+# Media path resolution
+#
+# file_path in the DB is whatever absolute path the file had when it was first
+# tracked. Move the library (e.g. to /mnt/media) or open the same DB on another
+# OS and those paths go stale. Instead of rewriting every row we resolve at read
+# time against a list of "media roots": the literal path first, then the longest
+# tail of the stored path that exists under a root, then a basename lookup.
+# Roots may include both Windows and Linux paths; non-existent ones are skipped,
+# so one config works on either machine.
+# ---------------------------------------------------------------------------
+
+_media_index      = None
+_media_index_lock = threading.Lock()
+
+
+def get_media_roots():
+    """Configured roots plus the watch directory, in order, existing dirs only."""
+    cfg   = load_config()
+    roots = [str(r).strip() for r in (cfg.get("media_roots") or []) if str(r).strip()]
+    wd    = cfg.get("watch_directory")
+    if wd and wd not in roots:
+        roots.append(wd)
+    seen, out = set(), []
+    for r in roots:
+        if r not in seen and os.path.isdir(r):
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def clear_media_index():
+    global _media_index
+    with _media_index_lock:
+        _media_index = None
+
+
+def _basename_index():
+    """Lazy {filename: full_path} map across all roots; last-resort lookup."""
+    global _media_index
+    with _media_index_lock:
+        if _media_index is None:
+            idx = {}
+            for root in get_media_roots():
+                for dirpath, _dirs, files in os.walk(root):
+                    for f in files:
+                        idx.setdefault(f, os.path.join(dirpath, f))
+            _media_index = idx
+        return _media_index
+
+
+def _exists_norm(path):
+    """Existing file matching path under any unicode normalization, else None."""
+    for form in ("NFC", "NFD", "NFKC", "NFKD"):
+        cand = unicodedata.normalize(form, path)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def _split_components(path):
+    # Split on both separators so a path stored on one OS resolves on the other.
+    return [c for c in re.split(r"[\\/]+", path) if c not in ("", ".")]
+
+
+def resolve_media_path(stored):
+    """Map a stored (possibly stale / cross-OS / relative) path to a real file
+    on this machine. Returns an existing absolute path, or None."""
+    if not stored:
+        return None
+    hit = _exists_norm(stored)
+    if hit:
+        return hit
+    comps = _split_components(stored)
+    if not comps:
+        return None
+    roots = get_media_roots()
+    # Longest matching tail: handles a moved library whose folder layout is kept
+    # (e.g. <old>/Chan/vid.mp4 → <root>/Chan/vid.mp4).
+    for root in roots:
+        for i in range(len(comps)):
+            hit = _exists_norm(os.path.join(root, *comps[i:]))
+            if hit:
+                return hit
+    # Last resort: the file was reorganised — match by name anywhere under a root.
+    hit = _basename_index().get(comps[-1])
+    return hit if hit and os.path.isfile(hit) else None
 
 # ---------------------------------------------------------------------------
 # Database
@@ -258,6 +381,11 @@ def _meta_from_ffprobe(file_path):
 
 def process_video_file(file_path):
     result = {"file": file_path, "status": None, "title": None, "video_id": None}
+    # File can vanish between discovery and parsing (download still finishing,
+    # temp file renamed). Skip quietly instead of logging a scary error.
+    if not os.path.isfile(file_path):
+        result["status"] = "skipped"
+        return result
     try:
         try:
             meta = _meta_from_tinytag(file_path)
@@ -311,11 +439,11 @@ def process_video_file(file_path):
 
         result.update({"status": "tracked", "title": title, "video_id": video_id})
         print(f"[tracker] Tracked: {title} ({video_id})")
-        # Copy thumbnail directly to artist folder
-        if artist:
-            artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(artist))
+        # Copy thumbnail into each collaborating artist's folder
+        base = os.path.splitext(file_path)[0]
+        for name in _artist_names(artist):
+            artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(name))
             os.makedirs(artist_dir, exist_ok=True)
-            base = os.path.splitext(file_path)[0]
             for ext in (".jpg", ".jpeg", ".webp", ".png"):
                 src = base + ext
                 if os.path.exists(src):
@@ -346,13 +474,43 @@ def _is_ignored(path):
     return False
 
 
+# In-progress download scratch files (yt-dlp, browsers). These end in a video
+# extension but get renamed to the final name once complete, so reacting to them
+# just races the download and errors out.
+_TEMP_PATTERNS = (".temp.mp4", ".part", ".ytdl", ".crdownload", ".download")
+
+
+def _is_temp_file(path):
+    low = path.lower()
+    return low.endswith(_TEMP_PATTERNS) or ".temp." in os.path.basename(low) or low.endswith(".part.mp4")
+
+
+_VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+
+
+def _handle_new_path(path):
+    if not path.lower().endswith(_VIDEO_EXTS):
+        return
+    if _is_temp_file(path) or _is_ignored(path):
+        return
+    time.sleep(2)
+    # Download may still be settling / renamed again during the wait.
+    if not os.path.isfile(path):
+        return
+    process_video_file(path)
+
+
 class VideoDownloadHandler(FileSystemEventHandler):
     def on_created(self, event):
-        if not event.is_directory and event.src_path.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
-            if _is_ignored(event.src_path):
-                return
-            time.sleep(2)
-            process_video_file(event.src_path)
+        if not event.is_directory:
+            _handle_new_path(event.src_path)
+
+    # yt-dlp downloads to a .temp/.part file then RENAMES it to the final name.
+    # A rename fires on_moved (not on_created), so without this the finished
+    # download is never tracked.
+    def on_moved(self, event):
+        if not event.is_directory:
+            _handle_new_path(event.dest_path)
 
 _observer      = None
 _observer_lock = threading.Lock()
@@ -398,7 +556,18 @@ def set_config():
             return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
         cfg["watch_directory"] = directory
         save_config(cfg)
+        clear_media_index()
         start_observer(directory)
+
+    if "media_roots" in body:
+        roots = body["media_roots"]
+        if not isinstance(roots, list):
+            return jsonify({"ok": False, "error": "media_roots must be a list"}), 400
+        # Don't require existence: a Windows root won't exist when running on
+        # Linux (and vice-versa). The resolver skips dead roots at read time.
+        cfg["media_roots"] = [str(r).strip() for r in roots if str(r).strip()]
+        save_config(cfg)
+        clear_media_index()
 
     if "data_directory" in body:
         data_dir = body["data_directory"].strip()
@@ -465,7 +634,7 @@ def scan():
             dirs.clear()
             continue
         for f in filenames:
-            if f.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
+            if f.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")) and not _is_temp_file(f):
                 files.append(os.path.join(root_dir, f))
 
     BATCH = 10
@@ -488,6 +657,7 @@ def scan():
                 yield f"data: {json.dumps({'type': 'progress', 'done': i + 1, 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors, 'last': r})}\n\n"
 
         sync_artist_folders()
+        clear_media_index()
         yield f"data: {json.dumps({'type': 'done', 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors})}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
@@ -628,8 +798,8 @@ def stream_video(video_id):
     conn.close()
     if not row or not row["file_path"]:
         return jsonify({"ok": False, "error": "no file for video"}), 404
-    path = row["file_path"]
-    if not os.path.isfile(path):
+    path = resolve_media_path(row["file_path"])
+    if not path:
         return jsonify({"ok": False, "error": "file missing on disk"}), 404
     ext  = os.path.splitext(path)[1].lower()
     from flask import send_file
@@ -1081,9 +1251,352 @@ def data_quality_missing():
         {"video_id": r["video_id"], "title": r["title"],
          "channel_name": r["channel_name"], "file_path": r["file_path"]}
         for r in rows
-        if not any(os.path.isfile(unicodedata.normalize(f, r["file_path"])) for f in ("NFC", "NFD", "NFKC", "NFKD"))
+        if not resolve_media_path(r["file_path"])
     ]
     return jsonify({"ok": True, "missing": missing})
+
+
+# ---------------------------------------------------------------------------
+# Organize loose downloads → artist folders, then track
+#
+# yt-dlp drops finished files straight into the watch root. This reads the
+# embedded channel/artist tag, moves each loose file into <watch>/<artist>/,
+# VERIFIES the move landed, and only then adds it to the DB as a new entry.
+# ---------------------------------------------------------------------------
+
+def _read_meta(file_path):
+    """Best-effort metadata: TinyTag first, ffprobe fallback. Never raises."""
+    try:
+        meta = _meta_from_tinytag(file_path)
+    except Exception:
+        meta = None
+    if not meta or not meta.get("url"):
+        try:
+            meta = _meta_from_ffprobe(file_path)
+        except Exception:
+            meta = meta or {}
+    return meta or {}
+
+
+def _video_id_from_url(url):
+    if not url:
+        return None
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url) or \
+        re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
+    return m.group(1) if m else None
+
+
+def _loose_video_files(watch_dir):
+    """Video files sitting directly in the watch root (not already in a subfolder)."""
+    out = []
+    for fname in sorted(os.listdir(watch_dir)):
+        src = os.path.join(watch_dir, fname)
+        if not os.path.isfile(src):
+            continue
+        if not fname.lower().endswith(_VIDEO_EXTS) or _is_temp_file(fname):
+            continue
+        out.append(src)
+    return out
+
+
+def _candidate_files(root, recursive):
+    """Video files to consider: loose-in-root (organize) or all-of-tree (import)."""
+    if not recursive:
+        return _loose_video_files(root)
+    out = []
+    for dirpath, dirs, files in os.walk(root):
+        if os.path.exists(os.path.join(dirpath, ".vaultIgnore")):
+            dirs.clear()
+            continue
+        for f in files:
+            if f.lower().endswith(_VIDEO_EXTS) and not _is_temp_file(f):
+                out.append(os.path.join(dirpath, f))
+    return sorted(out)
+
+
+def _transfer(src, dest, mode):
+    """Move or copy the video plus any companion files sharing its stem
+    (thumbnail, info json). mode is 'move' or 'copy'."""
+    op = shutil.move if mode == "move" else shutil.copy2
+    op(src, dest)
+    src_base = os.path.splitext(src)[0]
+    dst_base = os.path.splitext(dest)[0]
+    for ext in (".jpg", ".jpeg", ".webp", ".png", ".info.json", ".description"):
+        s = src_base + ext
+        if os.path.exists(s) and not os.path.exists(dst_base + ext):
+            try:
+                op(s, dst_base + ext)
+            except Exception:
+                pass
+
+
+@app.get("/organize/preview")
+def organize_preview():
+    cfg       = load_config()
+    watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
+    if not os.path.isdir(watch_dir):
+        return jsonify({"ok": False, "error": f"Library folder not found: {watch_dir}"}), 400
+
+    # Optional source = "import" mode: pull from another folder (recursively) into
+    # the library. No source = "organize" mode: tidy loose files in the library root.
+    source = (request.args.get("source") or "").strip() or watch_dir
+    if not os.path.isdir(source):
+        return jsonify({"ok": False, "error": f"Source folder not found: {source}"}), 400
+    recursive = os.path.abspath(source) != os.path.abspath(watch_dir)
+
+    items = []
+    conn  = get_conn()
+    for src in _candidate_files(source, recursive):
+        fname  = os.path.basename(src)
+        meta   = _read_meta(src)
+        artist = (meta.get("artist") or "").strip()
+        vid    = _video_id_from_url(meta.get("url"))
+
+        row   = conn.execute(
+            "SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'", (vid,)
+        ).fetchone() if vid else None
+        in_db = bool(row)
+        # Is the tracked copy a *different* file that still exists on disk? Then
+        # this loose file is a real duplicate. If the tracked path resolves back
+        # to this same file (or is missing), moving + repointing is safe.
+        tracked = resolve_media_path(row["file_path"]) if row else None
+        duplicate = bool(tracked and os.path.abspath(tracked) != os.path.abspath(src))
+
+        if not artist:
+            dest, status = None, "no-artist"
+        else:
+            dest = os.path.join(watch_dir, _safe_dirname(artist), fname)
+            if duplicate:
+                status = "duplicate"
+            elif os.path.abspath(dest) == os.path.abspath(src):
+                status = "in-place"
+            else:
+                status = "ready"
+        items.append({
+            "file": src, "basename": fname, "artist": artist or None,
+            "video_id": vid, "dest": dest, "status": status,
+            "in_db": in_db, "duplicate": duplicate,
+        })
+    conn.close()
+    return jsonify({"ok": True, "items": items})
+
+
+@app.post("/organize/apply")
+def organize_apply():
+    body      = request.get_json(silent=True) or {}
+    cfg       = load_config()
+    watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
+    if not os.path.isdir(watch_dir):
+        return jsonify({"ok": False, "error": f"Directory not found: {watch_dir}"}), 400
+
+    mode    = "copy" if body.get("mode") == "copy" else "move"
+    source  = (body.get("source") or "").strip() or watch_dir
+    files   = body.get("files")
+    if isinstance(files, list) and files:
+        targets = files
+    else:
+        targets = _candidate_files(source, os.path.abspath(source) != os.path.abspath(watch_dir))
+
+    results = []
+    for src in targets:
+        r = {"file": src, "dest": None, "moved": False, "verified": False,
+             "added": False, "video_id": None, "status": None}
+        if not os.path.isfile(src):
+            r["status"] = "missing-source"; results.append(r); continue
+
+        artist = (_read_meta(src).get("artist") or "").strip()
+        if not artist:
+            r["status"] = "no-artist"; results.append(r); continue
+
+        dest_dir = os.path.join(watch_dir, _safe_dirname(artist))
+        dest     = os.path.join(dest_dir, os.path.basename(src))
+        r["dest"] = dest
+
+        if os.path.abspath(dest) == os.path.abspath(src):
+            r["verified"] = True              # already in the right folder
+        elif os.path.exists(dest):
+            r["status"] = "dest-exists"; results.append(r); continue
+        else:
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                _transfer(src, dest, mode)
+                r["moved"] = True
+            except Exception as e:
+                r["status"] = f"{mode}-failed: {e}"; results.append(r); continue
+            # Verify the file actually landed BEFORE writing to the DB.
+            r["verified"] = os.path.isfile(dest)
+            if not r["verified"]:
+                r["status"] = "verify-failed"; results.append(r); continue
+
+        pr  = process_video_file(dest)
+        vid = pr.get("video_id")
+        r["video_id"] = vid
+        if pr["status"] in ("skipped",) or (pr["status"] or "").startswith("error"):
+            r["status"] = pr["status"]; results.append(r); continue
+        # process_video_file won't overwrite the path of an already-'downloaded'
+        # row, so force file_path to the verified new location here.
+        if vid:
+            with _db_lock:
+                conn = get_conn()
+                cur  = conn.execute(
+                    "UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (dest, vid)
+                )
+                conn.commit()
+                conn.close()
+        r["added"]  = True
+        r["status"] = "filed"
+        results.append(r)
+
+    clear_media_index()
+    return jsonify({"ok": True, "results": results})
+
+
+# ---------------------------------------------------------------------------
+# Inspect / enrich a single source file before importing
+# ---------------------------------------------------------------------------
+
+def _meta_payload(meta):
+    artist = (meta.get("artist") or "").strip()
+    return {
+        "title":         meta.get("title"),
+        "artist":        artist or None,
+        "url":           meta.get("url"),
+        "video_id":      _video_id_from_url(meta.get("url")),
+        "genre":         meta.get("genre"),
+        "description":   meta.get("description"),
+        "recorded_date": meta.get("recorded_date"),
+        "duration":      meta.get("duration"),
+        "filesize":      meta.get("filesize"),
+    }
+
+
+def _sidecar_thumb(path):
+    base = os.path.splitext(path)[0]
+    for ext in (".webp", ".jpg", ".jpeg", ".png"):
+        if os.path.exists(base + ext):
+            return base + ext
+    return None
+
+
+@app.get("/import/inspect")
+def import_inspect():
+    path = (request.args.get("file") or "").strip()
+    if not path or not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "file not found"}), 404
+    cfg       = load_config()
+    watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
+    meta      = _read_meta(path)
+    payload   = _meta_payload(meta)
+    artist    = payload["artist"]
+    vid       = payload["video_id"]
+    dest      = os.path.join(watch_dir, _safe_dirname(artist), os.path.basename(path)) if artist else None
+    in_db     = False
+    if vid:
+        conn  = get_conn()
+        in_db = bool(conn.execute(
+            "SELECT 1 FROM downloaded_videos WHERE video_id=? AND status='downloaded'", (vid,)
+        ).fetchone())
+        conn.close()
+    return jsonify({
+        "ok": True, "file": path, "basename": os.path.basename(path),
+        "meta": payload, "dest": dest, "in_db": in_db,
+        "has_thumb": bool(_sidecar_thumb(path)),
+    })
+
+
+@app.get("/import/thumb")
+def import_thumb():
+    path = (request.args.get("file") or "").strip()
+    thumb = _sidecar_thumb(path) if path and os.path.isfile(path) else None
+    if thumb:
+        return send_from_directory(os.path.dirname(thumb), os.path.basename(thumb))
+    return ("", 404)
+
+
+@app.post("/import/fetch-meta")
+def import_fetch_meta():
+    """Suggest metadata from YouTube (yt-dlp) WITHOUT writing anything."""
+    body = request.get_json(silent=True) or {}
+    path = (body.get("file") or "").strip()
+    vid  = body.get("video_id")
+    if not vid and path and os.path.isfile(path):
+        vid = _video_id_from_url(_read_meta(path).get("url"))
+    if not vid:
+        return jsonify({"ok": False, "error": "no YouTube id — add a URL first"}), 400
+    url = f"https://www.youtube.com/watch?v={vid}"
+    try:
+        res = subprocess.run(
+            ["yt-dlp", "--dump-json", "--no-download", "--no-playlist", url],
+            capture_output=True, text=True, timeout=45,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    if res.returncode != 0:
+        avail = _classify_unavailable(res.stderr)
+        if avail and path:
+            # remember unavailability if this id is already tracked
+            _set_availability(vid, avail)
+        return jsonify({"ok": False, "error": "yt-dlp failed", "availability": avail}), 200
+    info = json.loads(res.stdout)
+    ud   = info.get("upload_date")
+    rec  = f"{ud[:4]}-{ud[4:6]}-{ud[6:]}" if ud and len(ud) == 8 else None
+    return jsonify({"ok": True, "suggested": {
+        "title":         info.get("title"),
+        "artist":        info.get("channel") or info.get("uploader"),
+        "url":           info.get("webpage_url") or url,
+        "video_id":      vid,
+        "description":   info.get("description"),
+        "genre":         (info.get("categories") or [None])[0],
+        "recorded_date": rec,
+    }})
+
+
+def _ffmeta_args(fields):
+    mapping = {
+        "title":       fields.get("title"),
+        "artist":      fields.get("artist"),
+        "comment":     fields.get("url"),          # tracker reads the URL from the comment tag
+        "description": fields.get("description"),
+        "date":        fields.get("recorded_date"),
+        "genre":       fields.get("genre"),
+    }
+    out = []
+    for k, v in mapping.items():
+        if v not in (None, ""):
+            out += ["-metadata", f"{k}={v}"]
+    return out
+
+
+@app.post("/import/enrich")
+def import_enrich():
+    """Write metadata tags into the file itself (ffmpeg stream copy), then verify."""
+    body   = request.get_json(silent=True) or {}
+    path   = (body.get("file") or "").strip()
+    fields = body.get("fields") or {}
+    if not path or not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "file not found"}), 404
+    metargs = _ffmeta_args(fields)
+    if not metargs:
+        return jsonify({"ok": False, "error": "no fields to write"}), 400
+
+    ext = os.path.splitext(path)[1]
+    tmp = path + ".enrich" + ext
+    # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
+    # existing tags, then the -metadata flags override only the provided fields.
+    args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
+    try:
+        res = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    if res.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+        return jsonify({"ok": False, "error": "ffmpeg failed: " + (res.stderr or "")[-300:]}), 500
+
+    os.replace(tmp, path)              # atomic swap over the original
+    return jsonify({"ok": True, "meta": _meta_payload(_read_meta(path))})
 
 
 @app.get("/artist-thumb/<path:name>")
@@ -1112,13 +1625,15 @@ def serve_thumb(video_id):
             candidate = os.path.join(artist_dir, f"{video_id}{ext}")
             if os.path.exists(candidate):
                 return send_from_directory(artist_dir, f"{video_id}{ext}")
-    # Fallback to original file location
+    # Fallback to the sidecar next to the (resolved) video file
     if row and row["file_path"]:
-        base = os.path.splitext(row["file_path"])[0]
-        for ext in (".jpg", ".jpeg", ".webp", ".png"):
-            candidate = base + ext
-            if os.path.exists(candidate):
-                return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
+        resolved = resolve_media_path(row["file_path"])
+        if resolved:
+            base = os.path.splitext(resolved)[0]
+            for ext in (".jpg", ".jpeg", ".webp", ".png"):
+                candidate = base + ext
+                if os.path.exists(candidate):
+                    return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
     return ("", 404)
 
 
@@ -1158,10 +1673,12 @@ def _original_thumb_path(video_id):
             if os.path.exists(p):
                 return p
     if row and row["file_path"]:
-        base = os.path.splitext(row["file_path"])[0]
-        for ext in (".jpg", ".jpeg", ".webp", ".png"):
-            if os.path.exists(base + ext):
-                return base + ext
+        resolved = resolve_media_path(row["file_path"])
+        if resolved:
+            base = os.path.splitext(resolved)[0]
+            for ext in (".jpg", ".jpeg", ".webp", ".png"):
+                if os.path.exists(base + ext):
+                    return base + ext
     return None
 
 

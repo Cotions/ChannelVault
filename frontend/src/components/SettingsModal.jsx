@@ -1,6 +1,6 @@
 import WatchFolder from "./WatchFolder";
 
-export default function SettingsModal({ onClose, initialDir, initialDataDir, onScanDone }) {
+export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone }) {
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal modal-wide">
@@ -11,6 +11,7 @@ export default function SettingsModal({ onClose, initialDir, initialDataDir, onS
         <WatchFolder
           initialDir={initialDir}
           initialDataDir={initialDataDir}
+          initialRoots={initialRoots}
           onScanDone={onScanDone}
           embedded
         />

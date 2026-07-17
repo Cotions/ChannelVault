@@ -23,6 +23,7 @@ async function del(path) {
 export function getConfig()          { return get("/config"); }
 export function saveConfig(dir)      { return post("/config", { watch_directory: dir }); }
 export function saveDataDir(dir)     { return post("/config", { data_directory: dir }); }
+export function saveMediaRoots(roots) { return post("/config", { media_roots: roots }); }
 export function browse()             { return get("/browse"); }
 export function browseData()         { return get("/browse?title=Select+data+directory"); }
 export function browseFile()         { return get("/browse-file"); }
@@ -36,6 +37,16 @@ export function fetchMetadata(id)    { return post(`/fetch-metadata/${id}`, {});
 export function removeMark(id)     { return del(`/mark/${id}`); }
 export function getDuplicates()    { return get("/data-quality/duplicates"); }
 export function getMissing()       { return get("/data-quality/missing"); }
+export function organizePreview(source) {
+  return get(`/organize/preview${source ? `?source=${encodeURIComponent(source)}` : ""}`);
+}
+export function organizeApply({ files, source, mode } = {}) {
+  return post("/organize/apply", { files, source, mode });
+}
+export function importInspect(file)   { return get(`/import/inspect?file=${encodeURIComponent(file)}`); }
+export function importThumbUrl(file)  { return `${BASE}/import/thumb?file=${encodeURIComponent(file)}`; }
+export function importFetchMeta(file, videoId) { return post("/import/fetch-meta", { file, video_id: videoId }); }
+export function importEnrich(file, fields) { return post("/import/enrich", { file, fields }); }
 export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
 export function latestThumbUrl(id) { return `${BASE}/thumb-latest/${id}`; }
 export function streamUrl(id)      { return `${BASE}/stream/${id}`; }

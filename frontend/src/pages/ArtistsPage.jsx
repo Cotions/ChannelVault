@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { artistThumbUrl } from "../lib/api";
+import { artistsOf } from "../lib/artists";
 
 function ArtistCard({ name, stats, onClick }) {
   const [hasThumb, setHasThumb] = useState(true);
@@ -29,21 +30,15 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
   const q = (query || "").trim().toLowerCase();
 
   const artistStats = {};
-  for (const v of videos) {
-    const ch = v.channel_name || "Unknown";
-    if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
-    artistStats[ch].downloaded++;
-  }
-  for (const v of wanted) {
-    const ch = v.channel_name || "Unknown";
-    if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
-    artistStats[ch].wanted++;
-  }
-  for (const v of ignored) {
-    const ch = v.channel_name || "Unknown";
-    if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
-    artistStats[ch].ignored++;
-  }
+  const bump = (v, key) => {
+    for (const ch of artistsOf(v)) {
+      if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };
+      artistStats[ch][key]++;
+    }
+  };
+  for (const v of videos)  bump(v, "downloaded");
+  for (const v of wanted)  bump(v, "wanted");
+  for (const v of ignored) bump(v, "ignored");
   let artists = Object.entries(artistStats).sort((a, b) => b[1].downloaded - a[1].downloaded);
   if (q) artists = artists.filter(([name]) => name.toLowerCase().includes(q));
 

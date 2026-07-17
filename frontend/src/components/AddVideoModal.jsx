@@ -131,7 +131,7 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
             <div className="fetch-row">
               <input
                 type="text"
-                placeholder="https://www.youtube.com/watch?v=… or dQw4w9WgXcQ"
+                placeholder="https://www.youtube.com/watch?v=… or video ID"
                 value={urlInput}
                 onChange={e => { setUrlInput(e.target.value); setFetchStatus(null); }}
                 onBlur={handleUrlBlur}

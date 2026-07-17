@@ -1,6 +1,7 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
+import { artistsOf } from "../lib/artists";
 
 function fmtHours(secs) {
   if (!secs) return "—";
@@ -34,7 +35,7 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   const artist   = name != null ? decodeURIComponent(name) : null;
 
   const scopeVideos = artist
-    ? videos.filter(v => (v.channel_name || "Unknown") === artist)
+    ? videos.filter(v => artistsOf(v).includes(artist))
     : videos;
 
   const withSize   = scopeVideos.filter(v => v.file_size_bytes != null);
@@ -43,8 +44,9 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
 
   const channelCounts = {};
   for (const v of scopeVideos) {
-    const ch = v.channel_name || "Unknown";
-    channelCounts[ch] = (channelCounts[ch] || 0) + 1;
+    for (const ch of artistsOf(v)) {
+      channelCounts[ch] = (channelCounts[ch] || 0) + 1;
+    }
   }
   const channels = Object.entries(channelCounts).sort((a, b) => b[1] - a[1]);
   const maxCount = channels.length > 0 ? channels[0][1] : 1;

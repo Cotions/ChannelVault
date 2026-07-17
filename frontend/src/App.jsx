@@ -113,6 +113,7 @@ export default function App() {
           onClose={() => setShowWatchFolder(false)}
           initialDir={cfg.watch_directory}
           initialDataDir={cfg.data_directory}
+          initialRoots={cfg.media_roots}
           onScanDone={load}
         />
       )}

@@ -1,0 +1,59 @@
+erDiagram
+    downloaded_videos {
+        TEXT      video_id PK "YouTube id"
+        TEXT      title
+        TEXT      channel_name "logical link to creators"
+        TEXT      url
+        TEXT      file_path
+        TEXT      genre
+        TEXT      description
+        TEXT      recorded_date "mixed fmt, sorted in JS"
+        REAL      duration_secs
+        INTEGER   file_size_bytes
+        TIMESTAMP downloaded_at
+        INTEGER   view_count
+        INTEGER   like_count
+        TIMESTAMP stats_updated_at
+        TEXT      status "downloaded|wanted|ignored"
+        TEXT      availability "null|private|deleted|members|geo"
+    }
+    playlists {
+        INTEGER   id PK
+        TEXT      name
+        TIMESTAMP created_at
+    }
+    playlist_items {
+        INTEGER   playlist_id PK,FK
+        TEXT      video_id PK "no enforced FK"
+        TIMESTAMP added_at
+    }
+    watch_sessions {
+        INTEGER   id PK
+        TEXT      video_id "no enforced FK"
+        TIMESTAMP started_at
+        TIMESTAMP updated_at
+        REAL      watched_secs
+        REAL      position_secs
+        REAL      duration_secs
+        INTEGER   completed "1 => counts as a view"
+    }
+    creators {
+        TEXT      channel_name PK
+        TEXT      handle
+        TEXT      channel_url
+        TEXT      description
+        TEXT      country
+        TEXT      joined_date
+        INTEGER   subscriber_count
+        TEXT      subscribers_text
+        INTEGER   video_count
+        INTEGER   total_views
+        TEXT      links "JSON array"
+        TEXT      email
+        TIMESTAMP captured_at
+    }
+
+    playlists         ||--o{ playlist_items : "FK CASCADE"
+    downloaded_videos ||--o{ playlist_items : "video_id (loose)"
+    downloaded_videos ||--o{ watch_sessions : "video_id (loose)"
+    creators          ||--o{ downloaded_videos : "channel_name (loose)"
