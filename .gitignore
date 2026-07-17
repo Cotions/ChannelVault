@@ -4,3 +4,5 @@ venv/
 __pycache__/
 backend/videos.db
 backend/config.json
+
+backend/video_tracker.db
