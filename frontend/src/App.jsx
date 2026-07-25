@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist } from "./lib/api";
 import Icon            from "./components/Icon";
+import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
 import PlayerProvider  from "./player/PlayerProvider";
 import SettingsModal   from "./components/SettingsModal";
@@ -106,6 +107,7 @@ export default function App() {
 
   return (
     <PlayerProvider onCompleted={handleWatched}>
+      <CyberBackground />
       <ScrollManager />
       <header>
         <div className="brand">
