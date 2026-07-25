@@ -39,86 +39,46 @@ body {
 }
 
 /* ── Cyber backdrop ─────────────────────────────────────── */
-/* Painted by components/CyberBackground.jsx, which feeds --px/--py (parallax),
-   --tilt and --hue from the cursor. Long-session friendly: no scanlines, no
-   strobe, nothing that flickers at screen frequency. Fixed and
-   non-interactive, so it never scrolls with content or eats a click. */
+/* Painted by components/CyberBackground.jsx: columns of coloured glyphs falling
+   straight down a flat dark field. No corner haze and no parallax — the colour
+   is the glyphs, not light thrown on the page, and nothing slides with the
+   cursor. Long-session friendly: no scanlines, no strobe, nothing that flickers
+   at screen frequency. Fixed and non-interactive, so it never scrolls with
+   content or eats a click. */
 .cyber-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
   overflow: hidden;
-  /* Flat base. Any wide dark ramp here bands too, and the haze above supplies
-     all the depth the page needs. */
   background: var(--bg);
-  --px: 0px;
-  --py: 0px;
-  --tilt: 0deg;
-  --hue: 0deg;
 }
 .cyber-bg > * {
   position: absolute;
-  inset: -14%;
-}
-
-/* Neon haze: saturated pools of signage colour bouncing off a dark room. Long
-   drift cycle so the movement stays below notice. */
-.cyber-haze {
-  background:
-    /* Three stops per pool, not two: a straight ramp to transparent quantises
-       into visible rings on a dark screen, an eased one does not. */
-    /* Blue, pink, violet and a cold white only. No green anywhere. */
-    radial-gradient(46% 34% at 78% 4%,  rgba(91, 157, 255, 0.34) 0%, rgba(91, 157, 255, 0.13) 38%, rgba(91, 157, 255, 0.035) 62%, transparent 78%),
-    radial-gradient(40% 32% at 10% 16%, rgba(168, 85, 247, 0.32) 0%, rgba(168, 85, 247, 0.12) 38%, rgba(168, 85, 247, 0.03) 62%, transparent 78%),
-    radial-gradient(44% 36% at 92% 72%, rgba(244, 114, 182, 0.30) 0%, rgba(244, 114, 182, 0.11) 38%, rgba(244, 114, 182, 0.03) 62%, transparent 78%),
-    radial-gradient(38% 30% at 30% 92%, rgba(196, 181, 253, 0.18) 0%, rgba(196, 181, 253, 0.07) 40%, rgba(196, 181, 253, 0.02) 64%, transparent 80%);
-  /* No centre pool. A wide, dim, desaturated wash over near-black is the one
-     ramp 8-bit cannot resolve — it banded across the middle of every page no
-     matter how the stops were eased. The corners carry the colour instead. */
-  filter: blur(64px) saturate(150%) hue-rotate(var(--hue));
-  opacity: 0.6;
-  transform: translate3d(var(--px), var(--py), 0) skewX(var(--tilt));
-  transition: transform 0.7s cubic-bezier(0.2, 0.7, 0.3, 1), filter 0.6s linear;
-  animation: hazeDrift 34s ease-in-out infinite alternate;
-}
-@keyframes hazeDrift {
-  from { background-position: 0 0,     0 0,     0 0,     0 0,    0 0; }
-  to   { background-position: -3% 2%,  4% -2%, -4% -3%,  2% 3%, -2% 1%; }
-}
-
-/* Falling glyph columns, drawn on canvas. The cursor is wind, and brushing a
-   column makes it flare white and slide away. */
-.cyber-rain {
   inset: 0;
+}
+
+.cyber-rain {
   width: 100%;
   height: 100%;
   opacity: 0.95;
-  transform: translate3d(calc(var(--px) * 0.6), calc(var(--py) * 0.6), 0);
-  transition: transform 0.8s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 
-/* Dither. 8-bit output cannot express the tiny steps a wide dark gradient asks
-   for, so the ramp quantises into rings; a still film of noise breaks the
-   boundaries up and the eye reads a smooth wash. Never animated — moving grain
-   is exactly the static this backdrop is meant to avoid. */
+/* Dither. 8-bit output cannot express the tiny steps the vignette ramp asks
+   for, so it quantises into rings; a still film of noise breaks the boundaries
+   up and the eye reads a smooth wash. Never animated — moving grain is exactly
+   the static this backdrop is meant to avoid. */
 .cyber-grain {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   opacity: 0.05;
   mix-blend-mode: overlay;
 }
 
-/* Edge darkening. Static: all the light belongs to the haze and the rain. */
+/* Edge darkening only, no colour: keeps the rain from crowding the frame. */
 .cyber-vignette {
   background:
     radial-gradient(115% 95% at 50% 42%, transparent 38%, rgba(4, 6, 10, 0.22) 66%, rgba(4, 6, 10, 0.44) 84%, rgba(4, 6, 10, 0.6) 100%),
     linear-gradient(180deg, transparent 60%, rgba(4, 6, 10, 0.22) 80%, rgba(4, 6, 10, 0.48) 100%);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cyber-haze { animation: none; }
-  .cyber-haze,
-  .cyber-rain { transition: none; }
 }
 
 /* ── Icons ──────────────────────────────────────────────── */

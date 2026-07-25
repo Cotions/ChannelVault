@@ -1,19 +1,16 @@
 import { useEffect, useRef } from "react";
 
-/* Fixed backdrop behind everything: a blue/pink/violet haze and slow falling
-   columns of glyphs that keep rewriting themselves as they drop.
+/* Fixed backdrop behind everything: columns of coloured glyphs falling straight
+   down over a flat dark field. No haze, no glow, no parallax — the colour lives
+   in the glyphs themselves and nothing slides sideways with the cursor.
 
-   Every glyph is pre-rendered once into a small sprite with its glow already
-   baked in, and the frame loop only blits those sprites. Calling fillText with
-   a live shadowBlur several hundred times a frame is what made the fall stutter
-   — shadowed text is re-rasterised from scratch on every call.
+   Every glyph is pre-rendered once into a small sprite and the frame loop only
+   blits those. Calling fillText several hundred times a frame is what made the
+   fall stutter.
 
-   The pointer draws no light of its own. It leans the whole plate (parallax,
-   slight skew, hue) and disturbs columns it touches: the struck one flares
-   white, gets shoved sideways, and sheds glyphs that fade out.
-
-   Pointer state lives in refs and CSS custom properties written straight to the
-   DOM, never React state — a 120 Hz mousemove must not re-render the app. */
+   The cursor still disturbs a column it passes through: that column flares
+   white and sheds a few glyphs. Column state lives in refs, never React state,
+   so a 120 Hz mousemove cannot re-render the app. */
 
 const DROPS  = 46;
 const SPECKS = 90;
@@ -22,7 +19,7 @@ const COLOURS = ["#5b9dff", "#f472b6", "#a855f7", "#c4b5fd", "#e8ecf6"];
 // glyph occupies the same cell so a column never reflows.
 const GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789:=*+<>|";
 const CELL = 17;    // vertical spacing between glyphs in a column
-const SPRITE = 44;  // sprite box, big enough to hold the baked glow
+const SPRITE = 26;  // sprite box; no glow to leave room for, so it fits the cell
 const BASE = 16;    // font size the sprites are drawn at; blitted scaled down
 
 function pick() {
@@ -47,11 +44,9 @@ function sprite(ch, colour, head) {
   g.font = `${BASE}px "JetBrains Mono", ui-monospace, monospace`;
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.shadowColor = colour;
-  g.shadowBlur = head ? 12 : 5;
+  // Flat ink, no shadow. The head is only a paler tint of the same colour.
   g.fillStyle = head ? "#eef1f8" : colour;
   g.fillText(ch, SPRITE / 2, SPRITE / 2);
-  if (head) { g.fillText(ch, SPRITE / 2, SPRITE / 2); }  // second pass: hotter core
   sprites.set(key, c);
   return c;
 }
@@ -61,15 +56,12 @@ export default function CyberBackground() {
   const canvasRef = useRef(null);
 
   useEffect(() => {
-    const el = rootRef.current, canvas = canvasRef.current;
-    if (!el || !canvas) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-    let px = 0.5, py = 0.4, lx = 0.5, ly = 0.4;
-    function onMove(e) {
-      px = e.clientX / window.innerWidth;
-      py = e.clientY / window.innerHeight;
-    }
+    let cx = -999, cy = -999;
+    function onMove(e) { cx = e.clientX; cy = e.clientY; }
     window.addEventListener("pointermove", onMove, { passive: true });
 
     const ctx = canvas.getContext("2d");
@@ -85,7 +77,7 @@ export default function CyberBackground() {
     }
     resize();
 
-    // depth 0.25..1 drives size, fall speed, brightness and wind response.
+    // depth 0.25..1 drives size, fall speed and brightness.
     function reset(d, i, first, t) {
       const depth = 0.25 + Math.random() * 0.75;
       d.depth = depth;
@@ -99,7 +91,6 @@ export default function CyberBackground() {
       // whole column flipping at once.
       d.next = Array.from({ length: d.len }, () => t + Math.random() * 1.2);
       d.hit = 0;
-      d.kick = 0;
     }
     const drops = Array.from({ length: DROPS }, (_, i) => {
       const d = {};
@@ -107,11 +98,11 @@ export default function CyberBackground() {
       return d;
     });
 
-    /* Glyphs thrown off on a touch. Fixed-size pool: a sweeping cursor can brush
-       the field many times a second, and allocating per touch would hand the GC
-       a steady drip of garbage. */
+    /* Glyphs shaken loose by the cursor. Fixed-size pool: a sweeping cursor can
+       brush the field many times a second, and allocating per touch would hand
+       the GC a steady drip of garbage. */
     const specks = Array.from({ length: SPECKS }, () => ({
-      x: 0, y: 0, vx: 0, vy: 0, life: 0, born: 1, ch: "0", colour: "#fff",
+      x: 0, y: 0, vy: 0, life: 0, born: 1, ch: "0", colour: "#fff",
     }));
     let speckAt = 0;
 
@@ -119,13 +110,11 @@ export default function CyberBackground() {
       const n = 2 + Math.round(depth * 3);
       for (let i = 0; i < n; i++) {
         const p = specks[speckAt = (speckAt + 1) % SPECKS];
-        const a = Math.random() * Math.PI * 2;
-        const v = 12 + Math.random() * 34 * depth;   // drift, not spray
-        p.x = x; p.y = y;
-        p.vx = Math.cos(a) * v;
-        p.vy = Math.sin(a) * v + 16;                 // biased with the rain
+        p.x = x + (i - n / 2) * 3;
+        p.y = y + i * 6;
+        p.vy = 30 + Math.random() * 50 * depth;   // they just drop away
         p.ch = pick();
-        p.born = p.life = 1.3 + Math.random() * 1.2;
+        p.born = p.life = 1.1 + Math.random() * 1.1;
         p.colour = colour;
       }
     }
@@ -136,30 +125,14 @@ export default function CyberBackground() {
       last = now;
       const t = now / 1000;
 
-      // Heavily eased cursor: the plate follows like it is behind glass.
-      lx += (px - lx) * Math.min(1, dt * 2.6);
-      ly += (py - ly) * Math.min(1, dt * 2.6);
-      const wx = (lx - 0.5) * 2, wy = (ly - 0.5) * 2;
-
-      el.style.setProperty("--px", `${(wx * -26).toFixed(1)}px`);
-      el.style.setProperty("--py", `${(wy * -17).toFixed(1)}px`);
-      el.style.setProperty("--tilt", `${(wx * 2.2).toFixed(2)}deg`);
-      el.style.setProperty("--hue", `${(wx * 22).toFixed(1)}deg`);
-
       ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = "lighter";
 
-      const cx = lx * w, cy = ly * h;
-
       for (const d of drops) {
-        d.x += (wx * 16 * d.depth + d.kick) * dt;
-        d.y += (d.speed * (1 + wy * 0.25)) * dt;
-        d.kick *= Math.max(0, 1 - dt * 1.6);
+        d.y += d.speed * dt;
 
         const tail = d.y - CELL * (d.len - 1);
         if (tail > h + CELL) { reset(d, 0, false, t); continue; }
-        if (d.x < -40) d.x = w + 40;
-        if (d.x > w + 40) d.x = -40;
 
         d.hit = Math.max(0, d.hit - dt * 0.9);       // ~1.1s to settle
 
@@ -169,13 +142,12 @@ export default function CyberBackground() {
                      cy > tail - CELL && cy < d.y + CELL;
         if (d.hit < 0.25 && near) {
           d.hit = 1;
-          d.kick = (d.x < cx ? -1 : 1) * (26 + 34 * d.depth);
           shed(d.x, cy, d.colour, d.depth);
         }
 
         const scale = (10 + d.depth * 6) / BASE;
         const box = SPRITE * scale;
-        const dim = 0.06 + d.depth * 0.14;
+        const dim = 0.09 + d.depth * 0.2;
 
         for (let i = 0; i < d.len; i++) {
           const y = d.y - i * CELL;
@@ -194,7 +166,7 @@ export default function CyberBackground() {
           const head = i === 0;
           const fade = 1 - i / d.len;
           ctx.globalAlpha = Math.min(0.9,
-            (head ? dim * 3.4 : dim * fade * fade) + d.hit * (head ? 0.4 : 0.18));
+            (head ? dim * 2.6 : dim * fade * fade) + d.hit * (head ? 0.35 : 0.16));
           ctx.drawImage(sprite(d.chars[i], d.colour, head && d.hit < 0.2),
                         d.x - box / 2, y - box / 2, box, box);
         }
@@ -204,12 +176,10 @@ export default function CyberBackground() {
       for (const p of specks) {
         if (p.life <= 0) continue;
         p.life -= dt;
-        p.x += p.vx * dt;
         p.y += p.vy * dt;
-        p.vx *= Math.max(0, 1 - dt * 0.9);
-        p.vy *= Math.max(0, 1 - dt * 0.5);
+        p.vy *= Math.max(0, 1 - dt * 0.4);
         const k = Math.max(0, p.life / p.born);
-        ctx.globalAlpha = k * k * 0.45;             // squared: soft tail
+        ctx.globalAlpha = k * k * 0.5;              // squared: soft tail
         ctx.drawImage(sprite(p.ch, p.colour, false),
                       p.x - speckBox / 2, p.y - speckBox / 2, speckBox, speckBox);
       }
@@ -236,7 +206,6 @@ export default function CyberBackground() {
 
   return (
     <div className="cyber-bg" ref={rootRef} aria-hidden="true">
-      <div className="cyber-haze" />
       <canvas className="cyber-rain" ref={canvasRef} />
       <div className="cyber-grain" />
       <div className="cyber-vignette" />
