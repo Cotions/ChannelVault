@@ -49,7 +49,9 @@ body {
   z-index: -1;
   pointer-events: none;
   overflow: hidden;
-  background: linear-gradient(180deg, #05070c 0%, var(--bg) 55%, #070a12 100%);
+  /* Flat base. Any wide dark ramp here bands too, and the haze above supplies
+     all the depth the page needs. */
+  background: var(--bg);
   --px: 0px;
   --py: 0px;
   --tilt: 0deg;
@@ -69,8 +71,10 @@ body {
     radial-gradient(46% 34% at 78% 4%,  rgba(74, 222, 128, 0.40) 0%, rgba(74, 222, 128, 0.16) 38%, rgba(74, 222, 128, 0.04) 62%, transparent 78%),
     radial-gradient(40% 32% at 10% 16%, rgba(34, 211, 238, 0.38) 0%, rgba(34, 211, 238, 0.15) 38%, rgba(34, 211, 238, 0.04) 62%, transparent 78%),
     radial-gradient(44% 36% at 92% 72%, rgba(217, 70, 239, 0.38) 0%, rgba(217, 70, 239, 0.15) 38%, rgba(217, 70, 239, 0.04) 62%, transparent 78%),
-    radial-gradient(38% 30% at 30% 92%, rgba(91, 157, 255, 0.22) 0%, rgba(91, 157, 255, 0.09) 40%, rgba(91, 157, 255, 0.02) 64%, transparent 80%),
-    radial-gradient(52% 40% at 52% 50%, rgba(47, 158, 79, 0.14)  0%, rgba(47, 158, 79, 0.05)  45%, transparent 78%);
+    radial-gradient(38% 30% at 30% 92%, rgba(91, 157, 255, 0.22) 0%, rgba(91, 157, 255, 0.09) 40%, rgba(91, 157, 255, 0.02) 64%, transparent 80%);
+  /* No centre pool. A wide, dim, desaturated green over near-black is the one
+     ramp 8-bit cannot resolve — it banded across the middle of every page no
+     matter how the stops were eased. The corners carry the colour instead. */
   filter: blur(64px) saturate(175%) hue-rotate(var(--hue));
   opacity: 0.7;
   transform: translate3d(var(--px), var(--py), 0) skewX(var(--tilt));
