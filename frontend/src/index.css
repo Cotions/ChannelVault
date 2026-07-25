@@ -39,67 +39,82 @@ body {
 }
 
 /* ── Cyber backdrop ─────────────────────────────────────── */
-/* Painted by components/CyberBackground.jsx, which feeds --mx/--my (cursor
-   position) and --px/--py (parallax offset). Fixed and non-interactive, so it
-   never scrolls with content or eats a click. */
+/* Painted by components/CyberBackground.jsx, which feeds --px/--py (parallax),
+   --tilt and --hue from the cursor. Long-session friendly: no scanlines, no
+   strobe, nothing that flickers at screen frequency. Fixed and
+   non-interactive, so it never scrolls with content or eats a click. */
 .cyber-bg {
   position: fixed;
   inset: 0;
   z-index: -1;
   pointer-events: none;
   overflow: hidden;
-  background: var(--bg);
-  --mx: 50%;
-  --my: 35%;
+  background: linear-gradient(180deg, #05070c 0%, var(--bg) 55%, #070a12 100%);
   --px: 0px;
   --py: 0px;
+  --tilt: 0deg;
+  --hue: 0deg;
 }
 .cyber-bg > * {
   position: absolute;
-  inset: -12%;
+  inset: -14%;
 }
 
-/* Slow drift, independent of the pointer: the room is alive even at rest. */
-.cyber-aurora {
-  background:
-    radial-gradient(58% 44% at 74% 8%,  rgba(47, 158, 79, 0.55),  transparent 62%),
-    radial-gradient(52% 46% at 12% 20%, rgba(34, 211, 238, 0.34), transparent 60%),
-    radial-gradient(46% 40% at 88% 78%, rgba(217, 70, 239, 0.30), transparent 60%),
-    radial-gradient(60% 50% at 40% 96%, rgba(47, 158, 79, 0.30),  transparent 65%);
-  filter: blur(38px) saturate(135%);
-  opacity: 0.85;
-  transform: translate3d(var(--px), var(--py), 0);
-  transition: transform 0.45s cubic-bezier(0.2, 0.7, 0.3, 1);
-  animation: auroraDrift 26s ease-in-out infinite alternate;
-}
-@keyframes auroraDrift {
-  from { background-position: 0 0,        0 0,        0 0,      0 0; }
-  to   { background-position: -4% 3%,  5% -3%,  -5% -4%,   3% 2%; }
-}
-
-/* The cursor itself: a tight phosphor core inside a wide cyan bloom. */
-.cyber-cursor {
-  background:
-    radial-gradient(320px 320px at var(--mx) var(--my), rgba(74, 222, 128, 0.26), transparent 72%),
-    radial-gradient(980px 780px at var(--mx) var(--my), rgba(34, 211, 238, 0.17), transparent 72%);
-  mix-blend-mode: screen;
-}
-
-/* Darkens everything the cursor is not near, which is what sells the light. */
+/* Neon haze: saturated pools of signage colour bouncing off a dark room. Long
+   drift cycle so the movement stays below notice. */
 .cyber-haze {
   background:
-    radial-gradient(1200px 950px at var(--mx) var(--my), transparent 0%, rgba(10, 12, 17, 0.42) 80%),
-    linear-gradient(180deg, transparent 55%, rgba(10, 12, 17, 0.38));
+    /* Three stops per pool, not two: a straight ramp to transparent quantises
+       into visible rings on a dark screen, an eased one does not. */
+    radial-gradient(46% 34% at 78% 4%,  rgba(74, 222, 128, 0.40) 0%, rgba(74, 222, 128, 0.16) 38%, rgba(74, 222, 128, 0.04) 62%, transparent 78%),
+    radial-gradient(40% 32% at 10% 16%, rgba(34, 211, 238, 0.38) 0%, rgba(34, 211, 238, 0.15) 38%, rgba(34, 211, 238, 0.04) 62%, transparent 78%),
+    radial-gradient(44% 36% at 92% 72%, rgba(217, 70, 239, 0.38) 0%, rgba(217, 70, 239, 0.15) 38%, rgba(217, 70, 239, 0.04) 62%, transparent 78%),
+    radial-gradient(38% 30% at 30% 92%, rgba(91, 157, 255, 0.22) 0%, rgba(91, 157, 255, 0.09) 40%, rgba(91, 157, 255, 0.02) 64%, transparent 80%),
+    radial-gradient(52% 40% at 52% 50%, rgba(47, 158, 79, 0.14)  0%, rgba(47, 158, 79, 0.05)  45%, transparent 78%);
+  filter: blur(64px) saturate(175%) hue-rotate(var(--hue));
+  opacity: 0.7;
+  transform: translate3d(var(--px), var(--py), 0) skewX(var(--tilt));
+  transition: transform 0.7s cubic-bezier(0.2, 0.7, 0.3, 1), filter 0.6s linear;
+  animation: hazeDrift 34s ease-in-out infinite alternate;
+}
+@keyframes hazeDrift {
+  from { background-position: 0 0,     0 0,     0 0,     0 0,    0 0; }
+  to   { background-position: -3% 2%,  4% -2%, -4% -3%,  2% 3%, -2% 1%; }
+}
+
+/* Drifting filaments, drawn on canvas. The cursor is wind, and crossing one
+   makes it flare and bend away. */
+.cyber-lines {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.95;
+  transform: translate3d(calc(var(--px) * 0.6), calc(var(--py) * 0.6), 0);
+  transition: transform 0.8s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* Dither. 8-bit output cannot express the tiny steps a wide dark gradient asks
+   for, so the ramp quantises into rings; a still film of noise breaks the
+   boundaries up and the eye reads a smooth wash. Never animated — moving grain
+   is exactly the static this backdrop is meant to avoid. */
+.cyber-grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  opacity: 0.05;
+  mix-blend-mode: overlay;
+}
+
+/* Edge darkening. Static: all the light belongs to the haze and the filaments. */
+.cyber-vignette {
+  background:
+    radial-gradient(115% 95% at 50% 42%, transparent 38%, rgba(4, 6, 10, 0.22) 66%, rgba(4, 6, 10, 0.44) 84%, rgba(4, 6, 10, 0.6) 100%),
+    linear-gradient(180deg, transparent 60%, rgba(4, 6, 10, 0.22) 80%, rgba(4, 6, 10, 0.48) 100%);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .cyber-aurora { animation: none; transition: none; }
-  .cyber-cursor { display: none; }
+  .cyber-haze { animation: none; }
+  .cyber-haze,
+  .cyber-lines { transition: none; }
 }
-
-a { color: inherit; text-decoration: none; }
-
-::selection { background: rgba(74, 222, 128, 0.28); color: #fff; }
 
 /* ── Icons ──────────────────────────────────────────────── */
 .icon { flex-shrink: 0; display: block; }
