@@ -1,28 +1,27 @@
 import { useEffect, useRef } from "react";
 
-/* Fixed backdrop behind everything: a neon haze and a field of slow drifting
-   filaments. Built for a room you sit in for hours, so nothing flashes, tears
-   or strobes — the fastest thing on screen takes half a second.
+/* Fixed backdrop behind everything: a blue/pink/violet haze and slow falling
+   columns of glyphs. Built for a room you sit in for hours, so nothing flashes
+   or strobes — drops take many seconds to cross, and a glyph only ever swaps
+   during the dim tail where the change is invisible.
 
    The pointer draws no light of its own. It leans the whole plate (parallax,
-   slight skew, hue shift) and it disturbs filaments it actually crosses: the
-   struck one brightens, bends away and sheds a few slow motes that fade out.
+   slight skew, hue) and disturbs drops it actually touches: the struck one
+   flares white, gets shoved sideways, and throws off specks that fade out.
 
    Pointer state lives in refs and CSS custom properties written straight to the
    DOM, never React state — a 120 Hz mousemove must not re-render the app. */
 
-const LINES  = 70;
-const MOTES  = 90;
-const HIT_RADIUS = 30;
-const COLOURS = ["#4ade80", "#22d3ee", "#d946ef", "#5b9dff"];
+const DROPS  = 46;
+const SPECKS = 90;
+const COLOURS = ["#5b9dff", "#f472b6", "#a855f7", "#c4b5fd", "#e8ecf6"];
+// Half-width katakana and a few symbols: the standard rain alphabet, and every
+// glyph occupies the same cell so a column never reflows.
+const GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789:=*+<>|";
+const CELL = 17;   // vertical spacing between glyphs in a column
 
-// Distance from a point to a segment. Used to tell whether the cursor crossed a
-// filament; a bounding box would fire on the empty corner of a steep line.
-function pointSegDist(px, py, ax, ay, bx, by) {
-  const dx = bx - ax, dy = by - ay;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2)) : 0;
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+function pick() {
+  return GLYPHS[(Math.random() * GLYPHS.length) | 0];
 }
 
 export default function CyberBackground() {
@@ -54,40 +53,47 @@ export default function CyberBackground() {
     }
     resize();
 
-    // depth 0.25..1 drives length, speed, brightness and how hard wind hits.
-    const lines = Array.from({ length: LINES }, (_, i) => {
-      const depth = 0.25 + ((i * 37) % 100) / 133;
-      return {
-        x: ((i * 73) % 100) / 100 * w,
-        y: ((i * 149) % 100) / 100 * h,
-        depth,
-        len: 22 + depth * 96,
-        speed: 7 + depth * 26,        // px per second, upward. Deliberately slow.
-        colour: COLOURS[i % COLOURS.length],
-        phase: ((i * 211) % 100) / 100 * Math.PI * 2,
-        hit: 0,    // 1 just after the cursor crosses it, eases back to 0
-        kick: 0,   // sideways drift from that touch, px/s
-      };
+    // depth 0.25..1 drives size, fall speed, brightness and wind response.
+    function reset(d, i, first) {
+      const depth = 0.25 + Math.random() * 0.75;
+      d.depth = depth;
+      d.x = first ? ((i * 73) % 100) / 100 * w : Math.random() * w;
+      d.len = 5 + Math.round(depth * 12);
+      d.y = first
+        ? Math.random() * h
+        : -CELL * d.len - Math.random() * h * 0.4;
+      d.speed = 14 + depth * 34;                 // px/s downward. Slow on purpose.
+      d.colour = COLOURS[(Math.random() * COLOURS.length) | 0];
+      d.chars = Array.from({ length: d.len }, pick);
+      d.swapAt = 0;
+      d.hit = 0;
+      d.kick = 0;
+    }
+    const drops = Array.from({ length: DROPS }, (_, i) => {
+      const d = {};
+      reset(d, i, true);
+      return d;
     });
 
-    /* Motes shed on a touch. Fixed-size pool: a sweeping cursor can brush the
-       field many times a second, and allocating per touch would hand the GC a
-       steady drip of garbage. */
-    const motes = Array.from({ length: MOTES }, () => ({
-      x: 0, y: 0, vx: 0, vy: 0, life: 0, born: 1, colour: "#fff",
+    /* Specks thrown off on a touch. Fixed-size pool: a sweeping cursor can brush
+       the field many times a second, and allocating per touch would hand the GC
+       a steady drip of garbage. */
+    const specks = Array.from({ length: SPECKS }, () => ({
+      x: 0, y: 0, vx: 0, vy: 0, life: 0, born: 1, ch: "0", colour: "#fff",
     }));
-    let moteAt = 0;
+    let speckAt = 0;
 
     function shed(x, y, colour, depth) {
-      const n = 2 + Math.round(depth * 2);
+      const n = 2 + Math.round(depth * 3);
       for (let i = 0; i < n; i++) {
-        const p = motes[moteAt = (moteAt + 1) % MOTES];
+        const p = specks[speckAt = (speckAt + 1) % SPECKS];
         const a = Math.random() * Math.PI * 2;
-        const v = 8 + Math.random() * 26 * depth;   // drift, not spray
+        const v = 12 + Math.random() * 34 * depth;   // drift, not spray
         p.x = x; p.y = y;
         p.vx = Math.cos(a) * v;
-        p.vy = Math.sin(a) * v - 10;
-        p.born = p.life = 1.6 + Math.random() * 1.4;
+        p.vy = Math.sin(a) * v + 14;                 // biased with the rain
+        p.ch = pick();
+        p.born = p.life = 1.3 + Math.random() * 1.2;
         p.colour = colour;
       }
     }
@@ -105,62 +111,80 @@ export default function CyberBackground() {
       el.style.setProperty("--px", `${(wx * -26).toFixed(1)}px`);
       el.style.setProperty("--py", `${(wy * -17).toFixed(1)}px`);
       el.style.setProperty("--tilt", `${(wx * 2.2).toFixed(2)}deg`);
-      el.style.setProperty("--hue", `${(wx * 30).toFixed(1)}deg`);
+      el.style.setProperty("--hue", `${(wx * 22).toFixed(1)}deg`);
 
       ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = "lighter";
-      ctx.lineCap = "round";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
 
       const cx = lx * w, cy = ly * h;
+      const t = now / 1000;
 
-      for (const s of lines) {
-        s.x += (wx * 26 * s.depth + s.kick) * dt;
-        s.y += (-s.speed + wy * 20 * s.depth) * dt;
-        s.kick *= Math.max(0, 1 - dt * 1.6);   // bleeds off over a second or so
-        if (s.y + s.len < 0) { s.y = h + s.len; s.x = Math.random() * w; }
-        if (s.y - s.len > h) s.y = -s.len;
-        if (s.x < -40) s.x = w + 40;
-        if (s.x > w + 40) s.x = -40;
+      for (const d of drops) {
+        d.x += (wx * 16 * d.depth + d.kick) * dt;
+        d.y += (d.speed * (1 + wy * 0.25)) * dt;
+        d.kick *= Math.max(0, 1 - dt * 1.6);
 
-        // Head and tail as drawn, so the test matches the pixels on screen.
-        const tx = s.x + wx * s.len * 0.35 * s.depth, ty = s.y + s.len;
-        s.hit = Math.max(0, s.hit - dt * 0.8);   // ~1.2s to settle
-        if (s.hit < 0.25 && pointSegDist(cx, cy, s.x, s.y, tx, ty) < HIT_RADIUS) {
-          s.hit = 1;
-          s.kick = (s.x < cx ? -1 : 1) * (16 + 26 * s.depth);
-          shed(s.x, s.y + s.len * 0.5, s.colour, s.depth);
+        const tail = d.y - CELL * (d.len - 1);
+        if (tail > h + CELL) { reset(d, 0, false); continue; }
+        if (d.x < -40) d.x = w + 40;
+        if (d.x > w + 40) d.x = -40;
+
+        d.hit = Math.max(0, d.hit - dt * 0.9);       // ~1.1s to settle
+
+        // Cursor against the column as a vertical segment, not a box: a box
+        // fires on empty air beside the glyphs.
+        const near = Math.abs(cx - d.x) < 22 &&
+                     cy > tail - CELL && cy < d.y + CELL;
+        if (d.hit < 0.25 && near) {
+          d.hit = 1;
+          d.kick = (d.x < cx ? -1 : 1) * (26 + 34 * d.depth);
+          shed(d.x, cy, d.colour, d.depth);
         }
 
-        const breathe = 0.6 + 0.4 * Math.sin(now / 2600 + s.phase);
-        ctx.globalAlpha = Math.min(0.85, (0.05 + s.depth * 0.16) * breathe + s.hit * 0.32);
-        ctx.strokeStyle = s.colour;
-        ctx.shadowColor = s.colour;
-        ctx.shadowBlur  = 6 + s.depth * 12 + s.hit * 18;
-        ctx.lineWidth   = 0.6 + s.depth * 1.3 + s.hit * 0.9;
-        ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
-        ctx.lineTo(tx, ty);
-        ctx.stroke();
+        // One glyph swap per drop every ~1.4s, always deep in the faded tail
+        // where the change cannot read as a blink.
+        if (t > d.swapAt) {
+          d.swapAt = t + 1.1 + Math.random() * 0.8;
+          d.chars[(Math.random() * (d.len - 2) | 0) + 2] = pick();
+        }
+
+        const size = 10 + d.depth * 6;
+        ctx.font = `${size}px ${"JetBrains Mono, ui-monospace, monospace"}`;
+        const base = 0.06 + d.depth * 0.14;
+
+        for (let i = 0; i < d.len; i++) {
+          const y = d.y - i * CELL;
+          if (y < -CELL || y > h + CELL) continue;
+          // Head is the bright one and stays near white; the tail falls away on
+          // a curve so the column reads as a streak, not a dotted line.
+          const fade = 1 - i / d.len;
+          const head = i === 0;
+          ctx.globalAlpha = Math.min(0.85,
+            (head ? base * 3.4 : base * fade * fade) + d.hit * (head ? 0.4 : 0.18));
+          ctx.fillStyle = head && d.hit < 0.2 ? "#e8ecf6" : d.colour;
+          ctx.shadowColor = d.colour;
+          ctx.shadowBlur = (head ? 10 : 4) + d.hit * 14;
+          ctx.fillText(d.chars[i], d.x, y);
+        }
       }
 
-      for (const p of motes) {
+      ctx.shadowBlur = 0;
+      ctx.font = "11px JetBrains Mono, ui-monospace, monospace";
+      for (const p of specks) {
         if (p.life <= 0) continue;
         p.life -= dt;
         p.x += p.vx * dt;
         p.y += p.vy * dt;
-        p.vx *= Math.max(0, 1 - dt * 0.7);
-        p.vy *= Math.max(0, 1 - dt * 0.7);
+        p.vx *= Math.max(0, 1 - dt * 0.9);
+        p.vy *= Math.max(0, 1 - dt * 0.5);
         const k = Math.max(0, p.life / p.born);
-        ctx.globalAlpha = k * k * 0.5;          // squared, so the tail is soft
-        ctx.fillStyle   = p.colour;
-        ctx.shadowColor = p.colour;
-        ctx.shadowBlur  = 8 * k;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 1.1 + k * 0.9, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.globalAlpha = k * k * 0.45;             // squared: soft tail
+        ctx.fillStyle = p.colour;
+        ctx.fillText(p.ch, p.x, p.y);
       }
 
-      ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
     }
 
@@ -184,7 +208,7 @@ export default function CyberBackground() {
   return (
     <div className="cyber-bg" ref={rootRef} aria-hidden="true">
       <div className="cyber-haze" />
-      <canvas className="cyber-lines" ref={canvasRef} />
+      <canvas className="cyber-rain" ref={canvasRef} />
       <div className="cyber-grain" />
       <div className="cyber-vignette" />
     </div>
