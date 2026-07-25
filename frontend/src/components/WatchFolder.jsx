@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { saveConfig, saveDataDir, saveMediaRoots, browse, browseData, scan } from "../lib/api";
+import Icon from "./Icon";
 
 export default function WatchFolder({ initialDir, initialDataDir, initialRoots, onScanDone, embedded = false }) {
   const [dir,     setDir]     = useState(initialDir     || "");
@@ -164,7 +165,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
             placeholder="/mnt/media/ASMR  or  D:\\Media\\ASMR"
           />
           <button className="btn-secondary" onClick={() => browseRoot(i)}>Browse…</button>
-          <button className="btn-ghost" onClick={() => removeRoot(i)} title="Remove">✕</button>
+          <button className="btn-ghost" onClick={() => removeRoot(i)} title="Remove"><Icon name="close" size={13} /></button>
         </div>
       ))}
       <div className="folder-row">

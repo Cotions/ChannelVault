@@ -1,4 +1,5 @@
 import { SORT_OPTIONS } from "../lib/sort";
+import Icon from "./Icon";
 
 export default function SortControls({ sort, dir, onSort, onDir }) {
   return (
@@ -11,7 +12,7 @@ export default function SortControls({ sort, dir, onSort, onDir }) {
         onClick={() => onDir(dir === "desc" ? "asc" : "desc")}
         title={dir === "desc" ? "Descending — click for ascending" : "Ascending — click for descending"}
       >
-        {dir === "desc" ? "↓" : "↑"}
+        <Icon name={dir === "desc" ? "arrowDown" : "arrowUp"} size={15} />
       </button>
     </>
   );

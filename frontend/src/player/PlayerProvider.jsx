@@ -2,6 +2,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { streamUrl, thumbUrl, postWatchProgress, watchBeacon } from "../lib/api";
 import { PlayerCtx } from "./playerContext";
+import Icon from "../components/Icon";
 
 const fresh = () => ({ watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0, posting: false });
 
@@ -151,9 +152,9 @@ export default function PlayerProvider({ onCompleted, children }) {
         <div ref={shellRef} className={`cv-shell cv-shell-${mode}`}>
           {mode === "mini" && (
             <div className="cv-mini-bar" key="bar">
-              <button className="cv-mini-btn" title="Expand" onClick={() => navigate(`/video/${activeId}`)}>⤢</button>
+              <button className="cv-mini-btn" title="Expand" onClick={() => navigate(`/video/${activeId}`)}><Icon name="expand" size={14} /></button>
               <span className="cv-mini-title">{title}</span>
-              <button className="cv-mini-btn" title="Close" onClick={stop}>✕</button>
+              <button className="cv-mini-btn" title="Close" onClick={stop}><Icon name="close" size={14} /></button>
             </div>
           )}
           <video

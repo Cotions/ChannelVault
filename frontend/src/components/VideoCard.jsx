@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { latestThumbUrl } from "../lib/api";
-import { fmt, fmtDuration } from "../lib/fmt";
+import { artistsOf } from "../lib/artists";
+import { fmt, fmtDuration, fmtRecordedDate } from "../lib/fmt";
+import Icon from "./Icon";
 
 export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid" }) {
   const [thumbOk,    setThumbOk]    = useState(true);
@@ -78,8 +80,9 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
     }
   }
 
-  const dur   = fmtDuration(video.duration_secs);
-  const date  = video.recorded_date || null;
+  const dur     = fmtDuration(video.duration_secs);
+  const date    = fmtRecordedDate(video.recorded_date);
+  const artists = artistsOf(video);
 
   const AVAIL_LABELS = {
     private: "Private", deleted: "Deleted", members: "Members",
@@ -96,23 +99,33 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
             className="video-thumb"
             src={latestThumbUrl(video.video_id)}
             alt=""
+            loading="lazy"
             onError={() => setThumbOk(false)}
           />
         ) : (
-          <div className="video-thumb-placeholder">▶</div>
+          <div className="video-thumb-placeholder"><Icon name="play" size={30} className="icon-fill" /></div>
+        )}
+        <span className="thumb-play"><Icon name="play" size={20} className="icon-fill" /></span>
+        {availLabel && (
+          <span className={`avail-badge avail-${video.availability}`} title={`${availLabel} on YouTube`}>
+            {availLabel}
+          </span>
         )}
         {video.watch_count > 0 && (
           <span className="watched-badge" title={`Watched ${video.watch_count}×`}>
-            ✓{video.watch_count > 1 ? ` ${video.watch_count}` : ""}
+            <Icon name="check" size={11} />{video.watch_count > 1 ? video.watch_count : ""}
           </span>
         )}
+        {dur && <span className="dur-badge">{dur}</span>}
       </Link>
       <div className="video-info">
         <div className="video-title">
           <Link to={`/video/${video.video_id}`}>{video.title || video.video_id}</Link>
         </div>
+        <Link className="video-channel" to={`/artist/${encodeURIComponent(artists[0])}`} title={artists.join(", ")}>
+          {artists[0]}{artists.length > 1 ? ` +${artists.length - 1}` : ""}
+        </Link>
         <div className="video-meta">
-          {dur && <span>{dur}</span>}
           {date && <span>{date}</span>}
           {video.view_count != null && <span>{fmt(video.view_count)} views</span>}
           {video.like_count  != null && <span>{fmt(video.like_count)} likes</span>}
@@ -129,14 +142,14 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
               disabled={deleting}
               title="Confirm delete (Enter)"
             >
-              ✓
+              <Icon name="check" />
             </button>
             <button
               className="del-btn"
               onClick={() => setConfirming(false)}
               title="Cancel (Esc)"
             >
-              ✕
+              <Icon name="close" />
             </button>
           </>
         ) : (
@@ -149,13 +162,8 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
                   disabled={fetching}
                   onClick={handleFetchMeta}
                 >
-                  {fetchErr ? "!" : "⟳"}
+                  <Icon name={fetchErr ? "warn" : "refresh"} />
                 </button>
-              )}
-              {availLabel && (
-                <span className={`avail-badge avail-${video.availability}`} title={`${availLabel} on YouTube`}>
-                  {availLabel}
-                </span>
               )}
               {onFetchMeta && elapsed != null && (
                 <span className="fetch-timer">{elapsed.toFixed(1)}s</span>
@@ -169,7 +177,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
                   title="Add to playlist"
                   onClick={() => setPlOpen(o => !o)}
                 >
-                  {plAdded ? "✓" : "+"}
+                  <Icon name={plAdded ? "check" : "plus"} />
                 </button>
                 {plOpen && (
                   <div className="pl-menu">
@@ -188,7 +196,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
             )}
             {onEdit && (
               <button className="del-btn" title="Edit metadata" onClick={() => onEdit(video)}>
-                ✎
+                <Icon name="pencil" />
               </button>
             )}
             {onRemoveFromList && (
@@ -197,17 +205,17 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
                 title="Remove from playlist"
                 onClick={() => onRemoveFromList(video.video_id)}
               >
-                −
+                <Icon name="minus" />
               </button>
             )}
             {onDelete && (
               <button
-                className="del-btn"
+                className="del-btn del-btn-danger"
                 title="Remove from vault"
                 disabled={deleting}
                 onClick={() => setConfirming(true)}
               >
-                ✕
+                <Icon name="trash" />
               </button>
             )}
             </div>

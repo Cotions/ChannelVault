@@ -7,6 +7,7 @@ import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
+import Icon from "../components/Icon";
 
 export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   const { id } = useParams();
@@ -53,7 +54,9 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
     return (
       <div className="card">
         <div className="artist-page-header">
-          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+            <Icon name="back" size={15} />Back
+          </button>
           <h2 className="artist-page-title">Playlist</h2>
         </div>
         <div className="empty">{error}</div>
@@ -69,7 +72,9 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+          <Icon name="back" size={15} />Back
+        </button>
         <h2 className="artist-page-title">{playlist ? playlist.name : "…"}</h2>
         {videos.length > 0 && (
           <span className="artist-badge">{videos.length} video{videos.length !== 1 ? "s" : ""}</span>
@@ -79,8 +84,8 @@ export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
         )}
         {videos.length > 0 && (
           <div className="layout-toggle">
-            <button className={`btn-ghost${layout === "grid" ? " active" : ""}`} onClick={() => switchLayout("grid")} title="Grid view">▦</button>
-            <button className={`btn-ghost${layout === "list" ? " active" : ""}`} onClick={() => switchLayout("list")} title="List view">☰</button>
+            <button className={`btn-ghost${layout === "grid" ? " active" : ""}`} onClick={() => switchLayout("grid")} title="Grid view"><Icon name="grid" size={15} /></button>
+            <button className={`btn-ghost${layout === "list" ? " active" : ""}`} onClick={() => switchLayout("list")} title="List view"><Icon name="list" size={15} /></button>
           </div>
         )}
       </div>

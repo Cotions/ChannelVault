@@ -2,6 +2,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 import { artistsOf } from "../lib/artists";
+import Icon from "../components/Icon";
 
 function fmtHours(secs) {
   if (!secs) return "—";
@@ -84,7 +85,9 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   return (
     <div className="stats-page">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+          <Icon name="back" size={15} />Back
+        </button>
         <h2 className="artist-page-title">{title}</h2>
         {!artist && (
           <>

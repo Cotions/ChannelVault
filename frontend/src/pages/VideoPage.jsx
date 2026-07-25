@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl } from "../lib/api";
 import { artistsOf } from "../lib/artists";
-import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
+import { fmt, fmtBytes, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import { usePlayer } from "../player/playerContext";
+import Icon from "../components/Icon";
 
 export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   const { id } = useParams();
@@ -114,7 +115,9 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
     return (
       <div className="card">
         <div className="artist-page-header">
-          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+            <Icon name="back" size={15} />Back
+          </button>
           <h2 className="artist-page-title">Video</h2>
         </div>
         <div className="empty">{videos.length === 0 ? "Loading…" : "Video not found in vault."}</div>
@@ -151,7 +154,9 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+          <Icon name="back" size={15} />Back
+        </button>
         <div className="video-page-spacer" />
         <a href={ytUrl} target="_blank" rel="noreferrer" className="btn-yt" title="Open on YouTube">
           <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
@@ -160,44 +165,50 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
           YouTube
         </a>
         {elapsed != null && <span className="fetch-timer">{elapsed.toFixed(1)}s</span>}
-        <button className="btn-secondary btn-export" onClick={handleFetchMeta} disabled={fetching}>
-          {fetching ? "Fetching…" : "⟳ Fetch metadata"}
-        </button>
-        <button className="btn-secondary btn-export" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
-          {thumbBusy ? "…" : "⬇ Thumbnail"}
-        </button>
-        {thumbs.length > 1 && (
-          <button className="btn-secondary btn-export" onClick={cycle} title="Cycle thumbnail (newest first)">
-            ⤿ {thumbIdx + 1}/{thumbs.length}
-          </button>
-        )}
         {thumbMsg && <span className="fetch-timer">{thumbMsg}</span>}
-        <button className="btn-secondary btn-export" onClick={() => onEdit(video)}>✎ Edit</button>
-        {confirming ? (
-          <>
-            <span className="del-confirm-label">Delete from vault?</span>
-            <button
-              className="btn-danger btn-export"
-              onClick={handleDelete}
-              disabled={deleting}
-              autoFocus
-              title="Confirm delete"
-            >
-              ✓ Yes
-            </button>
-            <button className="btn-secondary btn-export" onClick={() => setConfirming(false)} title="Cancel (Esc)">
-              ✕ No
-            </button>
-          </>
-        ) : (
-          <button
-            className="btn-secondary btn-export btn-page-del"
-            disabled={deleting}
-            onClick={() => setConfirming(true)}
-          >
-            ✕
+        <div className="vp-tools">
+          <button className="icon-btn" onClick={handleFetchMeta} disabled={fetching} title="Fetch metadata from YouTube">
+            <Icon name="refresh" size={16} className={fetching ? "spin" : ""} />
           </button>
-        )}
+          <button className="icon-btn" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
+            <Icon name="download" size={16} />
+          </button>
+          {thumbs.length > 1 && (
+            <button className="icon-btn icon-btn-wide" onClick={cycle} title="Cycle thumbnail (newest first)">
+              <Icon name="cycle" size={16} />
+              <span className="icon-btn-num">{thumbIdx + 1}/{thumbs.length}</span>
+            </button>
+          )}
+          <button className="icon-btn" onClick={() => onEdit(video)} title="Edit metadata">
+            <Icon name="pencil" size={16} />
+          </button>
+          {confirming ? (
+            <>
+              <span className="del-confirm-label">Delete from vault?</span>
+              <button
+                className="btn-danger btn-export"
+                onClick={handleDelete}
+                disabled={deleting}
+                autoFocus
+                title="Confirm delete"
+              >
+                Delete
+              </button>
+              <button className="icon-btn" onClick={() => setConfirming(false)} title="Cancel (Esc)">
+                <Icon name="close" size={16} />
+              </button>
+            </>
+          ) : (
+            <button
+              className="icon-btn icon-btn-danger"
+              disabled={deleting}
+              onClick={() => setConfirming(true)}
+              title="Remove from vault"
+            >
+              <Icon name="trash" size={16} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="vp-player-wrap">
@@ -226,7 +237,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
                 onError={e => { e.target.style.visibility = "hidden"; }}
               />
               <span className="vp-channel-name">{artist}</span>
-              <span className="vp-channel-arrow">→</span>
+              <span className="vp-channel-arrow"><Icon name="arrowRight" size={14} /></span>
             </Link>
           ))}
         </div>
@@ -237,7 +248,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
             video.view_count    != null && { num: fmt(video.view_count),            label: "views" },
             video.like_count    != null && { num: fmt(video.like_count),            label: "likes" },
             video.file_size_bytes != null && { num: fmtBytes(video.file_size_bytes), label: "on disk" },
-            video.recorded_date && { num: video.recorded_date, label: "uploaded" },
+            video.recorded_date && { num: fmtRecordedDate(video.recorded_date), label: "uploaded" },
             watched && {
               num: `${Math.max(video.watch_count || 0, 1)}×`,
               label: "watched",
@@ -263,7 +274,7 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
           <div className="modal modal-wide" onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <div className="modal-title">Looks similar — keep it anyway?</div>
-              <button className="modal-close" onClick={() => setDupPrompt(null)}>✕</button>
+              <button className="modal-close" onClick={() => setDupPrompt(null)}><Icon name="close" /></button>
             </div>
             <div className="field-hint">
               The fetched thumbnail looks close to one you already have (visual distance {dupPrompt.distance}),

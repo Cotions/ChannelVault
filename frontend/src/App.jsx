@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist } from "./lib/api";
+import Icon            from "./components/Icon";
 import ScrollManager   from "./components/ScrollManager";
 import PlayerProvider  from "./player/PlayerProvider";
 import SettingsModal   from "./components/SettingsModal";
@@ -25,6 +26,24 @@ export default function App() {
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
   const [playlists, setPlaylists] = useState([]);
+  const searchRef = useRef(null);
+
+  // "/" and ⌘/Ctrl-K jump to search from anywhere, Esc drops focus.
+  useEffect(() => {
+    function onKey(e) {
+      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+      const hot = e.key === "k" && (e.metaKey || e.ctrlKey);
+      if (hot || (e.key === "/" && !typing)) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      } else if (e.key === "Escape" && e.target === searchRef.current) {
+        searchRef.current.blur();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   async function load() {
     try {
@@ -89,22 +108,34 @@ export default function App() {
     <PlayerProvider onCompleted={handleWatched}>
       <ScrollManager />
       <header>
-        <div
-          className={`status-dot ${online ? "online" : ""}`}
-          title={online ? "Backend connected" : "Backend offline"}
-        />
-        <h1>ChannelVault</h1>
+        <div className="brand">
+          <span className="brand-mark"><Icon name="vault" size={17} /></span>
+          <h1>ChannelVault</h1>
+        </div>
         <div className="header-search-wrap">
+          <Icon name="search" size={15} className="header-search-icon" />
           <input
+            ref={searchRef}
             type="text"
             className="header-search"
             placeholder="Search title, channel, description…"
             value={query}
             onChange={e => setQuery(e.target.value)}
           />
-          {query && (
-            <button className="btn-ghost" onClick={() => setQuery("")} title="Clear search">✕</button>
+          {query ? (
+            <button className="search-clear" onClick={() => setQuery("")} title="Clear search">
+              <Icon name="close" size={14} />
+            </button>
+          ) : (
+            <kbd className="search-kbd">/</kbd>
           )}
+        </div>
+        <div className="header-right">
+          <span className="header-count" title="Videos in vault">{videos.length.toLocaleString()}</span>
+          <span
+            className={`status-dot ${online ? "online" : ""}`}
+            title={online ? "Backend connected" : "Backend offline"}
+          />
         </div>
       </header>
 
@@ -126,14 +157,14 @@ export default function App() {
 
       <div className="app-body">
         <nav className="sidebar">
-          <NavLink to="/" end className="side-link">🏠 Home</NavLink>
-          <NavLink to="/playlists" className="side-link">🎵 Playlists</NavLink>
-          <NavLink to="/artists" className="side-link">👤 Artists</NavLink>
-          <NavLink to="/data-quality" className="side-link">🩺 Data Quality</NavLink>
-          <NavLink to="/stats" className="side-link">📊 Stats</NavLink>
+          <NavLink to="/" end className="side-link"><Icon name="home" />Home</NavLink>
+          <NavLink to="/playlists" className="side-link"><Icon name="playlist" />Playlists</NavLink>
+          <NavLink to="/artists" className="side-link"><Icon name="users" />Artists</NavLink>
+          <NavLink to="/data-quality" className="side-link"><Icon name="pulse" />Data Quality</NavLink>
+          <NavLink to="/stats" className="side-link"><Icon name="chart" />Stats</NavLink>
           <div className="side-sep" />
-          <button className="side-link" onClick={() => setShowAddVideo(true)}>➕ Add Video</button>
-          <button className="side-link" onClick={() => setShowWatchFolder(true)}>⚙ Settings</button>
+          <button className="side-link" onClick={() => setShowAddVideo(true)}><Icon name="plus" />Add Video</button>
+          <button className="side-link" onClick={() => setShowWatchFolder(true)}><Icon name="settings" />Settings</button>
         </nav>
 
         <main>

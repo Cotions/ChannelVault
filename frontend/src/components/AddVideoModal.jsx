@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { addVideoManual, browseFile, fetchMetadata, readFileTags } from "../lib/api";
+import Icon from "./Icon";
 
 function extractVideoId(input) {
   const s = input.trim();
@@ -121,7 +122,7 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
       <div className="modal">
         <div className="modal-header">
           <span className="modal-title">{isEdit ? "Edit Video Metadata" : "Add Video Manually"}</span>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={onClose}><Icon name="close" /></button>
         </div>
 
         <form className="modal-form" onSubmit={handleSubmit}>

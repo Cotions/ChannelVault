@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { artistThumbUrl } from "../lib/api";
 import { artistsOf } from "../lib/artists";
+import Icon from "../components/Icon";
 
 function ArtistCard({ name, stats, onClick }) {
   const [hasThumb, setHasThumb] = useState(true);
@@ -18,8 +19,16 @@ function ArtistCard({ name, stats, onClick }) {
       <span className="creator-name" title={name}>{name}</span>
       <div className="creator-counts">
         {stats.downloaded > 0 && <span className="creator-count">{stats.downloaded}</span>}
-        {stats.wanted > 0 && <span className="creator-count-wanted">⬇{stats.wanted}</span>}
-        {stats.ignored > 0 && <span className="creator-count-ignored">✕{stats.ignored}</span>}
+        {stats.wanted > 0 && (
+          <span className="creator-count-wanted" title={`${stats.wanted} wanted`}>
+            <Icon name="download" size={11} />{stats.wanted}
+          </span>
+        )}
+        {stats.ignored > 0 && (
+          <span className="creator-count-ignored" title={`${stats.ignored} ignored`}>
+            <Icon name="close" size={11} />{stats.ignored}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -44,7 +53,12 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
 
   return (
     <div className="card">
-      <div className="card-title">{q ? `Artists matching "${query.trim()}"` : "Artists"}</div>
+      <div className="page-head">
+        <h2 className="page-title">Artists</h2>
+        <span className="page-count">
+          {q ? `${artists.length.toLocaleString()} for “${query.trim()}”` : artists.length.toLocaleString()}
+        </span>
+      </div>
       {artists.length === 0 ? (
         <div className="empty">{q ? "No matching artists." : "No data yet."}</div>
       ) : (

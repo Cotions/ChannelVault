@@ -24,10 +24,14 @@ export default function Overview({ videos, playlists, query, onAddToPlaylist, on
 
   return (
     <div className="card">
-      <div className="section-head">
-        <div className="card-title" style={{ margin: 0 }}>
-          {q ? `${browse.length} result${browse.length !== 1 ? "s" : ""} for "${q}"` : "Videos"}
-        </div>
+      <div className="page-head">
+        <h2 className="page-title">{q ? "Results" : "Videos"}</h2>
+        <span className="page-count">
+          {q
+            ? `${browse.length.toLocaleString()} for “${q}”`
+            : browse.length.toLocaleString()}
+        </span>
+        <div className="page-head-spacer" />
         {!q && (
           <div className="sort-controls">
             <SortControls sort={browseSort} dir={browseDir} onSort={setBrowseSort} onDir={setBrowseDir} />

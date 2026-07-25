@@ -9,6 +9,7 @@ import { fmt } from "../lib/fmt";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
+import Icon from "../components/Icon";
 
 export default function ArtistPage({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist }) {
   const { name } = useParams();
@@ -46,16 +47,18 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+          <Icon name="back" size={15} />Back
+        </button>
         <h2 className="artist-page-title">{artist}</h2>
         {artistVideos.length > 0 && (
           <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>
         )}
         {artistWanted.length > 0 && (
-          <span className="artist-badge" style={{ background: "#1565c033", color: "#90caf9" }}>⬇ {artistWanted.length} wanted</span>
+          <span className="artist-badge" style={{ background: "#1565c033", color: "#90caf9" }}><Icon name="download" size={12} />{artistWanted.length} wanted</span>
         )}
         {artistIgnored.length > 0 && (
-          <span className="artist-badge" style={{ background: "#b71c1c33", color: "#ef9a9a" }}>✕ {artistIgnored.length} skipped</span>
+          <span className="artist-badge" style={{ background: "#b71c1c33", color: "#ef9a9a" }}><Icon name="close" size={12} />{artistIgnored.length} skipped</span>
         )}
         {artistVideos.length > 0 && (
           <Link to={`/artist/${encodeURIComponent(artist)}/stats`} className="btn-secondary btn-export">Stats</Link>
@@ -70,14 +73,14 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
               onClick={() => switchLayout("grid")}
               title="Grid view"
             >
-              ▦
+              <Icon name="grid" size={15} />
             </button>
             <button
               className={`btn-ghost${layout === "list" ? " active" : ""}`}
               onClick={() => switchLayout("list")}
               title="List view"
             >
-              ☰
+              <Icon name="list" size={15} />
             </button>
           </div>
         )}
@@ -183,7 +186,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
                 <a href={`https://www.youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noreferrer">
                   {v.title || v.video_id}
                 </a>
-                <button className="del-btn" onClick={() => onRemoveMark(v.video_id)}>✕</button>
+                <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>
               </div>
             ))}
           </div>
@@ -199,7 +202,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
                 <a href={`https://www.youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noreferrer">
                   {v.title || v.video_id}
                 </a>
-                <button className="del-btn" onClick={() => onRemoveMark(v.video_id)}>✕</button>
+                <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>
               </div>
             ))}
           </div>

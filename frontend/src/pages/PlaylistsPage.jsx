@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import Icon from "../components/Icon";
 
 export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDeletePlaylist }) {
   const navigate = useNavigate();
@@ -24,7 +25,10 @@ export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDe
 
   return (
     <div className="card">
-      <div className="card-title">Playlists</div>
+      <div className="page-head">
+        <h2 className="page-title">Playlists</h2>
+        <span className="page-count">{shown.length.toLocaleString()}</span>
+      </div>
       <form className="folder-row" onSubmit={handleCreate}>
         <input
           type="text"
@@ -42,14 +46,15 @@ export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDe
         <div className="playlist-list">
           {shown.map(pl => (
             <div key={pl.id} className="playlist-row" onClick={() => navigate(`/playlist/${pl.id}`)}>
+              <Icon name="playlist" size={15} className="playlist-icon" />
               <span className="playlist-name">{pl.name}</span>
               <span className="playlist-count">{pl.video_count}</span>
               <button
-                className="del-btn"
+                className="del-btn del-btn-danger"
                 title="Delete playlist"
                 onClick={e => { e.stopPropagation(); onDeletePlaylist(pl.id); }}
               >
-                ✕
+                <Icon name="trash" />
               </button>
             </div>
           ))}

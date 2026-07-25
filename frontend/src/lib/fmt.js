@@ -19,6 +19,35 @@ export function fmtDate(ts) {
   return new Date(ts).toLocaleDateString("en-CA");
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/* Upload dates reach us in whatever shape the source used — yt-dlp writes
+   "20260723", the API writes "2026-07-17", hand-entered rows look like
+   "Aug 25, 2025". Rendering them raw put three different formats in one grid,
+   so everything funnels through here. Current-year dates drop the year. */
+export function fmtRecordedDate(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  let y, m, d;
+
+  const compact = s.match(/^(\d{4})(\d{2})(\d{2})$/);
+  const dashed  = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (compact || dashed) {
+    [, y, m, d] = compact || dashed;
+    y = +y; m = +m; d = +d;
+  } else {
+    const parsed = new Date(s);
+    if (isNaN(parsed)) return s;          // unrecognised — show it rather than lose it
+    y = parsed.getFullYear();
+    m = parsed.getMonth() + 1;
+    d = parsed.getDate();
+  }
+
+  if (m < 1 || m > 12 || d < 1 || d > 31) return s;
+  const label = `${MONTHS[m - 1]} ${d}`;
+  return y === new Date().getFullYear() ? label : `${label}, ${y}`;
+}
+
 export function fmtDuration(secs) {
   if (!secs) return null;
   const h = Math.floor(secs / 3600);

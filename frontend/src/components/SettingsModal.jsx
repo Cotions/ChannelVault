@@ -1,4 +1,5 @@
 import WatchFolder from "./WatchFolder";
+import Icon from "./Icon";
 
 export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone }) {
   return (
@@ -6,7 +7,7 @@ export default function SettingsModal({ onClose, initialDir, initialDataDir, ini
       <div className="modal modal-wide">
         <div className="modal-header">
           <span className="modal-title">Settings</span>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={onClose}><Icon name="close" /></button>
         </div>
         <WatchFolder
           initialDir={initialDir}

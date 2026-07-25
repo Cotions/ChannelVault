@@ -6,3 +6,5 @@ backend/videos.db
 backend/config.json
 
 backend/video_tracker.db
+
+.playwright-mcp/

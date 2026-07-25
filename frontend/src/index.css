@@ -49,6 +49,33 @@ a { color: inherit; text-decoration: none; }
 
 ::selection { background: rgba(74, 222, 128, 0.28); color: #fff; }
 
+/* ── Icons ──────────────────────────────────────────────── */
+.icon { flex-shrink: 0; display: block; }
+.icon-fill { fill: currentColor; stroke: none; }
+@keyframes iconSpin { to { transform: rotate(360deg); } }
+.icon.spin { animation: iconSpin 0.9s linear infinite; }
+
+/* Square icon-only button. Used anywhere a labelled button would only repeat
+   what the glyph already says (video page toolbar, card actions). */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text-dim);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.icon-btn:hover:not(:disabled) { color: var(--text); border-color: rgba(74, 222, 128, 0.45); background: var(--surface-2); }
+.icon-btn-wide { width: auto; padding: 0 10px; }
+.icon-btn-num  { font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--accent-hover); }
+.icon-btn-danger:hover:not(:disabled) { color: #ffb3b5; border-color: rgba(229, 72, 77, 0.5); background: rgba(229, 72, 77, 0.12); }
+
 /* ── Header ─────────────────────────────────────────────── */
 header {
   position: sticky;
@@ -77,7 +104,27 @@ header h1 {
   font-weight: 800;
   letter-spacing: -0.4px;
 }
-header h1::first-letter { color: var(--accent-hover); }
+
+/* Brand block sits in the sidebar's 200px column so the logo, the column
+   divider and the nav below it all share one left edge. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 176px;
+  flex-shrink: 0;
+}
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: #04130a;
+  background: linear-gradient(180deg, var(--accent-hover), var(--accent));
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 6px 18px -8px rgba(74, 222, 128, 0.8);
+}
 
 .header-search-wrap {
   position: absolute;
@@ -85,14 +132,21 @@ header h1::first-letter { color: var(--accent-hover); }
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 6px;
-  width: 380px;
-  max-width: calc(100% - 260px);
+  width: 440px;
+  max-width: calc(100% - 320px);
 }
+.header-search-icon {
+  position: absolute;
+  left: 13px;
+  color: var(--muted);
+  pointer-events: none;
+  transition: color 0.18s;
+}
+.header-search-wrap:focus-within .header-search-icon { color: var(--accent-hover); }
 input[type="text"].header-search {
   flex: 1;
-  height: 34px;
-  padding: 0 14px;
+  height: 36px;
+  padding: 0 44px 0 36px;
   font-family: var(--body);
   font-size: 13px;
   color: var(--text);
@@ -107,7 +161,41 @@ input[type="text"].header-search:focus {
   box-shadow: var(--ring);
   background: var(--bg-soft);
 }
-@media (max-width: 640px) {
+.search-kbd {
+  position: absolute;
+  right: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 6px;
+  pointer-events: none;
+}
+.header-search-wrap:focus-within .search-kbd { opacity: 0; }
+.search-clear {
+  position: absolute;
+  right: 8px;
+  display: inline-flex;
+  padding: 5px;
+  background: none;
+  color: var(--muted);
+  border-radius: 50%;
+}
+.search-clear:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
+
+.header-right { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.header-count {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-dim);
+  letter-spacing: -0.3px;
+}
+
+@media (max-width: 860px) {
   .header-search-wrap {
     position: static;
     transform: none;
@@ -115,6 +203,8 @@ input[type="text"].header-search:focus {
     max-width: none;
     flex: 1;
   }
+  .brand { width: auto; }
+  .header-count { display: none; }
 }
 
 .status-dot {
@@ -180,7 +270,10 @@ input[type="text"].header-search:focus {
   cursor: pointer;
   transition: background 0.15s, color 0.15s, transform 0.1s;
 }
+.side-link .icon { color: var(--muted); transition: color 0.15s, transform 0.15s; }
 .side-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.04); }
+.side-link:hover .icon { color: var(--text-dim); }
+.side-link.active .icon { color: var(--accent-hover); filter: drop-shadow(0 0 6px rgba(74, 222, 128, 0.5)); }
 .side-link:active { transform: translateX(1px); }
 .side-link.active {
   color: var(--text);
@@ -206,9 +299,9 @@ input[type="text"].header-search:focus {
 main {
   flex: 1;
   min-width: 0;
-  max-width: 1100px;
+  max-width: 1720px;
   margin: 0 auto;
-  padding: 28px 24px;
+  padding: 28px 32px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -335,7 +428,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 .watch-folder-body .card-title:first-child { margin-top: 0; }
 .modal-header { display: flex; align-items: center; justify-content: space-between; }
 .modal-title  { font-family: var(--display); font-size: 16px; font-weight: 800; letter-spacing: -0.3px; }
-.modal-close  { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; padding: 2px 6px; border-radius: 6px; }
+.modal-close  { display: inline-flex; background: none; border: none; color: var(--muted); cursor: pointer; padding: 6px; border-radius: 7px; }
 .modal-close:hover { color: var(--text); background: var(--border); }
 .modal-form   { display: flex; flex-direction: column; gap: 12px; }
 .modal-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
@@ -432,8 +525,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .creator-counts { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .creator-count { font-family: var(--mono); font-size: 18px; font-weight: 800; color: var(--accent-hover); text-shadow: 0 0 14px rgba(74, 222, 128, 0.3); }
-.creator-count-wanted { font-family: var(--mono); font-size: 12px; font-weight: 700; color: #9ecbff; background: rgba(91, 157, 255, 0.16); border-radius: 5px; padding: 2px 6px; }
-.creator-count-ignored { font-family: var(--mono); font-size: 12px; font-weight: 700; color: #ffb3b5; background: rgba(229, 72, 77, 0.16); border-radius: 5px; padding: 2px 6px; }
+.creator-count-wanted,
+.creator-count-ignored {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  border-radius: 5px;
+  padding: 3px 6px;
+}
+.creator-count-wanted  { color: #9ecbff; background: rgba(91, 157, 255, 0.16); }
+.creator-count-ignored { color: #ffb3b5; background: rgba(229, 72, 77, 0.16); }
 
 /* ── Wanted / Ignored ───────────────────────────────────── */
 .wanted-list { display: flex; flex-direction: column; gap: 6px; }
@@ -463,9 +568,16 @@ button:disabled { opacity: 0.4; cursor: default; }
   padding-bottom: 16px;
   border-bottom: 1px solid var(--border);
 }
-.btn-back { font-size: 13px; }
+.btn-back { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+/* Toolbar of icon buttons, kept as one group at the right of the page header. */
+.vp-tools { display: flex; align-items: center; gap: 6px; }
+.vp-tools .btn-export { padding: 0 12px; height: 32px; }
 .artist-page-title { font-family: var(--display); font-size: 22px; font-weight: 800; letter-spacing: -0.6px; flex: 1; }
 .artist-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1;
   font-family: var(--mono);
   font-size: 11px;
   background: rgba(47, 158, 79, 0.16);
@@ -479,8 +591,8 @@ button:disabled { opacity: 0.4; cursor: default; }
 /* ── Video grid ─────────────────────────────────────────── */
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 20px;
 }
 
 .video-card {
@@ -503,28 +615,76 @@ button:disabled { opacity: 0.4; cursor: default; }
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, transparent 55%, rgba(10, 12, 17, 0.5));
+  background: linear-gradient(180deg, rgba(10, 12, 17, 0.35) 0%, transparent 30%, transparent 58%, rgba(10, 12, 17, 0.6));
   opacity: 0;
   transition: opacity 0.2s;
 }
 .video-card:hover .video-thumb-link::after { opacity: 1; }
 
+/* Play affordance — the thumbnail is the primary target, so say so on hover. */
+.thumb-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  padding-left: 3px;
+  border-radius: 50%;
+  color: #04130a;
+  background: rgba(74, 222, 128, 0.94);
+  box-shadow: 0 0 30px -4px rgba(74, 222, 128, 0.75);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.82);
+  transition: opacity 0.2s, transform 0.24s cubic-bezier(0.2, 0.7, 0.3, 1);
+  pointer-events: none;
+  z-index: 2;
+}
+.video-card:hover .thumb-play { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+
 .watched-badge {
   position: absolute;
-  top: 7px;
-  right: 7px;
-  font-size: 10px;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
   font-family: var(--mono);
   font-weight: 700;
+  line-height: 1;
   color: #a5f0bf;
   background: rgba(8, 12, 10, 0.82);
   border: 1px solid rgba(74, 222, 128, 0.4);
   border-radius: 6px;
-  padding: 2px 6px;
+  padding: 4px 6px;
   backdrop-filter: blur(4px);
   pointer-events: none;
-  z-index: 2;
 }
+/* Duration reads as part of the frame, the way every video UI does it —
+   it used to sit in the text meta row competing with view counts. */
+.dur-badge {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  background: rgba(6, 8, 12, 0.82);
+  border-radius: 5px;
+  padding: 4px 6px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.video-card:hover .dur-badge { opacity: 0; }
 .video-thumb {
   width: 100%;
   aspect-ratio: 16/9;
@@ -537,25 +697,27 @@ button:disabled { opacity: 0.4; cursor: default; }
 .video-thumb-placeholder {
   width: 100%;
   aspect-ratio: 16/9;
-  background: radial-gradient(120% 120% at 50% 0%, #11151d, #07090e);
+  background:
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.014) 0 10px, transparent 10px 20px),
+    radial-gradient(120% 120% at 50% 0%, #11151d, #07090e);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--muted);
-  font-size: 28px;
+  color: #2b3143;
 }
 
 .video-info {
-  padding: 11px 12px;
+  padding: 12px 13px 8px;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 .video-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.42;
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.4;
+  letter-spacing: -0.1px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -564,52 +726,103 @@ button:disabled { opacity: 0.4; cursor: default; }
 .video-title a { color: var(--text); transition: color 0.15s; }
 .video-title a:hover { color: var(--accent-hover); }
 
+.video-channel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  align-self: flex-start;
+  max-width: 100%;
+  transition: color 0.15s;
+}
+.video-channel:hover { color: var(--accent-hover); }
+
+/* Middot separators instead of bare gaps — the values used to run together
+   ("14:16 20260721 3.7K views") and read as one string. */
 .video-meta {
   display: flex;
-  gap: 8px;
+  align-items: center;
+  gap: 7px;
   font-size: 11px;
   font-family: var(--mono);
   color: var(--muted);
   flex-wrap: wrap;
 }
+.video-meta > span + span::before {
+  content: "·";
+  margin-right: 7px;
+  color: var(--border);
+}
 
-.video-actions { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 6px 6px; }
+/* Actions hold their space so the grid never reflows, but stay invisible
+   until the card is hovered or something inside it takes focus. */
+.video-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 8px 8px;
+  min-height: 30px;
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+.video-card:hover .video-actions,
+.video-card:focus-within .video-actions { opacity: 1; }
+@media (hover: none) {
+  .video-actions { opacity: 1; }
+}
 .va-left  { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .va-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 
+/* Availability rides on the thumbnail now — as a text row it pushed the
+   action bar around and made cards in the same row different heights. */
 .avail-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
   font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.4px;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.6px;
   text-transform: uppercase;
-  padding: 2px 7px;
+  line-height: 1;
+  padding: 4px 7px;
   border-radius: 5px;
   white-space: nowrap;
   color: #ffb3b5;
-  background: rgba(229, 72, 77, 0.14);
-  border: 1px solid rgba(229, 72, 77, 0.35);
+  background: rgba(40, 12, 14, 0.82);
+  border: 1px solid rgba(229, 72, 77, 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  pointer-events: none;
 }
 .avail-badge.avail-members,
 .avail-badge.avail-geo {
   color: #ffd591;
-  background: rgba(214, 158, 46, 0.16);
-  border-color: rgba(214, 158, 46, 0.4);
+  background: rgba(48, 34, 10, 0.82);
+  border-color: rgba(214, 158, 46, 0.5);
 }
 .fetch-btn.fetch-dead { opacity: 0.4; }
 .fetch-btn.fetch-dead:hover:not(:disabled) { opacity: 0.7; }
 
 .del-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   color: var(--muted);
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 6px;
+  padding: 6px;
+  border-radius: 7px;
   font-size: 14px;
   transition: color 0.15s, background 0.15s;
 }
-.del-btn:hover { color: #ffb3b5; background: rgba(229, 72, 77, 0.14); }
+.del-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
+.del-btn-danger:hover { color: #ffb3b5; background: rgba(229, 72, 77, 0.14); }
 .fetch-timer {
   font-size: 11px;
   font-family: var(--mono);
@@ -631,15 +844,43 @@ button:disabled { opacity: 0.4; cursor: default; }
 .video-card.list:hover { transform: translateX(2px); }
 .video-card.list .video-thumb-link { flex-shrink: 0; }
 .video-card.list .video-thumb,
-.video-card.list .video-thumb-placeholder { width: 170px; height: 100%; }
+.video-card.list .video-thumb-placeholder { width: 220px; height: 100%; }
 .video-card.list:hover .video-thumb { transform: none; }
+.video-card.list:hover .thumb-play { opacity: 0; }
 .video-card.list .video-info { padding: 10px 14px; justify-content: center; }
 .video-card.list .video-title { -webkit-line-clamp: 1; }
-.video-card.list .video-actions { align-items: center; padding: 0 10px; }
+.video-card.list .video-actions { align-items: center; padding: 0 10px; min-height: 0; }
 
 .layout-toggle { display: flex; gap: 2px; }
 .layout-toggle .btn-ghost { font-size: 14px; padding: 5px 9px; border-radius: 7px; }
 .layout-toggle .btn-ghost.active { color: var(--text); background: var(--surface-2); }
+
+/* ── Page header ────────────────────────────────────────── */
+/* Grid pages used to open on an 11px uppercase label while the stats page
+   opened on a real title. Same treatment everywhere now. */
+.page-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.page-title {
+  font-family: var(--display);
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.6px;
+}
+.page-count {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  padding-bottom: 1px;
+}
+.page-head-spacer { flex: 1; min-width: 0; }
+.page-head .sort-controls { align-self: center; }
 
 /* ── Section header ─────────────────────────────────────── */
 .section-head {
@@ -746,6 +987,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   transition: border-color 0.18s, background 0.18s, transform 0.12s;
 }
 .playlist-row:hover { border-color: rgba(74, 222, 128, 0.4); background: var(--surface-2); transform: translateX(2px); }
+.playlist-row:hover .playlist-icon { color: var(--accent-hover); }
+.playlist-icon { color: var(--muted); transition: color 0.15s; }
 .playlist-name { flex: 1; font-weight: 600; }
 .playlist-count { font-family: var(--mono); font-weight: 800; color: var(--accent-hover); }
 
@@ -861,6 +1104,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-size: 14px;
 }
 .cv-mini-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.08); }
+.btn-ghost { display: inline-flex; align-items: center; gap: 5px; }
 .vp-thumb-cycle {
   position: absolute;
   top: 12px;
@@ -957,7 +1201,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .vp-channel-name { font-size: 13px; font-weight: 700; }
 .vp-channel-arrow {
-  font-size: 13px;
+  display: inline-flex;
   color: var(--muted);
   transition: transform 0.15s, color 0.15s;
 }
@@ -1319,3 +1563,12 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: #353b4e; background-clip: padding-box; }
+
+/* ── Narrow layout ──────────────────────────────────────── */
+/* Last in the file on purpose: these override base rules that are declared
+   further down than the header media query, so source order decides. */
+@media (max-width: 860px) {
+  main { padding: 20px 16px; }
+  .card { padding: 16px; }
+  .video-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+}
