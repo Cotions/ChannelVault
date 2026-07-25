@@ -1,13 +1,16 @@
 import { useEffect, useRef } from "react";
 
 /* Fixed backdrop behind everything: a blue/pink/violet haze and slow falling
-   columns of glyphs. Built for a room you sit in for hours, so nothing flashes
-   or strobes — drops take many seconds to cross, and a glyph only ever swaps
-   during the dim tail where the change is invisible.
+   columns of glyphs that keep rewriting themselves as they drop.
+
+   Every glyph is pre-rendered once into a small sprite with its glow already
+   baked in, and the frame loop only blits those sprites. Calling fillText with
+   a live shadowBlur several hundred times a frame is what made the fall stutter
+   — shadowed text is re-rasterised from scratch on every call.
 
    The pointer draws no light of its own. It leans the whole plate (parallax,
-   slight skew, hue) and disturbs drops it actually touches: the struck one
-   flares white, gets shoved sideways, and throws off specks that fade out.
+   slight skew, hue) and disturbs columns it touches: the struck one flares
+   white, gets shoved sideways, and sheds glyphs that fade out.
 
    Pointer state lives in refs and CSS custom properties written straight to the
    DOM, never React state — a 120 Hz mousemove must not re-render the app. */
@@ -18,10 +21,39 @@ const COLOURS = ["#5b9dff", "#f472b6", "#a855f7", "#c4b5fd", "#e8ecf6"];
 // Half-width katakana and a few symbols: the standard rain alphabet, and every
 // glyph occupies the same cell so a column never reflows.
 const GLYPHS = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789:=*+<>|";
-const CELL = 17;   // vertical spacing between glyphs in a column
+const CELL = 17;    // vertical spacing between glyphs in a column
+const SPRITE = 44;  // sprite box, big enough to hold the baked glow
+const BASE = 16;    // font size the sprites are drawn at; blitted scaled down
 
 function pick() {
   return GLYPHS[(Math.random() * GLYPHS.length) | 0];
+}
+
+/* One sprite per (glyph, colour, head) triple, built on first use and kept for
+   the life of the page. Bounded by the alphabet, so it tops out around 600
+   little canvases and settles within a few seconds of load. */
+const sprites = new Map();
+function sprite(ch, colour, head) {
+  const key = `${ch}|${colour}|${head ? 1 : 0}`;
+  let c = sprites.get(key);
+  if (c) return c;
+  // Baked at device resolution, or a retina screen blits a 1x glyph upscaled
+  // and the rain goes soft.
+  const ss = Math.min(window.devicePixelRatio || 1, 2);
+  c = document.createElement("canvas");
+  c.width = c.height = Math.round(SPRITE * ss);
+  const g = c.getContext("2d");
+  g.setTransform(ss, 0, 0, ss, 0, 0);
+  g.font = `${BASE}px "JetBrains Mono", ui-monospace, monospace`;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.shadowColor = colour;
+  g.shadowBlur = head ? 12 : 5;
+  g.fillStyle = head ? "#eef1f8" : colour;
+  g.fillText(ch, SPRITE / 2, SPRITE / 2);
+  if (head) { g.fillText(ch, SPRITE / 2, SPRITE / 2); }  // second pass: hotter core
+  sprites.set(key, c);
+  return c;
 }
 
 export default function CyberBackground() {
@@ -54,28 +86,28 @@ export default function CyberBackground() {
     resize();
 
     // depth 0.25..1 drives size, fall speed, brightness and wind response.
-    function reset(d, i, first) {
+    function reset(d, i, first, t) {
       const depth = 0.25 + Math.random() * 0.75;
       d.depth = depth;
       d.x = first ? ((i * 73) % 100) / 100 * w : Math.random() * w;
-      d.len = 5 + Math.round(depth * 12);
-      d.y = first
-        ? Math.random() * h
-        : -CELL * d.len - Math.random() * h * 0.4;
-      d.speed = 14 + depth * 34;                 // px/s downward. Slow on purpose.
+      d.len = 6 + Math.round(depth * 12);
+      d.y = first ? Math.random() * h : -CELL * d.len - Math.random() * h * 0.4;
+      d.speed = 16 + depth * 38;                 // px/s downward. Slow on purpose.
       d.colour = COLOURS[(Math.random() * COLOURS.length) | 0];
       d.chars = Array.from({ length: d.len }, pick);
-      d.swapAt = 0;
+      // Each cell rewrites on its own clock, so the trail churns instead of the
+      // whole column flipping at once.
+      d.next = Array.from({ length: d.len }, () => t + Math.random() * 1.2);
       d.hit = 0;
       d.kick = 0;
     }
     const drops = Array.from({ length: DROPS }, (_, i) => {
       const d = {};
-      reset(d, i, true);
+      reset(d, i, true, 0);
       return d;
     });
 
-    /* Specks thrown off on a touch. Fixed-size pool: a sweeping cursor can brush
+    /* Glyphs thrown off on a touch. Fixed-size pool: a sweeping cursor can brush
        the field many times a second, and allocating per touch would hand the GC
        a steady drip of garbage. */
     const specks = Array.from({ length: SPECKS }, () => ({
@@ -91,7 +123,7 @@ export default function CyberBackground() {
         const v = 12 + Math.random() * 34 * depth;   // drift, not spray
         p.x = x; p.y = y;
         p.vx = Math.cos(a) * v;
-        p.vy = Math.sin(a) * v + 14;                 // biased with the rain
+        p.vy = Math.sin(a) * v + 16;                 // biased with the rain
         p.ch = pick();
         p.born = p.life = 1.3 + Math.random() * 1.2;
         p.colour = colour;
@@ -102,6 +134,7 @@ export default function CyberBackground() {
       raf = requestAnimationFrame(frame);
       const dt = last ? Math.min((now - last) / 1000, 0.05) : 0.016;
       last = now;
+      const t = now / 1000;
 
       // Heavily eased cursor: the plate follows like it is behind glass.
       lx += (px - lx) * Math.min(1, dt * 2.6);
@@ -115,11 +148,8 @@ export default function CyberBackground() {
 
       ctx.clearRect(0, 0, w, h);
       ctx.globalCompositeOperation = "lighter";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
 
       const cx = lx * w, cy = ly * h;
-      const t = now / 1000;
 
       for (const d of drops) {
         d.x += (wx * 16 * d.depth + d.kick) * dt;
@@ -127,7 +157,7 @@ export default function CyberBackground() {
         d.kick *= Math.max(0, 1 - dt * 1.6);
 
         const tail = d.y - CELL * (d.len - 1);
-        if (tail > h + CELL) { reset(d, 0, false); continue; }
+        if (tail > h + CELL) { reset(d, 0, false, t); continue; }
         if (d.x < -40) d.x = w + 40;
         if (d.x > w + 40) d.x = -40;
 
@@ -143,35 +173,34 @@ export default function CyberBackground() {
           shed(d.x, cy, d.colour, d.depth);
         }
 
-        // One glyph swap per drop every ~1.4s, always deep in the faded tail
-        // where the change cannot read as a blink.
-        if (t > d.swapAt) {
-          d.swapAt = t + 1.1 + Math.random() * 0.8;
-          d.chars[(Math.random() * (d.len - 2) | 0) + 2] = pick();
-        }
-
-        const size = 10 + d.depth * 6;
-        ctx.font = `${size}px ${"JetBrains Mono, ui-monospace, monospace"}`;
-        const base = 0.06 + d.depth * 0.14;
+        const scale = (10 + d.depth * 6) / BASE;
+        const box = SPRITE * scale;
+        const dim = 0.06 + d.depth * 0.14;
 
         for (let i = 0; i < d.len; i++) {
           const y = d.y - i * CELL;
+
+          // Rewrite on this cell's own clock. Deeper in the tail it churns
+          // faster, since that is where it is dim enough not to read as a blink;
+          // the head holds its glyph long enough to stay legible.
+          if (t > d.next[i]) {
+            d.next[i] = t + (i === 0 ? 0.7 : 0.22) + Math.random() * (i === 0 ? 0.9 : 0.7);
+            d.chars[i] = pick();
+          }
+
           if (y < -CELL || y > h + CELL) continue;
-          // Head is the bright one and stays near white; the tail falls away on
-          // a curve so the column reads as a streak, not a dotted line.
-          const fade = 1 - i / d.len;
+          // Head is the bright one; the tail falls away on a curve so the column
+          // reads as a streak rather than a dotted line.
           const head = i === 0;
-          ctx.globalAlpha = Math.min(0.85,
-            (head ? base * 3.4 : base * fade * fade) + d.hit * (head ? 0.4 : 0.18));
-          ctx.fillStyle = head && d.hit < 0.2 ? "#e8ecf6" : d.colour;
-          ctx.shadowColor = d.colour;
-          ctx.shadowBlur = (head ? 10 : 4) + d.hit * 14;
-          ctx.fillText(d.chars[i], d.x, y);
+          const fade = 1 - i / d.len;
+          ctx.globalAlpha = Math.min(0.9,
+            (head ? dim * 3.4 : dim * fade * fade) + d.hit * (head ? 0.4 : 0.18));
+          ctx.drawImage(sprite(d.chars[i], d.colour, head && d.hit < 0.2),
+                        d.x - box / 2, y - box / 2, box, box);
         }
       }
 
-      ctx.shadowBlur = 0;
-      ctx.font = "11px JetBrains Mono, ui-monospace, monospace";
+      const speckBox = SPRITE * (11 / BASE);
       for (const p of specks) {
         if (p.life <= 0) continue;
         p.life -= dt;
@@ -181,8 +210,8 @@ export default function CyberBackground() {
         p.vy *= Math.max(0, 1 - dt * 0.5);
         const k = Math.max(0, p.life / p.born);
         ctx.globalAlpha = k * k * 0.45;             // squared: soft tail
-        ctx.fillStyle = p.colour;
-        ctx.fillText(p.ch, p.x, p.y);
+        ctx.drawImage(sprite(p.ch, p.colour, false),
+                      p.x - speckBox / 2, p.y - speckBox / 2, speckBox, speckBox);
       }
 
       ctx.globalAlpha = 1;
