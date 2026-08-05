@@ -38,6 +38,10 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Links inherit their surroundings — no browser blue, no underline anywhere.
+   Anything that needs to read as a link says so with colour or hover state. */
+a, a:visited { color: inherit; text-decoration: none; }
+
 /* ── Cyber backdrop ─────────────────────────────────────── */
 /* Painted by components/CyberBackground.jsx: columns of coloured glyphs falling
    straight down a flat dark field. No corner haze and no parallax — the colour
@@ -632,6 +636,7 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 
 .video-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -743,17 +748,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 
 .video-info {
-  padding: 12px 13px 8px;
-  flex: 1;
+  padding: 10px 13px 11px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
 }
+/* Two lines of title are reserved whether or not the title needs them, so
+   every card in a row ends at the same height instead of the short ones
+   getting stretched with dead space under the meta row. */
 .video-title {
   font-size: 13.5px;
   font-weight: 650;
   line-height: 1.4;
   letter-spacing: -0.1px;
+  min-height: 2.8em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -792,25 +800,57 @@ button:disabled { opacity: 0.4; cursor: default; }
   color: var(--border);
 }
 
-/* Actions hold their space so the grid never reflows, but stay invisible
-   until the card is hovered or something inside it takes focus. */
+/* Actions stack down the left edge of the thumbnail on hover instead of
+   reserving a row under the text — that reserved row was empty on every card
+   that wasn't hovered, and it left dead space at the bottom of the card. */
 .video-actions {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 6px;
-  padding: 0 8px 8px;
-  min-height: 30px;
   opacity: 0;
-  transition: opacity 0.18s;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition: opacity 0.18s, transform 0.18s;
 }
+/* Only the buttons take clicks, so nothing under the column is blocked. */
+.video-actions .va-left,
+.video-actions .va-right { pointer-events: none; }
+.video-card:hover .video-actions .del-btn,
+.video-card:hover .video-actions .pl-menu,
+.video-card:focus-within .video-actions .del-btn,
+.video-card:focus-within .video-actions .pl-menu { pointer-events: auto; }
 .video-card:hover .video-actions,
-.video-card:focus-within .video-actions { opacity: 1; }
+.video-card:focus-within .video-actions { opacity: 1; transform: none; }
 @media (hover: none) {
-  .video-actions { opacity: 1; }
+  .video-actions { opacity: 1; transform: none; }
 }
-.va-left  { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.va-right { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.va-left  { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
+.va-right { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; flex-shrink: 0; }
+
+/* Over an image the buttons need their own plate to stay legible. */
+.video-actions .del-btn {
+  background: rgba(6, 8, 12, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-dim);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.video-actions .del-btn:hover { color: var(--text); background: rgba(6, 8, 12, 0.92); }
+.video-actions .fetch-timer,
+.video-actions .del-confirm-label {
+  background: rgba(6, 8, 12, 0.78);
+  border-radius: 5px;
+  padding: 3px 5px;
+}
+/* The column hangs from the top, so the playlist menu drops below it. */
+.video-actions .pl-menu { top: calc(100% + 4px); bottom: auto; left: 0; right: auto; }
+/* The availability tag shares that corner — it steps aside while hovering. */
+.video-card:hover .avail-badge { opacity: 0; }
 
 /* Availability rides on the thumbnail now — as a text row it pushed the
    action bar around and made cards in the same row different heights. */
@@ -834,6 +874,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   pointer-events: none;
+  transition: opacity 0.18s;
 }
 .avail-badge.avail-members,
 .avail-badge.avail-geo {
@@ -883,9 +924,20 @@ button:disabled { opacity: 0.4; cursor: default; }
 .video-card.list .video-thumb-placeholder { width: 220px; height: 100%; }
 .video-card.list:hover .video-thumb { transform: none; }
 .video-card.list:hover .thumb-play { opacity: 0; }
-.video-card.list .video-info { padding: 10px 14px; justify-content: center; }
-.video-card.list .video-title { -webkit-line-clamp: 1; }
-.video-card.list .video-actions { align-items: center; padding: 0 10px; min-height: 0; }
+.video-card.list .video-info { padding: 10px 14px; flex: 1; justify-content: center; }
+.video-card.list .video-title { -webkit-line-clamp: 1; min-height: 0; }
+/* In a row the actions sit at the end of the line, so they keep their place
+   in flow rather than floating over the bottom edge. */
+.video-card.list .video-actions {
+  position: static;
+  flex-direction: row;
+  align-items: center;
+  padding: 0 10px;
+  transform: none;
+}
+.video-card.list .va-left,
+.video-card.list .va-right { flex-direction: row; align-items: center; }
+.video-card.list .video-actions .pl-menu { top: auto; bottom: calc(100% + 4px); left: auto; right: 0; }
 
 .layout-toggle { display: flex; gap: 2px; }
 .layout-toggle .btn-ghost { font-size: 14px; padding: 5px 9px; border-radius: 7px; }
