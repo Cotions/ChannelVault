@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ChannelVault
+Comment=Local video vault dashboard
+Exec=__EXEC__
+Icon=__ICON__
+Terminal=false
+Categories=AudioVideo;Video;Utility;
+StartupNotify=true
+Keywords=video;youtube;vault;library;

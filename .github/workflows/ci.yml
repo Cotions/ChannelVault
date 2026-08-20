@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install UI dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Lint UI
+        working-directory: frontend
+        run: bun run lint
+
+      - name: Build the bundle
+        run: ./bundle.sh
+
+      - name: Smoke test the binary
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          mkdir -p "$WORK/watch" "$WORK/data"
+          cat > "$WORK/config.json" <<EOF
+          {"watch_directory":"$WORK/watch","data_directory":"$WORK/data","media_roots":[]}
+          EOF
+
+          ./dist/channelvault --version
+
+          CHANNELVAULT_CONFIG="$WORK/config.json" \
+          CHANNELVAULT_PORT=3399 \
+          CHANNELVAULT_NO_BROWSER=1 \
+          ./dist/channelvault &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+
+          for _ in $(seq 1 30); do
+            curl -sf -o /dev/null http://localhost:3399/config && break
+            sleep 1
+          done
+
+          fail=0
+          check() {
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Accept: $2" "http://localhost:3399$1")
+            if [ "$code" != "200" ]; then echo "✗ $1 → $code"; fail=1; else echo "✓ $1"; fi
+          }
+          check /                  text/html
+          check /playlists         text/html
+          check /artist/Example    text/html
+          check /videos            '*/*'
+          check /config            '*/*'
+          check /channelvault.user.js '*/*'
+
+          # The SPA fetches JSON from the same paths the router also renders.
+          [ "$(curl -s -H 'Accept: */*' http://localhost:3399/playlists)" = "[]" ] \
+            || { echo "✗ /playlists did not return JSON for fetch"; fail=1; }
+
+          exit $fail
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: channelvault-linux-x86_64-dev
+          path: dist/channelvault
+          retention-days: 7

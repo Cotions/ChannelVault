@@ -29,6 +29,11 @@ export default [
       ...react.configs['jsx-runtime'].rules,
       ...reactHooks.configs.recommended.rules,
       'react/jsx-no-target-blank': 'off',
+      // Plain JS project, no TypeScript — prop-types would be pure noise here.
+      'react/prop-types': 'off',
+      'react/no-unescaped-entities': 'off',
+      // Deliberate best-effort try/catch (localStorage, stream parsing) is a pattern here.
+      'no-empty': ['error', { allowEmptyCatch: true }],
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

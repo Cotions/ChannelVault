@@ -1,5 +1,8 @@
 import os
 import io
+import sys
+import socket
+import webbrowser
 import re
 import csv
 import time
@@ -17,13 +20,47 @@ from watchdog.events import FileSystemEventHandler
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 
-BASE_DIR        = os.path.dirname(__file__)
-CONFIG_PATH     = os.path.join(BASE_DIR, "config.json")
-STATIC_DIR      = os.path.join(BASE_DIR, "static")
-DEFAULT_WATCH   = "/home/cotions/Downloads"
+FROZEN          = getattr(sys, "frozen", False)
+BUNDLE_DIR      = getattr(sys, "_MEIPASS", "")
+BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR        = os.path.dirname(BASE_DIR)
+
+def _pick_static_dir():
+    """Bundled UI when frozen, freshly built UI when running from source."""
+    for candidate in (
+        os.path.join(BUNDLE_DIR, "static") if FROZEN else "",
+        os.path.join(REPO_DIR, "frontend", "dist"),
+        os.path.join(BASE_DIR, "static"),
+    ):
+        if candidate and os.path.exists(os.path.join(candidate, "index.html")):
+            return candidate
+    return os.path.join(BASE_DIR, "static")
+
+def _pick_config_path():
+    """A frozen binary cannot write next to itself, so config lives in ~/.config."""
+    override = os.environ.get("CHANNELVAULT_CONFIG")
+    if override:
+        return os.path.abspath(override)
+    legacy = os.path.join(BASE_DIR, "config.json")
+    if not FROZEN or os.path.exists(legacy):
+        return legacy
+    user_cfg = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"),
+        "channelvault",
+    )
+    os.makedirs(user_cfg, exist_ok=True)
+    return os.path.join(user_cfg, "config.json")
+
+STATIC_DIR      = _pick_static_dir()
+CONFIG_PATH     = _pick_config_path()
+USERSCRIPT_DIR  = os.path.join(BUNDLE_DIR, "userscript") if FROZEN else os.path.join(REPO_DIR, "userscript")
+PORT            = int(os.environ.get("CHANNELVAULT_PORT", "3360"))
+# Release builds rewrite this line with the tag being built.
+__version__     = "0.0.0-dev"
+DEFAULT_WATCH   = os.path.join(os.path.expanduser("~"), "Downloads")
 DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "channelvault")
 
-app = Flask(__name__, static_folder=STATIC_DIR)
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 # ---------------------------------------------------------------------------
@@ -535,9 +572,37 @@ def start_observer(directory):
 # API
 # ---------------------------------------------------------------------------
 
-@app.get("/")
-def ui():
+def _spa():
+    if not os.path.exists(os.path.join(STATIC_DIR, "index.html")):
+        return (
+            "<h1>UI not built</h1><p>Run <code>./run.sh</code> from the repo root, "
+            "or <code>cd frontend &amp;&amp; bun run build</code>.</p>",
+            503,
+        )
     return send_from_directory(STATIC_DIR, "index.html")
+
+def _wants_html():
+    """Browser navigation asks for text/html; fetch() from the SPA does not."""
+    return "text/html" in request.headers.get("Accept", "")
+
+# Client-side router paths. Anything not listed here stays an API route.
+for _rule in (
+    "/", "/playlists", "/artists", "/data-quality", "/stats",
+    "/artist/<path:_spa_rest>", "/video/<path:_spa_rest>", "/playlist/<path:_spa_rest>",
+):
+    if _rule == "/playlists":
+        continue  # collides with the API route below; handled there via Accept
+    app.add_url_rule(
+        _rule, f"spa{_rule}", lambda **_kw: _spa(), methods=["GET"]
+    )
+
+@app.get("/assets/<path:filename>")
+def spa_assets(filename):
+    return send_from_directory(os.path.join(STATIC_DIR, "assets"), filename)
+
+@app.get("/vite.svg")
+def spa_icon():
+    return send_from_directory(STATIC_DIR, "vite.svg")
 
 @app.get("/config")
 def get_config():
@@ -883,6 +948,8 @@ def clear_watch_history(video_id):
 
 @app.get("/playlists")
 def list_playlists():
+    if _wants_html():
+        return _spa()  # browser navigating to the playlists page, not an API call
     conn = get_conn()
     rows = conn.execute('''
         SELECT p.id, p.name, p.created_at, COUNT(pi.video_id) AS video_count
@@ -1000,7 +1067,7 @@ def export_csv():
 @app.get("/userscript/channelvault.user.js")
 @app.get("/channelvault.user.js")
 def serve_userscript():
-    userscript_path = os.path.join(BASE_DIR, "..", "userscript")
+    userscript_path = USERSCRIPT_DIR
     response = send_from_directory(
         os.path.abspath(userscript_path),
         "channelvault.user.js",
@@ -1941,7 +2008,14 @@ def get_creator(channel_name):
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _port_busy(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
 if __name__ == "__main__":
+    if "--version" in sys.argv:
+        print(f"ChannelVault {__version__}")
+        sys.exit(0)
     cfg = load_config()
     ensure_data_dir(cfg["data_directory"])
     # One-time migration: copy old backend/videos.db to data_directory if new location is empty
@@ -1956,5 +2030,16 @@ if __name__ == "__main__":
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )
     watcher_thread.start()
-    print("[api] Dashboard → http://localhost:3360")
-    app.run(host="127.0.0.1", port=3360, debug=False)
+    url = f"http://localhost:{PORT}"
+    if _port_busy(PORT):
+        print(f"[api] Port {PORT} already in use — ChannelVault may already be running.")
+        print(f"[api] Opening {url}")
+        webbrowser.open(url)
+        sys.exit(1)
+    if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    print(f"[api] ChannelVault {__version__}")
+    print(f"[api] Dashboard → {url}")
+    print(f"[api] UI files    {STATIC_DIR}")
+    print(f"[api] Config      {CONFIG_PATH}")
+    app.run(host="127.0.0.1", port=PORT, debug=False)

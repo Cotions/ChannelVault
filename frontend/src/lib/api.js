@@ -1,4 +1,7 @@
-const BASE = "http://localhost:3360";
+// Dev server runs on a different port, so it needs the absolute backend URL.
+// A production build is served by the backend itself, so same-origin is correct
+// and the app keeps working on any port.
+const BASE = import.meta.env.DEV ? "http://localhost:3360" : "";
 
 async function get(path) {
   const r = await fetch(`${BASE}${path}`);

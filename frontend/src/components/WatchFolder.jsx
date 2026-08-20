@@ -162,7 +162,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
             type="text"
             value={r}
             onChange={e => setRoot(i, e.target.value)}
-            placeholder="/mnt/media/ASMR  or  D:\\Media\\ASMR"
+            placeholder="/home/you/Videos  or  D:\\Media\\Videos"
           />
           <button className="btn-secondary" onClick={() => browseRoot(i)}>Browse…</button>
           <button className="btn-ghost" onClick={() => removeRoot(i)} title="Remove"><Icon name="close" size={13} /></button>

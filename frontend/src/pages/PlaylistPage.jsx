@@ -9,7 +9,7 @@ import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 
-export default function PlaylistPage({ query, onDelete, onEdit, onFetchMeta }) {
+export default function PlaylistPage({ query, onEdit, onFetchMeta }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [playlist, setPlaylist] = useState(null);

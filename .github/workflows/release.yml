@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # 22.04 keeps the glibc requirement low, so the binary runs on older distros too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: v
+        run: echo "version=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Stamp the version
+        run: |
+          sed -i "s|^__version__     = .*|__version__     = \"${{ steps.v.outputs.version }}\"|" backend/tracker.py
+          grep -n '^__version__' backend/tracker.py
+
+      - name: Install UI dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+
+      - name: Build the bundle
+        run: ./bundle.sh
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          NAME="channelvault-${V}-linux-x86_64"
+          mkdir -p "release/$NAME"
+          cp dist/channelvault "release/$NAME/channelvault"
+          cp README.md "release/$NAME/README.md"
+          cp packaging/channelvault.svg "release/$NAME/channelvault.svg"
+          cp packaging/ChannelVault.desktop "release/$NAME/ChannelVault.desktop.template"
+          cp userscript/channelvault.user.js "release/$NAME/channelvault.user.js"
+          tar -czf "release/${NAME}.tar.gz" -C release "$NAME"
+          cp dist/channelvault "release/channelvault-linux-x86_64"
+          cd release
+          sha256sum channelvault-linux-x86_64 "${NAME}.tar.gz" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Verify the built binary
+        run: ./dist/channelvault --version
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.version }}
+          name: ChannelVault ${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          draft: false
+          body: |
+            ## Install (Linux x86_64)
+
+            ```bash
+            curl -L -o channelvault \
+              https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.version }}/channelvault-linux-x86_64
+            chmod +x channelvault
+            ./channelvault
+            ```
+
+            The dashboard opens at http://localhost:3360. Nothing else to install — the
+            binary carries its own Python runtime, the backend and the dashboard UI.
+
+            Config lives at `~/.config/channelvault/config.json`; your database goes
+            wherever you point `data_directory` in the dashboard.
+
+            Install `zenity` if you want the folder-picker buttons to work
+            (`sudo apt install zenity`).
+
+            Verify your download against `SHA256SUMS.txt`.
+          files: |
+            release/channelvault-linux-x86_64
+            release/channelvault-*.tar.gz
+            release/SHA256SUMS.txt
