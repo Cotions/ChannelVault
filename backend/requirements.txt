@@ -1,5 +1,4 @@
 watchdog
 tinytag
 flask
-flask-cors
-Pillow
+Pillow>=11.3

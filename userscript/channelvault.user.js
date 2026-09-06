@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.4.1
+// @version      1.5.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -152,7 +152,8 @@ function injectBadge(text, bg, fg) {
 }
 
 // ---------------------------------------------------------------------------
-// GM_xmlhttpRequest wrappers (bypasses CORS, no flask-cors needed)
+// GM_xmlhttpRequest wrappers (privileged: not bound by CORS, so the backend
+// sends no CORS headers at all)
 // ---------------------------------------------------------------------------
 
 function gmFetch(url) {
@@ -392,7 +393,9 @@ function gmPost(url, body) {
     GM_xmlhttpRequest({
       method:  "POST",
       url,
-      headers: { "Content-Type": "application/json" },
+      // Backend rejects state-changing requests without this header. Random web
+      // pages cannot attach a custom header cross-origin; this script can.
+      headers: { "Content-Type": "application/json", "X-ChannelVault": "1" },
       data:    JSON.stringify(body),
       onload:  resolve,
       onerror: reject,

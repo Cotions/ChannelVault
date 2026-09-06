@@ -51,7 +51,7 @@ Builds the UI if it is stale, sets up the virtualenv, starts the backend, opens 
 | Command | What it does |
 |---------|--------------|
 | `./run.sh` | Build if needed, start, open browser |
-| `./run.sh --dev` | Vite dev server with hot reload + backend |
+| `./run.sh --dev` | Vite dev server with hot reload + backend. UI only: the backend rejects cross-origin API calls, so data will not load. Use `--build` to test against real data |
 | `./run.sh --build` | Force a UI rebuild, then start |
 | `./run.sh --install-launcher` | Add "ChannelVault (source)" to the app menu |
 

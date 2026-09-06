@@ -5,7 +5,7 @@ import { sortVideos, videoMatches } from "../lib/sort";
 import { artistsOf } from "../lib/artists";
 import { useRememberedPage } from "../lib/usePagination";
 import { getCreator, artistThumbUrl } from "../lib/api";
-import { fmt } from "../lib/fmt";
+import { fmt, safeUrl } from "../lib/fmt";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -97,8 +97,8 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
             />
             <div className="creator-profile-id">
               <div className="creator-profile-name">{artist}</div>
-              {creator.channel_url ? (
-                <a className="creator-profile-handle" href={creator.channel_url} target="_blank" rel="noreferrer">
+              {safeUrl(creator.channel_url) ? (
+                <a className="creator-profile-handle" href={safeUrl(creator.channel_url)} target="_blank" rel="noreferrer">
                   {creator.handle || creator.channel_url}
                 </a>
               ) : creator.handle && (
@@ -146,11 +146,11 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
 
           {(creator.email || (creator.links && creator.links.length > 0)) && (
             <div className="creator-profile-links">
-              {creator.email && (
-                <a className="cp-link" href={`mailto:${creator.email}`}>✉ {creator.email}</a>
+              {creator.email && safeUrl(`mailto:${creator.email}`, ["mailto:"]) && (
+                <a className="cp-link" href={safeUrl(`mailto:${creator.email}`, ["mailto:"])}>✉ {creator.email}</a>
               )}
-              {(creator.links || []).map((l, i) => (
-                <a key={i} className="cp-link" href={l.url} target="_blank" rel="noreferrer">🔗 {l.title}</a>
+              {(creator.links || []).filter(l => safeUrl(l.url)).map((l, i) => (
+                <a key={i} className="cp-link" href={safeUrl(l.url)} target="_blank" rel="noreferrer">🔗 {l.title}</a>
               ))}
             </div>
           )}

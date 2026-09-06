@@ -18,7 +18,6 @@ from tinytag import TinyTag
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from flask import Flask, jsonify, request, send_from_directory, Response, stream_with_context
-from flask_cors import CORS
 
 FROZEN          = getattr(sys, "frozen", False)
 BUNDLE_DIR      = getattr(sys, "_MEIPASS", "")
@@ -61,7 +60,44 @@ DEFAULT_WATCH   = os.path.join(os.path.expanduser("~"), "Downloads")
 DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "channelvault")
 
 app = Flask(__name__, static_folder=None)
-CORS(app)
+
+# ---------------------------------------------------------------------------
+# Origin lockdown
+#
+# This server binds to 127.0.0.1, but the browser is still an attack path: any
+# website open in the same browser can script requests to localhost. Two rules
+# close that off without needing a login:
+#
+#   1. Host header must name this machine. Blocks DNS rebinding, where a remote
+#      hostname is pointed at 127.0.0.1 so a page on that origin can talk to us.
+#   2. Every state-changing request must carry a custom header. A cross-origin
+#      page cannot attach one without a CORS preflight, and we never grant CORS,
+#      so the preflight fails. The dashboard is same-origin and sets it freely;
+#      the userscript uses GM_xmlhttpRequest, which is not bound by CORS at all.
+#
+# No CORS headers are sent on purpose. The dashboard is served from this same
+# origin in production, so none are needed.
+# ---------------------------------------------------------------------------
+
+_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+CSRF_HEADER    = "X-ChannelVault"
+_SAFE_METHODS  = {"GET", "HEAD", "OPTIONS"}
+
+
+def _host_only(host_header):
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):                  # IPv6 literal, keep brackets
+        return host.split("]")[0] + "]"
+    return host.rsplit(":", 1)[0] if ":" in host else host
+
+
+@app.before_request
+def _origin_guard():
+    if _host_only(request.headers.get("Host")) not in _ALLOWED_HOSTS:
+        return jsonify({"ok": False, "error": "forbidden host"}), 403
+    if request.method not in _SAFE_METHODS and not request.headers.get(CSRF_HEADER):
+        return jsonify({"ok": False, "error": f"missing {CSRF_HEADER} header"}), 403
+    return None
 
 # ---------------------------------------------------------------------------
 # Config
@@ -1755,11 +1791,22 @@ def _download_bytes(url):
         return r.read()
 
 
+# Thumbnails come off the network. Cap decoded size so a crafted image cannot
+# balloon into gigabytes of pixels (Pillow decompression-bomb DoS).
+_MAX_THUMB_PIXELS = 40_000_000   # ~ 8000x5000
+
+
+def _pil_image():
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = _MAX_THUMB_PIXELS
+    return Image
+
+
 def _to_webp(raw):
     """Re-encode arbitrary image bytes to webp; None if Pillow can't decode."""
     try:
         import io
-        from PIL import Image
+        Image = _pil_image()
         img = Image.open(io.BytesIO(raw))
         if img.mode not in ("RGB", "RGBA"):
             img = img.convert("RGB")
@@ -1803,7 +1850,7 @@ def _dhash(img_source):
     """64-bit difference hash from raw bytes or a file path; None if undecodable."""
     try:
         import io
-        from PIL import Image
+        Image = _pil_image()
         src = io.BytesIO(img_source) if isinstance(img_source, (bytes, bytearray)) else img_source
         img = Image.open(src).convert("L").resize((9, 8))
         px = list(img.getdata())
@@ -1930,6 +1977,32 @@ _CREATOR_FIELDS = [
 ]
 
 
+_SAFE_LINK_SCHEMES = ("http://", "https://")
+
+
+def _safe_link(url):
+    """Only keep web URLs. Scraped About-panel links are attacker-controlled and
+    a javascript: href would execute in the dashboard when clicked."""
+    u = (url or "").strip()
+    return u if u.lower().startswith(_SAFE_LINK_SCHEMES) else None
+
+
+def _safe_links(links):
+    if not isinstance(links, list):
+        return []
+    out = []
+    for item in links:
+        if isinstance(item, dict):
+            u = _safe_link(item.get("url"))
+            if u:
+                out.append({"title": str(item.get("title") or u), "url": u})
+        elif isinstance(item, str):
+            u = _safe_link(item)
+            if u:
+                out.append({"title": u, "url": u})
+    return out
+
+
 def _creator_row_to_dict(row):
     d = dict(row)
     try:
@@ -1946,12 +2019,12 @@ def upsert_creator():
     if not channel_name:
         return jsonify({"ok": False, "error": "channel_name required"}), 400
 
-    links = body.get("links")
-    links_json = json.dumps(links) if isinstance(links, (list, dict)) else (links or None)
+    links      = _safe_links(body.get("links"))
+    links_json = json.dumps(links) if links else None
     vals = {
         "channel_name":     channel_name,
         "handle":           body.get("handle"),
-        "channel_url":      body.get("channel_url"),
+        "channel_url":      _safe_link(body.get("channel_url")),
         "description":      body.get("description"),
         "country":          body.get("country"),
         "joined_date":      body.get("joined_date"),
