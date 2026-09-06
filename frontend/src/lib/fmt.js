@@ -56,3 +56,15 @@ export function fmtDuration(secs) {
   if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   return `${m}:${String(s).padStart(2, "0")}`;
 }
+
+/* Hrefs scraped from a channel's About panel are attacker-controlled. React
+   renders a javascript: href as-is, so only web and mail schemes get through. */
+export function safeUrl(url, schemes = ["http:", "https:"]) {
+  if (!url) return undefined;
+  try {
+    const u = new URL(String(url));
+    return schemes.includes(u.protocol) ? u.href : undefined;
+  } catch {
+    return undefined;
+  }
+}

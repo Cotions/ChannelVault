@@ -3,6 +3,11 @@
 // and the app keeps working on any port.
 const BASE = import.meta.env.DEV ? "http://localhost:3360" : "";
 
+// The backend refuses any state-changing request that lacks this header. A
+// hostile page in another tab cannot add a custom header without a CORS
+// preflight, which the backend never grants. Same-origin fetch adds it freely.
+const CSRF_HEADERS = { "X-ChannelVault": "1" };
+
 async function get(path) {
   const r = await fetch(`${BASE}${path}`);
   if (!r.ok) throw new Error(`GET ${path} → ${r.status}`);
@@ -12,14 +17,14 @@ async function get(path) {
 async function post(path, body) {
   const r = await fetch(`${BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
     body: JSON.stringify(body),
   });
   return r.json();
 }
 
 async function del(path) {
-  const r = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  const r = await fetch(`${BASE}${path}`, { method: "DELETE", headers: CSRF_HEADERS });
   return r.json();
 }
 
@@ -61,9 +66,16 @@ export function addToPlaylist(id, videoId)      { return post(`/playlists/${id}/
 export function removeFromPlaylist(id, videoId) { return del(`/playlists/${id}/videos/${videoId}`); }
 export function postWatchProgress(id, data) { return post(`/watch-progress/${id}`, data); }
 export function watchBeacon(id, data) {
+  // sendBeacon cannot carry the CSRF header, so use a keepalive fetch: it also
+  // survives page unload and lets us attach headers.
   try {
-    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
-    return navigator.sendBeacon(`${BASE}/watch-progress/${id}`, blob);
+    fetch(`${BASE}/watch-progress/${id}`, {
+      method: "POST",
+      keepalive: true,
+      headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
+      body: JSON.stringify(data),
+    }).catch(() => {});
+    return true;
   } catch { return false; }
 }
 export function getWatchHistory()  { return get("/watch-history"); }
@@ -80,7 +92,7 @@ export async function getCreator(name) {
 }
 
 export async function scan(onEvent) {
-  const r = await fetch(`${BASE}/scan`, { method: "POST" });
+  const r = await fetch(`${BASE}/scan`, { method: "POST", headers: CSRF_HEADERS });
   if (!r.ok) throw new Error("Scan failed");
   const reader  = r.body.getReader();
   const decoder = new TextDecoder();

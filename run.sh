@@ -3,6 +3,7 @@
 #
 #   ./run.sh          build the UI if needed, start the backend, open the browser
 #   ./run.sh --dev    same, but with the Vite dev server for hot reload
+#                     (UI work only: backend refuses cross-origin API calls)
 #   ./run.sh --build  rebuild the UI, then start
 #
 # Double-clicking this file in a file manager opens a terminal automatically.
