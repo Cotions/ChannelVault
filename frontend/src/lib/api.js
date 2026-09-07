@@ -3,13 +3,15 @@
 // and the app keeps working on any port.
 const BASE = import.meta.env.DEV ? "http://localhost:3360" : "";
 
-// The backend refuses any state-changing request that lacks this header. A
+// The backend refuses any API request that lacks this header, GET included. A
 // hostile page in another tab cannot add a custom header without a CORS
-// preflight, which the backend never grants. Same-origin fetch adds it freely.
+// preflight, which the backend never grants, nor through an <img> or <iframe>.
+// Same-origin fetch adds it freely. Media URLs (thumbs, stream, export) are the
+// exception: they load via src/href and the backend exempts them.
 const CSRF_HEADERS = { "X-ChannelVault": "1" };
 
 async function get(path) {
-  const r = await fetch(`${BASE}${path}`);
+  const r = await fetch(`${BASE}${path}`, { headers: CSRF_HEADERS });
   if (!r.ok) throw new Error(`GET ${path} → ${r.status}`);
   return r.json();
 }

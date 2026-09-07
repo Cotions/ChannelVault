@@ -28,6 +28,11 @@ export default [
       ...react.configs.recommended.rules,
       ...react.configs['jsx-runtime'].rules,
       ...reactHooks.configs.recommended.rules,
+      // react-hooks 7 ships the React Compiler lint set. This rule flags the
+      // "reset state when a dep changes" pattern used across the pages. It is a
+      // perf hint, not a bug; keep it visible as a warning until those effects
+      // are reworked.
+      'react-hooks/set-state-in-effect': 'warn',
       'react/jsx-no-target-blank': 'off',
       // Plain JS project, no TypeScript — prop-types would be pure noise here.
       'react/prop-types': 'off',
