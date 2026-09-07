@@ -146,6 +146,14 @@ ChannelVault/
 
 CI (`.github/workflows/ci.yml`) lints the UI, builds the bundle and smoke-tests the running binary on every push and PR. Tagging `v*` triggers `release.yml`, which stamps the version into the binary, builds on Ubuntu 22.04 (low glibc floor, so it runs on older distros) and attaches the binary, a `.tar.gz` and `SHA256SUMS.txt` to the GitHub release.
 
+Every release also carries a build provenance attestation. To prove a download came out of this repository's CI rather than somewhere else:
+
+```bash
+gh attestation verify channelvault-linux-x86_64 --repo Cotions/ChannelVault
+```
+
+Python dependencies and GitHub Actions are pinned exactly, so a rebuild of the same tag yields the same inputs. See [SECURITY.md](SECURITY.md) for the threat model and how to report an issue.
+
 Only Linux x86_64 is built today. macOS and Windows would each need their own runner in `release.yml`; the code has no Linux-only assumptions apart from `zenity` folder pickers and the terminal-relaunch logic in `run.sh`.
 
 ---
@@ -157,6 +165,14 @@ MIT — see [LICENSE](LICENSE).
 ---
 
 ## API endpoints
+
+Every API call must send the header `X-ChannelVault: 1`, GET included, or the server answers 403. That is what keeps a random web page in another tab from driving your vault: a cross-origin page cannot attach a custom header. The dashboard and the userscript add it for you. Only the SPA pages, `/assets`, the userscript file, media routes loaded into `<img>`/`<video>` (`/thumb*`, `/stream`, `/artist-thumb`, `/thumbnail-version`, `/import/thumb`) and the `/export/*` downloads are reachable by URL alone.
+
+```bash
+curl -H 'X-ChannelVault: 1' http://localhost:3360/videos
+```
+
+Video ids must be the 11 character YouTube shape; anything else is a 404.
 
 | Method | Path | Description |
 |--------|------|-------------|

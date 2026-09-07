@@ -61,6 +61,26 @@ DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "chan
 
 app = Flask(__name__, static_folder=None)
 
+
+# YouTube ids are exactly 11 URL-safe characters. Refusing anything else at the
+# router keeps values like ".." out of every os.path.join that uses a video_id.
+from werkzeug.routing import BaseConverter as _BaseConverter
+
+_VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+
+
+class _VideoIdConverter(_BaseConverter):
+    regex = r"[A-Za-z0-9_-]{11}"
+
+
+app.url_map.converters["vid"] = _VideoIdConverter
+
+
+def _valid_video_id(value):
+    """The id itself when well-formed, else None."""
+    v = (value or "").strip()
+    return v if _VIDEO_ID_RE.fullmatch(v) else None
+
 # ---------------------------------------------------------------------------
 # Origin lockdown
 #
@@ -70,10 +90,17 @@ app = Flask(__name__, static_folder=None)
 #
 #   1. Host header must name this machine. Blocks DNS rebinding, where a remote
 #      hostname is pointed at 127.0.0.1 so a page on that origin can talk to us.
-#   2. Every state-changing request must carry a custom header. A cross-origin
-#      page cannot attach one without a CORS preflight, and we never grant CORS,
-#      so the preflight fails. The dashboard is same-origin and sets it freely;
-#      the userscript uses GM_xmlhttpRequest, which is not bound by CORS at all.
+#   2. Every API request must carry a custom header, whatever the method. A
+#      cross-origin page cannot attach one without a CORS preflight, and we never
+#      grant CORS, so the preflight fails. It also cannot smuggle one through an
+#      <img>, <iframe> or top-level navigation. The dashboard is same-origin and
+#      sets it freely; the userscript uses GM_xmlhttpRequest, which is not bound
+#      by CORS at all.
+#
+# The only header-free routes are the ones a browser must reach by URL alone:
+# the SPA pages, its assets, the userscript file, media served into <img> and
+# <video> tags (cross-origin pages cannot read those pixels or bytes), and the
+# export downloads behind <a download>. Everything else is denied by default.
 #
 # No CORS headers are sent on purpose. The dashboard is served from this same
 # origin in production, so none are needed.
@@ -81,7 +108,15 @@ app = Flask(__name__, static_folder=None)
 
 _ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 CSRF_HEADER    = "X-ChannelVault"
-_SAFE_METHODS  = {"GET", "HEAD", "OPTIONS"}
+
+# Flask endpoint names (the view function names) that may be fetched by URL
+# alone. Keep this list short; add to it only for things loaded via src/href.
+_PUBLIC_ENDPOINTS = {
+    "spa_assets", "spa_icon", "serve_userscript",
+    "serve_thumb", "serve_thumb_latest", "serve_artist_thumb",
+    "serve_thumbnail_version", "import_thumb", "stream_video",
+    "export_json", "export_csv",
+}
 
 
 def _host_only(host_header):
@@ -91,11 +126,24 @@ def _host_only(host_header):
     return host.rsplit(":", 1)[0] if ":" in host else host
 
 
+def _is_public_endpoint():
+    ep = request.endpoint or ""
+    if ep.startswith("spa"):
+        return True
+    if ep == "list_playlists" and request.method == "GET" and _wants_html():
+        return True                            # /playlists as a page, not as JSON
+    return ep in _PUBLIC_ENDPOINTS
+
+
 @app.before_request
 def _origin_guard():
     if _host_only(request.headers.get("Host")) not in _ALLOWED_HOSTS:
         return jsonify({"ok": False, "error": "forbidden host"}), 403
-    if request.method not in _SAFE_METHODS and not request.headers.get(CSRF_HEADER):
+    if request.method in ("OPTIONS", "HEAD") or request.endpoint is None:
+        return None                            # nothing to protect; let Flask 404/405
+    if _is_public_endpoint():
+        return None
+    if not request.headers.get(CSRF_HEADER):
         return jsonify({"ok": False, "error": f"missing {CSRF_HEADER} header"}), 403
     return None
 
@@ -426,7 +474,7 @@ def _meta_from_ffprobe(file_path):
     """Fallback reader for containers TinyTag can't parse (webm/mkv)."""
     out = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", file_path],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=30,   # a corrupt file must not hang a scan
     )
     fmt  = (json.loads(out.stdout or "{}")).get("format", {})
     tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
@@ -764,7 +812,7 @@ def scan():
     return Response(stream_with_context(generate()), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-@app.get("/check-video/<video_id>")
+@app.get("/check-video/<vid:video_id>")
 def check_video(video_id):
     conn = get_conn()
     row  = conn.execute(
@@ -776,7 +824,7 @@ def check_video(video_id):
         return jsonify({"downloaded": d.get("status") == "downloaded", "status": d.get("status"), "data": d})
     return jsonify({"downloaded": False, "status": None})
 
-@app.post("/update-stats/<video_id>")
+@app.post("/update-stats/<vid:video_id>")
 def update_stats(video_id):
     body       = request.get_json(silent=True) or {}
     view_count = body.get("view_count")
@@ -819,22 +867,22 @@ def _upsert_mark(video_id, title, channel_name, url, status):
 @app.post("/want-to-download")
 def add_wanted():
     body         = request.get_json(silent=True) or {}
-    video_id     = (body.get("video_id") or "").strip()
+    video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
-        return jsonify({"ok": False, "error": "video_id required"}), 400
+        return jsonify({"ok": False, "error": "valid video_id required"}), 400
     _upsert_mark(video_id, body.get("title"), body.get("channel_name"), body.get("url"), "wanted")
     return jsonify({"ok": True})
 
 @app.post("/do-not-want")
 def add_ignored():
     body         = request.get_json(silent=True) or {}
-    video_id     = (body.get("video_id") or "").strip()
+    video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
-        return jsonify({"ok": False, "error": "video_id required"}), 400
+        return jsonify({"ok": False, "error": "valid video_id required"}), 400
     _upsert_mark(video_id, body.get("title"), body.get("channel_name"), body.get("url"), "ignored")
     return jsonify({"ok": True})
 
-@app.delete("/mark/<video_id>")
+@app.delete("/mark/<vid:video_id>")
 def remove_mark(video_id):
     conn = get_conn()
     conn.execute(
@@ -889,7 +937,7 @@ _STREAM_MIMES = {
     ".mov":  "video/quicktime",
 }
 
-@app.get("/stream/<video_id>")
+@app.get("/stream/<vid:video_id>")
 def stream_video(video_id):
     conn = get_conn()
     row  = conn.execute(
@@ -916,7 +964,7 @@ WATCHED_THRESHOLD = 0.7
 # Ignore trivially short sessions even when duration is unknown.
 MIN_WATCHED_SECS = 30
 
-@app.post("/watch-progress/<video_id>")
+@app.post("/watch-progress/<vid:video_id>")
 def watch_progress(video_id):
     body          = request.get_json(silent=True) or {}
     session_id    = body.get("session_id")
@@ -970,7 +1018,7 @@ def watch_history():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
-@app.delete("/watch-history/<video_id>")
+@app.delete("/watch-history/<vid:video_id>")
 def clear_watch_history(video_id):
     conn = get_conn()
     conn.execute("DELETE FROM watch_sessions WHERE video_id = ?", (video_id,))
@@ -1039,9 +1087,9 @@ def get_playlist(playlist_id):
 @app.post("/playlists/<int:playlist_id>/videos")
 def add_playlist_video(playlist_id):
     body     = request.get_json(silent=True) or {}
-    video_id = (body.get("video_id") or "").strip()
+    video_id = _valid_video_id(body.get("video_id"))
     if not video_id:
-        return jsonify({"ok": False, "error": "video_id required"}), 400
+        return jsonify({"ok": False, "error": "valid video_id required"}), 400
     conn = get_conn()
     if not conn.execute("SELECT 1 FROM playlists WHERE id = ?", (playlist_id,)).fetchone():
         conn.close()
@@ -1054,7 +1102,7 @@ def add_playlist_video(playlist_id):
     conn.close()
     return jsonify({"ok": True})
 
-@app.delete("/playlists/<int:playlist_id>/videos/<video_id>")
+@app.delete("/playlists/<int:playlist_id>/videos/<vid:video_id>")
 def remove_playlist_video(playlist_id, video_id):
     conn = get_conn()
     conn.execute(
@@ -1125,7 +1173,9 @@ def add_video_manual():
     m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", raw_id) or \
         re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", raw_id) or \
         re.search(r"/(?:shorts|embed|v)/([A-Za-z0-9_-]{11})", raw_id)
-    video_id = m.group(1) if m else raw_id
+    video_id = _valid_video_id(m.group(1) if m else raw_id)
+    if not video_id:
+        return jsonify({"ok": False, "error": "not a YouTube video id or URL"}), 400
 
     url = body.get("url") or f"https://www.youtube.com/watch?v={video_id}"
 
@@ -1236,7 +1286,7 @@ def _set_availability(video_id, availability):
         conn.close()
 
 
-@app.post("/fetch-metadata/<video_id>")
+@app.post("/fetch-metadata/<vid:video_id>")
 def fetch_metadata(video_id):
     import subprocess, json as _json
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -1290,7 +1340,7 @@ def fetch_metadata(video_id):
     return jsonify({"ok": True, "video_id": video_id})
 
 
-@app.delete("/videos/<video_id>")
+@app.delete("/videos/<vid:video_id>")
 def delete_video(video_id):
     conn = get_conn()
     conn.execute("DELETE FROM downloaded_videos WHERE video_id = ?", (video_id,))
@@ -1714,7 +1764,7 @@ def serve_artist_thumb(name):
     return ("", 404)
 
 
-@app.get("/thumb/<video_id>")
+@app.get("/thumb/<vid:video_id>")
 def serve_thumb(video_id):
     conn = get_conn()
     row = conn.execute(
@@ -1740,7 +1790,7 @@ def serve_thumb(video_id):
     return ("", 404)
 
 
-@app.get("/thumb-latest/<video_id>")
+@app.get("/thumb-latest/<vid:video_id>")
 def serve_thumb_latest(video_id):
     """Newest fetched thumbnail if one exists, else the original."""
     vdir = _thumb_versions_dir(video_id)
@@ -1785,10 +1835,18 @@ def _original_thumb_path(video_id):
     return None
 
 
+_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024   # thumbnails are well under this
+
+
 def _download_bytes(url):
+    if not str(url).lower().startswith(("http://", "https://")):
+        raise ValueError("unsupported url scheme")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=20) as r:
-        return r.read()
+        data = r.read(_MAX_DOWNLOAD_BYTES + 1)
+    if len(data) > _MAX_DOWNLOAD_BYTES:
+        raise ValueError("thumbnail too large")
+    return data
 
 
 # Thumbnails come off the network. Cap decoded size so a crafted image cannot
@@ -1877,7 +1935,7 @@ def _phash_min_distance(new_hash, paths):
     return best
 
 
-@app.post("/fetch-thumbnail/<video_id>")
+@app.post("/fetch-thumbnail/<vid:video_id>")
 def fetch_thumbnail(video_id):
     body  = request.get_json(silent=True) or {}
     force = bool(body.get("force")) or request.args.get("force") in ("1", "true")
@@ -1944,7 +2002,7 @@ def fetch_thumbnail(video_id):
     return jsonify({"ok": True, "added": True, "hash": digest, "file": digest + ext})
 
 
-@app.get("/thumbnails/<video_id>")
+@app.get("/thumbnails/<vid:video_id>")
 def list_thumbnails(video_id):
     items = []
     if _original_thumb_path(video_id):
@@ -1957,7 +2015,7 @@ def list_thumbnails(video_id):
     return jsonify({"ok": True, "thumbnails": items})
 
 
-@app.get("/thumbnail-version/<video_id>/<path:fname>")
+@app.get("/thumbnail-version/<vid:video_id>/<path:fname>")
 def serve_thumbnail_version(video_id, fname):
     vdir = _thumb_versions_dir(video_id)
     safe = os.path.basename(fname)

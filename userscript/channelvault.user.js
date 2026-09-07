@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.5.0
+// @version      1.6.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -14,6 +14,9 @@
 // ==/UserScript==
 
 const API_BASE           = "http://localhost:3360";
+// Backend denies every API call without this header. Ordinary web pages cannot
+// attach a custom header cross-origin; this privileged script can.
+const CV_HEADERS         = { "X-ChannelVault": "1" };
 const BADGE_ID           = "channelvault-badge";
 const CARD_BADGE_CLASS   = "cv-card-badge";
 const COLOR_DOWNLOADED   = "#2e7d32";
@@ -161,6 +164,7 @@ function gmFetch(url) {
     GM_xmlhttpRequest({
       method: "GET",
       url,
+      headers: CV_HEADERS,
       onload: (res) => {
         try {
           resolve(JSON.parse(res.responseText));
@@ -266,6 +270,7 @@ function gmFetchIds() {
     GM_xmlhttpRequest({
       method: "GET",
       url: `${API_BASE}/videos/ids`,
+      headers: CV_HEADERS,
       onload: (res) => {
         try {
           const data = JSON.parse(res.responseText);
@@ -395,7 +400,7 @@ function gmPost(url, body) {
       url,
       // Backend rejects state-changing requests without this header. Random web
       // pages cannot attach a custom header cross-origin; this script can.
-      headers: { "Content-Type": "application/json", "X-ChannelVault": "1" },
+      headers: { "Content-Type": "application/json", ...CV_HEADERS },
       data:    JSON.stringify(body),
       onload:  resolve,
       onerror: reject,
