@@ -6,17 +6,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The token only needs to read the repo; artifacts upload with that alone.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version: "1.3.14"   # keep in step with frontend/package.json packageManager
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
 
@@ -55,24 +59,54 @@ jobs:
           done
 
           fail=0
-          check() {
-            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Accept: $2" "http://localhost:3399$1")
-            if [ "$code" != "200" ]; then echo "✗ $1 → $code"; fail=1; else echo "✓ $1"; fi
+          H='X-ChannelVault: 1'
+          # expect <code> <path> [curl args...]
+          expect() {
+            want=$1; path=$2; shift 2
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$@" "http://localhost:3399$path")
+            if [ "$code" != "$want" ]; then echo "✗ $path → $code (want $want)"; fail=1; else echo "✓ $path → $code"; fi
           }
-          check /                  text/html
-          check /playlists         text/html
-          check /artist/Example    text/html
-          check /videos            '*/*'
-          check /config            '*/*'
-          check /channelvault.user.js '*/*'
+
+          echo "-- public by URL alone"
+          expect 200 /                       -H 'Accept: text/html'
+          expect 200 /playlists              -H 'Accept: text/html'
+          expect 200 /artist/Example         -H 'Accept: text/html'
+          expect 200 /channelvault.user.js
+
+          echo "-- API needs the header"
+          expect 200 /videos                 -H "$H"
+          expect 200 /config                 -H "$H"
+          expect 200 /playlists              -H "$H"
+          expect 403 /videos
+          expect 403 /config
+          expect 403 /organize/preview
+          expect 403 /browse
+          expect 403 /config                 -X POST -H 'Content-Type: application/json' -d '{}'
+          expect 403 /scan                   -X POST
+          expect 403 /videos/aaaaaaaaaaa     -X DELETE
+          expect 200 /mark/aaaaaaaaaaa       -X DELETE -H "$H"
+
+          echo "-- host allowlist blocks DNS rebinding"
+          expect 403 /config                 -H "$H" -H 'Host: evil.example'
+          expect 403 /config                 -H "$H" -H 'Host: 127.0.0.1.nip.io:3399'
+
+          echo "-- video ids must be 11 url-safe chars"
+          expect 404 /check-video/..         -H "$H" --path-as-is
+          expect 404 /thumb/short            -H "$H"
+          expect 200 /check-video/aaaaaaaaaaa -H "$H"
+          expect 400 /videos/manual          -X POST -H "$H" -H 'Content-Type: application/json' -d '{"video_id":"../etc"}'
+
+          echo "-- no CORS grant, ever"
+          if curl -s -D - -o /dev/null -H 'Origin: http://evil.example' -H "$H" http://localhost:3399/config \
+               | grep -qi 'access-control-allow'; then echo "✗ CORS header present"; fail=1; else echo "✓ no CORS headers"; fi
 
           # The SPA fetches JSON from the same paths the router also renders.
-          [ "$(curl -s -H 'Accept: */*' http://localhost:3399/playlists)" = "[]" ] \
+          [ "$(curl -s -H "$H" http://localhost:3399/playlists)" = "[]" ] \
             || { echo "✗ /playlists did not return JSON for fetch"; fail=1; }
 
           exit $fail
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: channelvault-linux-x86_64-dev
           path: dist/channelvault
