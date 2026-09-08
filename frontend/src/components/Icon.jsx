@@ -29,6 +29,13 @@ const PATHS = {
   list:      <><path d="M9 6h11" /><path d="M9 12h11" /><path d="M9 18h11" /><path d="M4.2 6h.01" /><path d="M4.2 12h.01" /><path d="M4.2 18h.01" /></>,
   expand:    <><path d="M14.4 3.6h6v6" /><path d="M20.4 3.6 13.2 10.8" /><path d="M9.6 20.4h-6v-6" /><path d="M3.6 20.4 10.8 13.2" /></>,
   arrowRight:<><path d="M4 12h15.5" /><path d="M13.4 5.6 19.8 12l-6.4 6.4" /></>,
+  tag:       <><path d="M20.6 12.4 12.4 20.6a1.5 1.5 0 0 1-2.1 0L3.4 13.7V4.4a1 1 0 0 1 1-1h9.3l6.9 6.9a1.5 1.5 0 0 1 0 2.1z" /><circle cx="7.9" cy="7.9" r="1.3" /></>,
+  scissors:  <><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="6.5" cy="17.5" r="2.5" /><path d="M20.5 4.5 8.3 15.7" /><path d="M14.7 14.7l5.8 5.8" /><path d="M8.3 8.3l3.9 3.9" /></>,
+  shuffle:   <><path d="M16 4h4.5v4.5" /><path d="M3.5 20 20.5 4" /><path d="M16 20h4.5v-4.5" /><path d="M14 14l6.5 6" /><path d="M3.5 4l6 5.6" /></>,
+  repeat:    <><path d="M17 2.8 20.5 6.3 17 9.8" /><path d="M3.5 11.5V10a3.7 3.7 0 0 1 3.7-3.7h13" /><path d="M7 21.2 3.5 17.7 7 14.2" /><path d="M20.5 12.5V14a3.7 3.7 0 0 1-3.7 3.7h-13" /></>,
+  skipBack:  <><path d="M19 5.5 9.5 12l9.5 6.5z" /><path d="M5.5 5.5v13" /></>,
+  skipFwd:   <><path d="M5 5.5 14.5 12 5 18.5z" /><path d="M18.5 5.5v13" /></>,
+  pause:     <><path d="M8 5.5v13" /><path d="M16 5.5v13" /></>,
   vault:     <><rect x="3.2" y="4.2" width="17.6" height="15.6" rx="2.4" /><circle cx="10.6" cy="12" r="3.6" /><path d="M10.6 8.4v7.2" /><path d="M7 12h7.2" /><path d="M17 9.4v5.2" /></>,
 };
 

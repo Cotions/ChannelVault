@@ -1,17 +1,32 @@
-import { useState, useEffect, useCallback } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
-import { thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl } from "../lib/api";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom";
+import {
+  thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl,
+  getSegments, createSegment, updateSegment, deleteSegment, addSegmentTag, removeSegmentTag,
+  addVideoTag, removeVideoTag, importChapters,
+} from "../lib/api";
 import { artistsOf } from "../lib/artists";
 import { fmt, fmtBytes, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import { usePlayer } from "../player/playerContext";
+import { usePlaybackTime } from "../player/usePlaybackTime";
 import Icon from "../components/Icon";
+import TagPicker from "../components/TagPicker";
+import SegmentTimeline from "../components/SegmentTimeline";
+import SegmentList from "../components/SegmentList";
 
-export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
+export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, onFetchMeta, onDelete }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const player = usePlayer();
   // Stable callbacks (useCallback in the provider) — safe as effect deps.
-  const { openInline, onLeavePage, setPoster, close: closePlayer, setDock } = player;
+  const { openInline, onLeavePage, setPoster, close: closePlayer, setDock, seek } = player;
+  const playback = usePlaybackTime(player.videoRef, player.activeId);
+  const [segments,   setSegments]   = useState([]);
+  const [videoTags,  setVideoTags]  = useState([]);
+  const [selectedSeg, setSelectedSeg] = useState(null);
+  const [segBusy,    setSegBusy]    = useState(false);
+  const jumpedRef = useRef(null);
   const [fetching,   setFetching]   = useState(false);
   const [elapsed,    setElapsed]    = useState(null);
   const [confirming, setConfirming] = useState(false);
@@ -40,6 +55,48 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
   }, [id, loadThumbs]);
 
   const video = videos.find(v => v.video_id === id);
+
+  const loadSegments = useCallback(async () => {
+    try {
+      const r = await getSegments(id);
+      setSegments(r.segments || []);
+      setVideoTags(r.video_tags || []);
+    } catch { setSegments([]); setVideoTags([]); }
+  }, [id]);
+  useEffect(() => { setSelectedSeg(null); loadSegments(); }, [loadSegments]);
+
+  // Deep links from tag pages: /video/:id?t=754 lands on that second, once.
+  const jumpTo = params.get("t");
+  useEffect(() => {
+    if (jumpTo == null || player.activeId !== id) return;
+    const key = `${id}@${jumpTo}`;
+    if (jumpedRef.current === key) return;
+    const el = player.videoRef.current;
+    if (!el) return;
+    const go = () => { jumpedRef.current = key; seek(parseFloat(jumpTo)); };
+    if (el.readyState >= 1) go();
+    else el.addEventListener("loadedmetadata", go, { once: true });
+  }, [jumpTo, id, player.activeId, player.videoRef, seek]);
+
+  // Every mutation reloads this page's segments and lets App refresh the cards.
+  async function mutate(fn) {
+    setSegBusy(true);
+    try {
+      const r = await fn();
+      if (r && r.ok === false) return false;
+      await loadSegments();
+      onTagsChanged?.();
+      return true;
+    } catch { return false; } finally { setSegBusy(false); }
+  }
+  const handleCreateSegment = data          => mutate(() => createSegment(id, data));
+  const handleUpdateSegment = (sid, fields) => mutate(() => updateSegment(sid, fields));
+  const handleDeleteSegment = sid           => mutate(() => deleteSegment(sid));
+  const handleAddSegTag     = (sid, name)   => mutate(() => addSegmentTag(sid, name));
+  const handleRemoveSegTag  = (sid, tid)    => mutate(() => removeSegmentTag(sid, tid));
+  const handleAddVideoTag   = name          => mutate(() => addVideoTag(id, name));
+  const handleRemoveVideoTag = tag          => mutate(() => removeVideoTag(id, tag.id));
+  const handleImportChapters = ()           => mutate(() => importChapters(id));
 
   // Hand the video off to the persistent player; minimize/close on leave.
   useEffect(() => {
@@ -225,8 +282,30 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
         )}
       </div>
 
+      {segments.length > 0 && (
+        <SegmentTimeline
+          segments={segments}
+          duration={playback.duration || video.duration_secs || 0}
+          time={playback.time}
+          selectedId={selectedSeg}
+          onSelect={setSelectedSeg}
+          onSeek={secs => seek(secs)}
+        />
+      )}
+
       <div className="vp-below">
         <h1 className="vp-title">{video.title || video.video_id}</h1>
+        <div className="vp-tags" style={{ animationDelay: "30ms" }}>
+          <span className="vp-tags-label"><Icon name="tag" size={13} /> Tags</span>
+          <TagPicker
+            allTags={tags}
+            selected={videoTags}
+            onAdd={handleAddVideoTag}
+            onRemove={handleRemoveVideoTag}
+            placeholder={videoTags.length ? "Add another…" : "Tag this video…"}
+            disabled={segBusy}
+          />
+        </div>
         <div className="vp-channels" style={{ animationDelay: "60ms" }}>
           {artists.map(artist => (
             <Link key={artist} to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel">
@@ -259,6 +338,26 @@ export default function VideoPage({ videos, onEdit, onFetchMeta, onDelete }) {
               <span className="vp-stat-label">{s.label}</span>
             </div>
           ))}
+        </div>
+
+        <div className="vp-segments" style={{ animationDelay: "300ms" }}>
+          <SegmentList
+            segments={segments}
+            allTags={tags}
+            time={playback.time}
+            duration={playback.duration || video.duration_secs || 0}
+            selectedId={selectedSeg}
+            onSelect={setSelectedSeg}
+            onSeek={secs => seek(secs)}
+            onCreate={handleCreateSegment}
+            onUpdate={handleUpdateSegment}
+            onDelete={handleDeleteSegment}
+            onAddTag={handleAddSegTag}
+            onRemoveTag={handleRemoveSegTag}
+            onImportChapters={handleImportChapters}
+            busy={segBusy}
+            hasFile={!!video.file_path}
+          />
         </div>
 
         {video.description && (

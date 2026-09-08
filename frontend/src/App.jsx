@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist } from "./lib/api";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
@@ -27,6 +27,7 @@ export default function App() {
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
   const [playlists, setPlaylists] = useState([]);
+  const [tags,      setTags]      = useState([]);
   const searchRef = useRef(null);
 
   // "/" and ⌘/Ctrl-K jump to search from anywhere, Esc drops focus.
@@ -48,14 +49,15 @@ export default function App() {
 
   async function load() {
     try {
-      const [c, v, w, i, p] = await Promise.all([
-        getConfig(), getVideos(), getWanted(), getIgnored(), getPlaylists(),
+      const [c, v, w, i, p, t] = await Promise.all([
+        getConfig(), getVideos(), getWanted(), getIgnored(), getPlaylists(), getTags(),
       ]);
       setCfg(c);
       setVideos(v);
       setWanted(w);
       setIgnored(i);
       setPlaylists(p);
+      setTags(t);
       setOnline(true);
     } catch {
       setOnline(false);
@@ -79,6 +81,13 @@ export default function App() {
 
   async function handleWatched() {
     setVideos(await getVideos());
+  }
+
+  // Tag or segment edits change what the cards show, so refetch both lists.
+  async function handleTagsChanged() {
+    const [v, t] = await Promise.all([getVideos(), getTags()]);
+    setVideos(v);
+    setTags(t);
   }
 
   async function handleCreatePlaylist(name) {
@@ -202,7 +211,7 @@ export default function App() {
             />
             <Route
               path="/video/:id"
-              element={<VideoPage videos={videos} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} onWatched={handleWatched} />}
+              element={<VideoPage videos={videos} tags={tags} onTagsChanged={handleTagsChanged} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} />}
             />
             <Route
               path="/playlist/:id"

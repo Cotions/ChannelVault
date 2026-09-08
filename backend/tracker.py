@@ -2619,10 +2619,18 @@ def apply_tag_rules():
 
 @app.get("/videos/<vid:video_id>/segments")
 def list_segments(video_id):
+    """Segments with their tags, plus the tags attached to the video as a whole
+    (kept apart so the UI can offer to remove exactly those)."""
     conn = get_conn()
     segs = _segments_for(conn, video_id)
+    direct = [
+        {**_tag_row(r), "source": r["source"]} for r in conn.execute('''
+            SELECT t.id, t.name, t.color, vt.source FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
+            WHERE vt.video_id = ? ORDER BY t.name COLLATE NOCASE
+        ''', (video_id,)).fetchall()
+    ]
     conn.close()
-    return jsonify({"ok": True, "segments": segs})
+    return jsonify({"ok": True, "segments": segs, "video_tags": direct})
 
 
 @app.post("/videos/<vid:video_id>/segments")
