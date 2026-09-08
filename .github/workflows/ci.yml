@@ -96,6 +96,16 @@ jobs:
           expect 200 /check-video/aaaaaaaaaaa -H "$H"
           expect 400 /videos/manual          -X POST -H "$H" -H 'Content-Type: application/json' -d '{"video_id":"../etc"}'
 
+          echo "-- tags and segments sit behind the header too"
+          expect 403 /tags
+          expect 200 /tags                   -H "$H"
+          expect 200 /tags                   -H 'Accept: text/html'
+          expect 403 /segments/backfill      -X POST
+          expect 200 /tags                   -X POST -H "$H" -H 'Content-Type: application/json' -d '{"name":"smoke"}'
+          expect 400 /tags                   -X POST -H "$H" -H 'Content-Type: application/json' -d '{"name":""}'
+          expect 404 /videos/aaaaaaaaaaa/segments -X POST -H "$H" -H 'Content-Type: application/json' -d '{"start_secs":0,"end_secs":5}'
+          expect 200 /videos/aaaaaaaaaaa/segments -H "$H"
+
           echo "-- no CORS grant, ever"
           if curl -s -D - -o /dev/null -H 'Origin: http://evil.example' -H "$H" http://localhost:3399/config \
                | grep -qi 'access-control-allow'; then echo "✗ CORS header present"; fail=1; else echo "✓ no CORS headers"; fi

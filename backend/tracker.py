@@ -130,8 +130,8 @@ def _is_public_endpoint():
     ep = request.endpoint or ""
     if ep.startswith("spa"):
         return True
-    if ep == "list_playlists" and request.method == "GET" and _wants_html():
-        return True                            # /playlists as a page, not as JSON
+    if ep in ("list_playlists", "list_tags") and request.method == "GET" and _wants_html():
+        return True                            # /playlists and /tags as pages, not as JSON
     return ep in _PUBLIC_ENDPOINTS
 
 
@@ -441,6 +441,57 @@ def init_db():
         )
     ''')
 
+    # Tags are the user's own vocabulary: one row per word, library-wide.
+    # Segments are time ranges inside one video (embedded chapters or hand-drawn).
+    # A tag attaches to a segment or to a whole video; `source` records whether a
+    # person or a keyword rule put it there.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tags (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            color      TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS tag_rules (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            tag_id     INTEGER NOT NULL,
+            keyword    TEXT NOT NULL COLLATE NOCASE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS segments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id   TEXT NOT NULL,
+            start_secs REAL NOT NULL,
+            end_secs   REAL NOT NULL,
+            title      TEXT,
+            source     TEXT NOT NULL DEFAULT 'manual',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS segment_tags (
+            segment_id INTEGER NOT NULL,
+            tag_id     INTEGER NOT NULL,
+            source     TEXT NOT NULL DEFAULT 'manual',
+            PRIMARY KEY (segment_id, tag_id)
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS video_tags (
+            video_id   TEXT NOT NULL,
+            tag_id     INTEGER NOT NULL,
+            source     TEXT NOT NULL DEFAULT 'manual',
+            PRIMARY KEY (video_id, tag_id)
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_segment_tags_tag ON segment_tags(tag_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)")
+
     conn.commit()
     conn.close()
 
@@ -498,6 +549,34 @@ def _meta_from_ffprobe(file_path):
         "duration":      duration,
         "filesize":      filesize,
     }
+
+
+def _read_chapters(file_path):
+    """Embedded chapters as [{start, end, title}], oldest first. Empty on any failure.
+
+    Kept apart from _meta_from_ffprobe: mp4 files take the TinyTag path and never
+    reach ffprobe, yet they are exactly the files that carry chapters."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_chapters", file_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        chapters = (json.loads(out.stdout or "{}")).get("chapters") or []
+    except Exception:
+        return []
+    result = []
+    for ch in chapters:
+        try:
+            start = float(ch.get("start_time"))
+            end   = float(ch.get("end_time"))
+        except (TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        title = ((ch.get("tags") or {}).get("title") or "").strip() or None
+        result.append({"start": start, "end": end, "title": title})
+    result.sort(key=lambda c: c["start"])
+    return result
 
 
 def process_video_file(file_path):
@@ -560,6 +639,18 @@ def process_video_file(file_path):
 
         result.update({"status": "tracked", "title": title, "video_id": video_id})
         print(f"[tracker] Tracked: {title} ({video_id})")
+        # Embedded chapters become segments, once. A rescan never touches a video
+        # that already has segments, so the user's edits survive.
+        try:
+            with _db_lock:
+                conn = get_conn()
+                added = _import_chapters(conn, video_id, file_path, replace=False)
+                if added:
+                    _apply_rules(conn, video_ids=[video_id])
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"[segments] chapter import failed for {video_id}: {e}")
         # Copy thumbnail into each collaborating artist's folder
         base = os.path.splitext(file_path)[0]
         for name in _artist_names(artist):
@@ -671,11 +762,12 @@ def _wants_html():
 
 # Client-side router paths. Anything not listed here stays an API route.
 for _rule in (
-    "/", "/playlists", "/artists", "/data-quality", "/stats",
+    "/", "/playlists", "/artists", "/data-quality", "/stats", "/tags",
     "/artist/<path:_spa_rest>", "/video/<path:_spa_rest>", "/playlist/<path:_spa_rest>",
+    "/tag/<path:_spa_rest>",
 ):
-    if _rule == "/playlists":
-        continue  # collides with the API route below; handled there via Accept
+    if _rule in ("/playlists", "/tags"):
+        continue  # collide with API routes below; handled there via Accept
     app.add_url_rule(
         _rule, f"spa{_rule}", lambda **_kw: _spa(), methods=["GET"]
     )
@@ -926,8 +1018,10 @@ def list_videos():
         ) w ON w.video_id = v.video_id
         WHERE v.status='downloaded' ORDER BY v.downloaded_at DESC
     ''').fetchall()
+    videos = [dict(r) for r in rows]
+    _attach_tags(conn, videos)
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    return jsonify(videos)
 
 _STREAM_MIMES = {
     ".mp4":  "video/mp4",
@@ -1081,8 +1175,10 @@ def get_playlist(playlist_id):
         WHERE pi.playlist_id = ?
         ORDER BY pi.added_at ASC
     ''', (playlist_id,)).fetchall()
+    videos = [dict(r) for r in rows]
+    _attach_tags(conn, videos)
     conn.close()
-    return jsonify({"ok": True, "playlist": dict(pl), "videos": [dict(r) for r in rows]})
+    return jsonify({"ok": True, "playlist": dict(pl), "videos": videos})
 
 @app.post("/playlists/<int:playlist_id>/videos")
 def add_playlist_video(playlist_id):
@@ -1117,7 +1213,7 @@ EXPORT_FIELDS = [
     "video_id", "title", "channel_name", "url", "file_path",
     "genre", "description", "recorded_date", "duration_secs",
     "file_size_bytes", "downloaded_at", "view_count", "like_count",
-    "stats_updated_at", "status",
+    "stats_updated_at", "status", "tags",
 ]
 
 def _export_rows():
@@ -1125,8 +1221,26 @@ def _export_rows():
     rows = conn.execute(
         "SELECT * FROM downloaded_videos ORDER BY downloaded_at DESC"
     ).fetchall()
+    videos = [dict(r) for r in rows]
+    _attach_tags(conn, videos)
+    segs = conn.execute('''
+        SELECT s.id, s.video_id, s.start_secs, s.end_secs, s.title, s.source,
+               GROUP_CONCAT(t.name, '; ') AS tag_names
+        FROM segments s
+        LEFT JOIN segment_tags st ON st.segment_id = s.id
+        LEFT JOIN tags t ON t.id = st.tag_id
+        GROUP BY s.id ORDER BY s.video_id, s.start_secs
+    ''').fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    by_video = {}
+    for r in segs:
+        d = dict(r)
+        d["tags"] = [n for n in (d.pop("tag_names") or "").split("; ") if n]
+        by_video.setdefault(d.pop("video_id"), []).append(d)
+    for v in videos:
+        v["segments"] = by_video.get(v["video_id"], [])
+        v["tags"]     = [t["name"] for t in v["tags"]]          # names only; CSV-friendly
+    return videos
 
 @app.get("/export/json")
 def export_json():
@@ -1142,7 +1256,7 @@ def export_csv():
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=EXPORT_FIELDS, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(_export_rows())
+    writer.writerows({**r, "tags": "; ".join(r["tags"])} for r in _export_rows())
     # BOM so Excel detects UTF-8
     resp = Response("\ufeff" + buf.getvalue(), mimetype="text/csv")
     resp.headers["Content-Disposition"] = 'attachment; filename="channelvault-export.csv"'
@@ -1345,6 +1459,9 @@ def delete_video(video_id):
     conn = get_conn()
     conn.execute("DELETE FROM downloaded_videos WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM watch_sessions WHERE video_id = ?", (video_id,))
+    conn.execute("DELETE FROM segment_tags WHERE segment_id IN (SELECT id FROM segments WHERE video_id = ?)", (video_id,))
+    conn.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
+    conn.execute("DELETE FROM video_tags WHERE video_id = ?", (video_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -2133,6 +2250,573 @@ def get_creator(channel_name):
     if not row:
         return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify(_creator_row_to_dict(row))
+
+
+# ---------------------------------------------------------------------------
+# Tags and segments
+#
+# A tag is a word the user invents; it lives once, library-wide, with a colour
+# and optional keyword rules. A segment is a time range inside one video, either
+# an embedded chapter or hand-drawn. Tags attach to segments or to whole videos.
+# ---------------------------------------------------------------------------
+
+_TAG_PALETTE = [
+    "#4ade80", "#5b9dff", "#f59e0b", "#f472b6", "#a78bfa",
+    "#22d3ee", "#fb7185", "#84cc16", "#e879f9", "#fbbf24",
+]
+
+
+def _tag_row(row):
+    return {"id": row["id"], "name": row["name"], "color": row["color"]}
+
+
+def _ensure_tag(conn, name, color=None):
+    """Return the tag row for `name`, creating it (case-insensitive) if missing."""
+    name = (name or "").strip()
+    if not name:
+        return None
+    row = conn.execute("SELECT id, name, color FROM tags WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    if row:
+        return _tag_row(row)
+    if not color:
+        n = conn.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+        color = _TAG_PALETTE[n % len(_TAG_PALETTE)]
+    cur = conn.execute("INSERT INTO tags (name, color) VALUES (?, ?)", (name, color))
+    return {"id": cur.lastrowid, "name": name, "color": color}
+
+
+def _attach_tags(conn, videos):
+    """Add `tags: [{id, name, color}]` to each video dict: direct tags plus any
+    tag carried by one of its segments."""
+    if not videos:
+        return videos
+    rows = conn.execute('''
+        SELECT x.video_id, t.id, t.name, t.color
+        FROM (
+            SELECT video_id, tag_id FROM video_tags
+            UNION
+            SELECT s.video_id, st.tag_id FROM segment_tags st JOIN segments s ON s.id = st.segment_id
+        ) x
+        JOIN tags t ON t.id = x.tag_id
+        ORDER BY t.name COLLATE NOCASE
+    ''').fetchall()
+    by_video = {}
+    for r in rows:
+        by_video.setdefault(r["video_id"], []).append(_tag_row(r))
+    for v in videos:
+        v["tags"] = by_video.get(v["video_id"], [])
+    return videos
+
+
+def _segments_for(conn, video_id):
+    segs = [dict(r) for r in conn.execute(
+        "SELECT * FROM segments WHERE video_id = ? ORDER BY start_secs, end_secs", (video_id,)
+    ).fetchall()]
+    if segs:
+        ids = [s["id"] for s in segs]
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(f'''
+            SELECT st.segment_id, st.source, t.id, t.name, t.color
+            FROM segment_tags st JOIN tags t ON t.id = st.tag_id
+            WHERE st.segment_id IN ({marks}) ORDER BY t.name COLLATE NOCASE
+        ''', ids).fetchall()
+        by_seg = {}
+        for r in rows:
+            by_seg.setdefault(r["segment_id"], []).append({**_tag_row(r), "source": r["source"]})
+        for s in segs:
+            s["tags"] = by_seg.get(s["id"], [])
+    return segs
+
+
+def _import_chapters(conn, video_id, file_path, replace=False):
+    """Turn embedded chapters into `source='chapter'` segments. Returns how many
+    were added. With replace=False a video that already has segments is left
+    alone; with replace=True only the chapter-sourced ones are swapped out."""
+    has_any = conn.execute("SELECT 1 FROM segments WHERE video_id = ? LIMIT 1", (video_id,)).fetchone()
+    if has_any and not replace:
+        return 0
+    chapters = _read_chapters(file_path)
+    if not chapters:
+        return 0
+    if replace:
+        conn.execute('''DELETE FROM segment_tags WHERE segment_id IN
+                        (SELECT id FROM segments WHERE video_id = ? AND source = 'chapter')''', (video_id,))
+        conn.execute("DELETE FROM segments WHERE video_id = ? AND source = 'chapter'", (video_id,))
+    conn.executemany(
+        "INSERT INTO segments (video_id, start_secs, end_secs, title, source) VALUES (?, ?, ?, ?, 'chapter')",
+        [(video_id, c["start"], c["end"], c["title"]) for c in chapters],
+    )
+    return len(chapters)
+
+
+def _apply_rules(conn, video_ids=None):
+    """Attach tags by keyword: any segment title or video title containing a
+    rule's keyword (case-insensitive) gets that rule's tag with source='rule'.
+    Idempotent; only adds. Returns {"segments": n, "videos": n} newly tagged."""
+    rules = conn.execute("SELECT tag_id, keyword FROM tag_rules").fetchall()
+    if not rules:
+        return {"segments": 0, "videos": 0}
+    if video_ids:
+        marks  = ",".join("?" * len(video_ids))
+        params = list(video_ids)
+        segs = conn.execute(f"SELECT id, title FROM segments WHERE video_id IN ({marks})", params).fetchall()
+        vids = conn.execute(f"SELECT video_id, title FROM downloaded_videos WHERE status = 'downloaded' AND video_id IN ({marks})", params).fetchall()
+    else:
+        segs = conn.execute("SELECT id, title FROM segments").fetchall()
+        vids = conn.execute("SELECT video_id, title FROM downloaded_videos WHERE status = 'downloaded'").fetchall()
+    added = {"segments": 0, "videos": 0}
+    for rule in rules:
+        kw = (rule["keyword"] or "").strip().lower()
+        if not kw:
+            continue
+        for s in segs:
+            if kw in (s["title"] or "").lower():
+                cur = conn.execute("INSERT OR IGNORE INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'rule')",
+                                   (s["id"], rule["tag_id"]))
+                added["segments"] += max(cur.rowcount, 0)
+        for v in vids:
+            if kw in (v["title"] or "").lower():
+                cur = conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id, source) VALUES (?, ?, 'rule')",
+                                   (v["video_id"], rule["tag_id"]))
+                added["videos"] += max(cur.rowcount, 0)
+    return added
+
+
+def _parse_secs(value):
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if v >= 0 else None
+
+
+# ---- tags ------------------------------------------------------------------
+
+@app.get("/tags")
+def list_tags():
+    if _wants_html():
+        return _spa()  # browser navigating to the tags page, not an API call
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT t.id, t.name, t.color, t.created_at,
+               (SELECT COUNT(*) FROM segment_tags st WHERE st.tag_id = t.id) AS segment_count,
+               (SELECT COUNT(DISTINCT video_id) FROM (
+                    SELECT video_id FROM video_tags WHERE tag_id = t.id
+                    UNION
+                    SELECT s.video_id FROM segment_tags st JOIN segments s ON s.id = st.segment_id
+                    WHERE st.tag_id = t.id
+               )) AS video_count
+        FROM tags t ORDER BY t.name COLLATE NOCASE
+    ''').fetchall()
+    rules = conn.execute("SELECT id, tag_id, keyword FROM tag_rules ORDER BY keyword COLLATE NOCASE").fetchall()
+    conn.close()
+    by_tag = {}
+    for r in rules:
+        by_tag.setdefault(r["tag_id"], []).append({"id": r["id"], "keyword": r["keyword"]})
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["rules"] = by_tag.get(d["id"], [])
+        out.append(d)
+    return jsonify(out)
+
+
+@app.post("/tags")
+def create_tag():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    if len(name) > 60:
+        return jsonify({"ok": False, "error": "name too long"}), 400
+    with _db_lock:
+        conn = get_conn()
+        tag = _ensure_tag(conn, name, body.get("color"))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, **tag})
+
+
+@app.patch("/tags/<int:tag_id>")
+def update_tag(tag_id):
+    body = request.get_json(silent=True) or {}
+    sets, params = [], []
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify({"ok": False, "error": "name required"}), 400
+        sets.append("name = ?"); params.append(name)
+    if "color" in body:
+        color = (body.get("color") or "").strip()
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+            return jsonify({"ok": False, "error": "color must be #rrggbb"}), 400
+        sets.append("color = ?"); params.append(color)
+    if not sets:
+        return jsonify({"ok": False, "error": "nothing to update"}), 400
+    with _db_lock:
+        conn = get_conn()
+        try:
+            conn.execute(f"UPDATE tags SET {', '.join(sets)} WHERE id = ?", params + [tag_id])
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            return jsonify({"ok": False, "error": "a tag with that name already exists"}), 409
+        row = conn.execute("SELECT id, name, color FROM tags WHERE id = ?", (tag_id,)).fetchone()
+        conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    return jsonify({"ok": True, **_tag_row(row)})
+
+
+@app.delete("/tags/<int:tag_id>")
+def delete_tag(tag_id):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM segment_tags WHERE tag_id = ?", (tag_id,))
+        conn.execute("DELETE FROM video_tags WHERE tag_id = ?", (tag_id,))
+        conn.execute("DELETE FROM tag_rules WHERE tag_id = ?", (tag_id,))
+        conn.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.get("/tags/<int:tag_id>/videos")
+def tag_videos(tag_id):
+    """Every downloaded video carrying the tag, with the segments that match."""
+    conn = get_conn()
+    tag = conn.execute("SELECT id, name, color FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    if not tag:
+        conn.close()
+        return jsonify({"ok": False, "error": "not found"}), 404
+    rows = conn.execute('''
+        SELECT v.*, COALESCE(w.watch_count, 0) AS watch_count, w.last_watched_at
+        FROM downloaded_videos v
+        LEFT JOIN (
+            SELECT video_id, COUNT(*) AS watch_count, MAX(updated_at) AS last_watched_at
+            FROM watch_sessions WHERE completed = 1 GROUP BY video_id
+        ) w ON w.video_id = v.video_id
+        WHERE v.status = 'downloaded' AND v.video_id IN (
+            SELECT video_id FROM video_tags WHERE tag_id = ?
+            UNION
+            SELECT s.video_id FROM segment_tags st JOIN segments s ON s.id = st.segment_id WHERE st.tag_id = ?
+        )
+        ORDER BY v.downloaded_at DESC
+    ''', (tag_id, tag_id)).fetchall()
+    videos = [dict(r) for r in rows]
+    _attach_tags(conn, videos)
+    segs = conn.execute('''
+        SELECT s.id, s.video_id, s.start_secs, s.end_secs, s.title
+        FROM segment_tags st JOIN segments s ON s.id = st.segment_id
+        WHERE st.tag_id = ? ORDER BY s.video_id, s.start_secs
+    ''', (tag_id,)).fetchall()
+    direct = {r["video_id"] for r in conn.execute("SELECT video_id FROM video_tags WHERE tag_id = ?", (tag_id,))}
+    conn.close()
+    by_video = {}
+    for r in segs:
+        by_video.setdefault(r["video_id"], []).append(dict(r))
+    for v in videos:
+        v["matched_segments"] = by_video.get(v["video_id"], [])
+        v["tagged_whole"]     = v["video_id"] in direct
+    return jsonify({"ok": True, "tag": _tag_row(tag), "videos": videos})
+
+
+@app.get("/tags/<int:tag_id>/segments")
+def tag_segments(tag_id):
+    """Flat play queue: every tagged segment across the library, newest video
+    first, then by start time. A video tagged as a whole (and with no tagged
+    segments of its own) contributes one item spanning its full length."""
+    conn = get_conn()
+    tag = conn.execute("SELECT id, name, color FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    if not tag:
+        conn.close()
+        return jsonify({"ok": False, "error": "not found"}), 404
+    rows = conn.execute('''
+        SELECT s.id AS segment_id, s.video_id, s.start_secs, s.end_secs, s.title,
+               v.title AS video_title, v.channel_name, v.downloaded_at
+        FROM segment_tags st
+        JOIN segments s ON s.id = st.segment_id
+        JOIN downloaded_videos v ON v.video_id = s.video_id AND v.status = 'downloaded'
+        WHERE st.tag_id = ?
+    ''', (tag_id,)).fetchall()
+    items = [dict(r) for r in rows]
+    covered = {i["video_id"] for i in items}
+    whole = conn.execute('''
+        SELECT v.video_id, v.title AS video_title, v.channel_name, v.duration_secs, v.downloaded_at
+        FROM video_tags vt JOIN downloaded_videos v ON v.video_id = vt.video_id AND v.status = 'downloaded'
+        WHERE vt.tag_id = ?
+    ''', (tag_id,)).fetchall()
+    conn.close()
+    for r in whole:
+        if r["video_id"] in covered:
+            continue
+        items.append({
+            "segment_id": None, "video_id": r["video_id"], "start_secs": 0.0,
+            "end_secs": r["duration_secs"], "title": None,
+            "video_title": r["video_title"], "channel_name": r["channel_name"],
+            "downloaded_at": r["downloaded_at"],
+        })
+    # Newest video first, then chronological inside the video.
+    items.sort(key=lambda i: (-(_ts(i["downloaded_at"])), i["start_secs"] or 0.0))
+    for i in items:
+        i.pop("downloaded_at", None)
+    return jsonify({"ok": True, "tag": _tag_row(tag), "items": items})
+
+
+def _ts(value):
+    """Sortable number from a SQLite timestamp string; 0 when unknown."""
+    try:
+        return time.mktime(time.strptime(str(value)[:19], "%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        return 0.0
+
+
+@app.post("/tags/<int:tag_id>/rules")
+def add_tag_rule(tag_id):
+    body    = request.get_json(silent=True) or {}
+    keyword = (body.get("keyword") or "").strip()
+    if not keyword:
+        return jsonify({"ok": False, "error": "keyword required"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone():
+            conn.close()
+            return jsonify({"ok": False, "error": "not found"}), 404
+        dup = conn.execute("SELECT id FROM tag_rules WHERE tag_id = ? AND keyword = ? COLLATE NOCASE",
+                           (tag_id, keyword)).fetchone()
+        if dup:
+            conn.close()
+            return jsonify({"ok": True, "id": dup["id"], "keyword": keyword, "duplicate": True})
+        cur = conn.execute("INSERT INTO tag_rules (tag_id, keyword) VALUES (?, ?)", (tag_id, keyword))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, "id": cur.lastrowid, "keyword": keyword})
+
+
+@app.delete("/tags/<int:tag_id>/rules/<int:rule_id>")
+def delete_tag_rule(tag_id, rule_id):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM tag_rules WHERE id = ? AND tag_id = ?", (rule_id, tag_id))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.post("/tags/apply-rules")
+def apply_tag_rules():
+    """Run every keyword rule over the whole library. Only adds; a tag the user
+    removed by hand comes back only if they press this again."""
+    with _db_lock:
+        conn = get_conn()
+        added = _apply_rules(conn)
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, **added})
+
+
+# ---- segments ---------------------------------------------------------------
+
+@app.get("/videos/<vid:video_id>/segments")
+def list_segments(video_id):
+    conn = get_conn()
+    segs = _segments_for(conn, video_id)
+    conn.close()
+    return jsonify({"ok": True, "segments": segs})
+
+
+@app.post("/videos/<vid:video_id>/segments")
+def create_segment(video_id):
+    body  = request.get_json(silent=True) or {}
+    start = _parse_secs(body.get("start_secs"))
+    end   = _parse_secs(body.get("end_secs"))
+    if start is None or end is None or end <= start:
+        return jsonify({"ok": False, "error": "need 0 <= start_secs < end_secs"}), 400
+    title = (body.get("title") or "").strip() or None
+    names = [n for n in (body.get("tags") or []) if isinstance(n, str) and n.strip()]
+    with _db_lock:
+        conn = get_conn()
+        row = conn.execute("SELECT duration_secs FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"ok": False, "error": "video not found"}), 404
+        if row["duration_secs"] and end > row["duration_secs"] + 1:
+            end = float(row["duration_secs"])
+            if end <= start:
+                conn.close()
+                return jsonify({"ok": False, "error": "start is past the end of the video"}), 400
+        cur = conn.execute(
+            "INSERT INTO segments (video_id, start_secs, end_secs, title, source) VALUES (?, ?, ?, ?, 'manual')",
+            (video_id, start, end, title),
+        )
+        seg_id = cur.lastrowid
+        for n in names:
+            tag = _ensure_tag(conn, n)
+            conn.execute("INSERT OR IGNORE INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'manual')",
+                         (seg_id, tag["id"]))
+        _apply_rules(conn, video_ids=[video_id])
+        conn.commit()
+        seg = next(s for s in _segments_for(conn, video_id) if s["id"] == seg_id)
+        conn.close()
+    return jsonify({"ok": True, "segment": seg})
+
+
+@app.patch("/segments/<int:segment_id>")
+def update_segment(segment_id):
+    body = request.get_json(silent=True) or {}
+    with _db_lock:
+        conn = get_conn()
+        cur = conn.execute("SELECT * FROM segments WHERE id = ?", (segment_id,)).fetchone()
+        if not cur:
+            conn.close()
+            return jsonify({"ok": False, "error": "not found"}), 404
+        start = _parse_secs(body.get("start_secs")) if "start_secs" in body else cur["start_secs"]
+        end   = _parse_secs(body.get("end_secs"))   if "end_secs"   in body else cur["end_secs"]
+        if start is None or end is None or end <= start:
+            conn.close()
+            return jsonify({"ok": False, "error": "need 0 <= start_secs < end_secs"}), 400
+        title = ((body.get("title") or "").strip() or None) if "title" in body else cur["title"]
+        conn.execute("UPDATE segments SET start_secs = ?, end_secs = ?, title = ? WHERE id = ?",
+                     (start, end, title, segment_id))
+        conn.commit()
+        seg = next(s for s in _segments_for(conn, cur["video_id"]) if s["id"] == segment_id)
+        conn.close()
+    return jsonify({"ok": True, "segment": seg})
+
+
+@app.delete("/segments/<int:segment_id>")
+def delete_segment(segment_id):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM segment_tags WHERE segment_id = ?", (segment_id,))
+        conn.execute("DELETE FROM segments WHERE id = ?", (segment_id,))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.post("/segments/<int:segment_id>/tags")
+def add_segment_tag(segment_id):
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if not conn.execute("SELECT 1 FROM segments WHERE id = ?", (segment_id,)).fetchone():
+            conn.close()
+            return jsonify({"ok": False, "error": "not found"}), 404
+        tag = _ensure_tag(conn, name)
+        conn.execute("INSERT OR IGNORE INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'manual')",
+                     (segment_id, tag["id"]))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, "tag": tag})
+
+
+@app.delete("/segments/<int:segment_id>/tags/<int:tag_id>")
+def remove_segment_tag(segment_id, tag_id):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM segment_tags WHERE segment_id = ? AND tag_id = ?", (segment_id, tag_id))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.post("/videos/<vid:video_id>/tags")
+def add_video_tag(video_id):
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone():
+            conn.close()
+            return jsonify({"ok": False, "error": "video not found"}), 404
+        tag = _ensure_tag(conn, name)
+        conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id, source) VALUES (?, ?, 'manual')",
+                     (video_id, tag["id"]))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, "tag": tag})
+
+
+@app.delete("/videos/<vid:video_id>/tags/<int:tag_id>")
+def remove_video_tag(video_id, tag_id):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM video_tags WHERE video_id = ? AND tag_id = ?", (video_id, tag_id))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.post("/videos/<vid:video_id>/segments/import-chapters")
+def import_chapters(video_id):
+    """Re-read the file's embedded chapters. Chapter-sourced segments are
+    replaced; hand-drawn ones are kept."""
+    conn = get_conn()
+    row = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
+    conn.close()
+    path = resolve_media_path(row["file_path"]) if row and row["file_path"] else None
+    if not path:
+        return jsonify({"ok": False, "error": "file missing on disk"}), 404
+    with _db_lock:
+        conn = get_conn()
+        added = _import_chapters(conn, video_id, path, replace=True)
+        if added:
+            _apply_rules(conn, video_ids=[video_id])
+        conn.commit()
+        segs = _segments_for(conn, video_id)
+        conn.close()
+    return jsonify({"ok": True, "added": added, "segments": segs})
+
+
+@app.post("/segments/backfill")
+def backfill_segments():
+    """Import chapters for every video that has no segments yet. Streams
+    progress like /scan so the UI can show a running count."""
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT video_id, file_path FROM downloaded_videos
+        WHERE status = 'downloaded' AND file_path IS NOT NULL
+          AND video_id NOT IN (SELECT DISTINCT video_id FROM segments)
+        ORDER BY downloaded_at DESC
+    ''').fetchall()
+    conn.close()
+    targets = [(r["video_id"], r["file_path"]) for r in rows]
+
+    def generate():
+        total = len(targets)
+        done = with_chapters = segments = missing = 0
+        yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
+        for vid, stored in targets:
+            path = resolve_media_path(stored)
+            if not path:
+                missing += 1
+            else:
+                try:
+                    with _db_lock:
+                        conn = get_conn()
+                        n = _import_chapters(conn, vid, path, replace=False)
+                        if n:
+                            _apply_rules(conn, video_ids=[vid])
+                        conn.commit()
+                        conn.close()
+                    if n:
+                        with_chapters += 1
+                        segments += n
+                except Exception as e:
+                    print(f"[segments] backfill failed for {vid}: {e}")
+            done += 1
+            if done % 10 == 0 or done == total:
+                yield f"data: {json.dumps({'type': 'progress', 'done': done, 'total': total, 'with_chapters': with_chapters, 'segments': segments, 'missing': missing})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'total': total, 'with_chapters': with_chapters, 'segments': segments, 'missing': missing})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ---------------------------------------------------------------------------
