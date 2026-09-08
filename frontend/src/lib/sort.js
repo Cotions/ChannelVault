@@ -10,7 +10,7 @@ export const SORT_OPTIONS = [
   { value: "title",    label: "Title" },
 ];
 
-// Case-insensitive match across title, channel, description.
+// Case-insensitive match across title, channel, description and tag names.
 // Empty/blank query matches everything.
 export function videoMatches(v, query) {
   const q = (query || "").trim().toLowerCase();
@@ -18,8 +18,16 @@ export function videoMatches(v, query) {
   return (
     (v.title || "").toLowerCase().includes(q) ||
     (v.channel_name || "").toLowerCase().includes(q) ||
-    (v.description || "").toLowerCase().includes(q)
+    (v.description || "").toLowerCase().includes(q) ||
+    (v.tags || []).some(t => (t.name || "").toLowerCase().includes(q))
   );
+}
+
+// True when the video carries every one of the selected tag ids.
+export function hasAllTags(v, tagIds) {
+  if (!tagIds || tagIds.length === 0) return true;
+  const mine = new Set((v.tags || []).map(t => t.id));
+  return tagIds.every(id => mine.has(id));
 }
 
 // nulls sort last for numeric keys

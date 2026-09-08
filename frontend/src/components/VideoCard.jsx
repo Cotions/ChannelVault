@@ -4,6 +4,7 @@ import { latestThumbUrl } from "../lib/api";
 import { artistsOf } from "../lib/artists";
 import { fmt, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import Icon from "./Icon";
+import TagChip from "./TagChip";
 
 export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid" }) {
   const [thumbOk,    setThumbOk]    = useState(true);
@@ -130,6 +131,14 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
           {video.view_count != null && <span>{fmt(video.view_count)} views</span>}
           {video.like_count  != null && <span>{fmt(video.like_count)} likes</span>}
         </div>
+        {video.tags?.length > 0 && (
+          <div className="video-tags">
+            {video.tags.slice(0, 3).map(t => <TagChip key={t.id} tag={t} size="sm" link />)}
+            {video.tags.length > 3 && (
+              <span className="video-tags-more" title={video.tags.slice(3).map(t => t.name).join(", ")}>+{video.tags.length - 3}</span>
+            )}
+          </div>
+        )}
       </div>
       <div className="video-actions">
         {confirming ? (
