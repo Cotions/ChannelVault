@@ -15,6 +15,8 @@ import PlaylistsPage   from "./pages/PlaylistsPage";
 import DataQualityPage from "./pages/DataQualityPage";
 import VideoPage       from "./pages/VideoPage";
 import Stats           from "./pages/Stats";
+import TagsPage        from "./pages/TagsPage";
+import TagPage         from "./pages/TagPage";
 
 export default function App() {
   const [online,  setOnline]  = useState(false);
@@ -171,6 +173,7 @@ export default function App() {
           <NavLink to="/" end className="side-link"><Icon name="home" />Home</NavLink>
           <NavLink to="/playlists" className="side-link"><Icon name="playlist" />Playlists</NavLink>
           <NavLink to="/artists" className="side-link"><Icon name="users" />Artists</NavLink>
+          <NavLink to="/tags" className="side-link"><Icon name="tag" />Tags</NavLink>
           <NavLink to="/data-quality" className="side-link"><Icon name="pulse" />Data Quality</NavLink>
           <NavLink to="/stats" className="side-link"><Icon name="chart" />Stats</NavLink>
           <div className="side-sep" />
@@ -186,6 +189,7 @@ export default function App() {
                 <Overview
                   videos={videos}
                   playlists={playlists}
+                  tags={tags}
                   query={query}
                   onAddToPlaylist={handleAddToPlaylist}
                   onDelete={handleDelete}
@@ -203,6 +207,11 @@ export default function App() {
               element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} />}
             />
             <Route path="/data-quality" element={<DataQualityPage />} />
+            <Route path="/tags" element={<TagsPage tags={tags} query={query} onChanged={handleTagsChanged} />} />
+            <Route
+              path="/tag/:id"
+              element={<TagPage query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+            />
             <Route path="/stats" element={<Stats videos={videos} wanted={wanted} ignored={ignored} />} />
             <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
             <Route
