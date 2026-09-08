@@ -25,6 +25,15 @@ async function post(path, body) {
   return r.json();
 }
 
+async function patch(path, body) {
+  const r = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
 async function del(path) {
   const r = await fetch(`${BASE}${path}`, { method: "DELETE", headers: CSRF_HEADERS });
   return r.json();
@@ -93,9 +102,33 @@ export async function getCreator(name) {
   catch { return null; }
 }
 
-export async function scan(onEvent) {
-  const r = await fetch(`${BASE}/scan`, { method: "POST", headers: CSRF_HEADERS });
-  if (!r.ok) throw new Error("Scan failed");
+// Tags and segments
+export function getTags()                    { return get("/tags"); }
+export function createTag(name, color)       { return post("/tags", color ? { name, color } : { name }); }
+export function updateTag(id, fields)        { return patch(`/tags/${id}`, fields); }
+export function deleteTag(id)                { return del(`/tags/${id}`); }
+export function getTagVideos(id)             { return get(`/tags/${id}/videos`); }
+export function getTagSegments(id)           { return get(`/tags/${id}/segments`); }
+export function addTagRule(id, keyword)      { return post(`/tags/${id}/rules`, { keyword }); }
+export function deleteTagRule(id, ruleId)    { return del(`/tags/${id}/rules/${ruleId}`); }
+export function applyTagRules()              { return post("/tags/apply-rules", {}); }
+export function getSegments(videoId)         { return get(`/videos/${videoId}/segments`); }
+export function createSegment(videoId, data) { return post(`/videos/${videoId}/segments`, data); }
+export function updateSegment(id, fields)    { return patch(`/segments/${id}`, fields); }
+export function deleteSegment(id)            { return del(`/segments/${id}`); }
+export function addSegmentTag(id, name)      { return post(`/segments/${id}/tags`, { name }); }
+export function removeSegmentTag(id, tagId)  { return del(`/segments/${id}/tags/${tagId}`); }
+export function addVideoTag(videoId, name)   { return post(`/videos/${videoId}/tags`, { name }); }
+export function removeVideoTag(videoId, tagId) { return del(`/videos/${videoId}/tags/${tagId}`); }
+export function importChapters(videoId)      { return post(`/videos/${videoId}/segments/import-chapters`, {}); }
+export function backfillSegments(onEvent)    { return stream("/segments/backfill", onEvent); }
+
+export function scan(onEvent) { return stream("/scan", onEvent); }
+
+// Server-sent progress: POST, then hand each `data:` JSON line to onEvent.
+export async function stream(path, onEvent) {
+  const r = await fetch(`${BASE}${path}`, { method: "POST", headers: CSRF_HEADERS });
+  if (!r.ok) throw new Error(`${path} failed`);
   const reader  = r.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";

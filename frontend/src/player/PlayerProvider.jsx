@@ -80,6 +80,18 @@ export default function PlayerProvider({ onCompleted, children }) {
   const setDock      = useCallback((el) => { dockRef.current = el; }, []);
   const setPosterUrl = useCallback((url) => setPoster(url || null), []);
 
+  // Transport for the page: jump to a second and (by default) start playing.
+  // Consumers that need the live position subscribe to the element themselves
+  // via usePlaybackTime, so nothing here rerenders on every tick.
+  const seek = useCallback((secs, { play = true } = {}) => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.currentTime = Math.max(0, secs || 0);
+    if (play) el.play().catch(() => {});
+  }, []);
+  const play  = useCallback(() => { videoRef.current?.play().catch(() => {}); }, []);
+  const pause = useCallback(() => { videoRef.current?.pause(); }, []);
+
   // Clear inline positioning when leaving inline so the .cv-shell-mini CSS takes over.
   useEffect(() => {
     if (mode !== "inline" && shellRef.current) {
@@ -142,6 +154,7 @@ export default function PlayerProvider({ onCompleted, children }) {
   const ctx = {
     activeId, mode, error, completedId,
     openInline, onLeavePage, close: stop, setDock, setPoster: setPosterUrl,
+    videoRef, seek, play, pause,
   };
 
   return (

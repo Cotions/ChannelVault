@@ -1354,6 +1354,197 @@ button:disabled { opacity: 0.4; cursor: default; }
   overflow-y: auto;
 }
 
+/* ── Tags and segments ──────────────────────────────────── */
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px 3px 7px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  text-decoration: none;
+  white-space: nowrap;
+  max-width: 100%;
+  transition: filter 0.15s, box-shadow 0.15s;
+}
+.tag-chip-sm { font-size: 10px; padding: 2px 7px 2px 6px; gap: 5px; }
+a.tag-chip:hover { filter: brightness(1.2); box-shadow: 0 0 0 1px currentColor inset; }
+.tag-chip-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 8px currentColor; }
+.tag-chip-name { overflow: hidden; text-overflow: ellipsis; }
+.tag-chip-x {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0.6;
+  margin-left: 1px;
+  color: inherit;
+}
+.tag-chip-x:hover { opacity: 1; }
+
+.tag-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tag-picker-input-wrap { position: relative; display: inline-flex; align-items: center; }
+.tag-picker-icon { position: absolute; left: 8px; color: var(--muted); pointer-events: none; }
+.tag-picker-input {
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  color: var(--text);
+  font-family: var(--body);
+  font-size: 12px;
+  padding: 5px 9px 5px 25px;
+  border-radius: 6px;
+  min-width: 150px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.tag-picker-input:focus { outline: none; border-style: solid; border-color: rgba(74, 222, 128, 0.5); box-shadow: var(--ring); }
+.tag-picker-compact .tag-picker-input { font-size: 11px; padding: 3px 8px 3px 22px; min-width: 110px; }
+.tag-picker-compact .tag-picker-icon { left: 7px; }
+
+.vp-tags { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; animation: statRise 0.35s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.vp-tags-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--muted); font-weight: 700;
+}
+
+/* Timeline sits right under the player, outside the 16:9 dock so it never
+   overlaps the shell. Lanes stack when ranges overlap. */
+.seg-timeline { --lane-h: 22px; margin-top: 10px; position: relative; z-index: 2; }
+.seg-track {
+  position: relative;
+  height: calc(var(--lanes, 1) * var(--lane-h) + 6px);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.seg-block {
+  all: unset;
+  position: absolute;
+  height: calc(var(--lane-h) - 4px);
+  margin-top: 3px;
+  margin-left: 1px;
+  border-radius: 4px;
+  border: 1px solid rgba(74, 222, 128, 0.5);
+  background: rgba(74, 222, 128, 0.28);
+  cursor: pointer;
+  overflow: hidden;
+  box-sizing: border-box;
+  transition: filter 0.12s, box-shadow 0.12s;
+}
+.seg-block.is-untagged { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.18); }
+.seg-block:hover, .seg-block.is-selected { filter: brightness(1.25); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35) inset; z-index: 1; }
+.seg-block-title {
+  display: block;
+  padding: 0 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: calc(var(--lane-h) - 6px);
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.seg-playhead {
+  position: absolute; top: 0; bottom: 0; width: 2px;
+  background: #fff;
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.9), 0 0 2px #fff;
+  pointer-events: none;
+  transform: translateX(-1px);
+}
+.seg-scale {
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  padding: 4px 2px 0;
+}
+.seg-scale-now { color: var(--glow); }
+
+.vp-segments { animation: statRise 0.35s cubic-bezier(0.2, 0.7, 0.3, 1) both; }
+.seg-list { display: flex; flex-direction: column; gap: 6px; }
+.seg-list-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+.seg-list-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.seg-empty { padding: 18px; }
+
+.seg-form {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  animation: statRise 0.25s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.seg-form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.seg-form label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted); font-weight: 700; }
+.seg-form-title { flex: 1; min-width: 200px; }
+.seg-form input {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  font-family: var(--body); font-size: 13px; padding: 7px 10px; border-radius: 7px;
+}
+.seg-form input:focus { outline: none; border-color: rgba(74, 222, 128, 0.5); box-shadow: var(--ring); }
+.seg-time-field { display: inline-flex; gap: 6px; }
+.seg-time-field input { width: 92px; font-family: var(--mono); }
+.seg-now {
+  font-family: var(--mono); font-size: 11px; padding: 0 10px;
+  background: rgba(74, 222, 128, 0.12); color: #a5f0bf; border: 1px solid rgba(74, 222, 128, 0.25);
+}
+.seg-now:hover { background: rgba(74, 222, 128, 0.22); }
+.field-hint-inline { text-transform: none; letter-spacing: 0; font-weight: 500; opacity: 0.7; margin-left: 4px; }
+
+.seg-row {
+  --seg-color: rgba(255, 255, 255, 0.25);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px 8px 8px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--seg-color);
+  border-radius: 8px;
+  background: var(--surface);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.seg-row:hover { background: var(--surface-2); }
+.seg-row.is-selected { border-color: rgba(74, 222, 128, 0.35); border-left-color: var(--seg-color); }
+.seg-row.is-active { background: rgba(74, 222, 128, 0.06); box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.25) inset; }
+.seg-time {
+  all: unset;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  padding: 4px 8px; border-radius: 6px; cursor: pointer;
+  background: rgba(255, 255, 255, 0.04);
+}
+.seg-time:hover { color: var(--glow); background: rgba(74, 222, 128, 0.1); }
+.seg-time-sep { opacity: 0.5; }
+.seg-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.seg-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.seg-title > :first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.seg-untitled { color: var(--muted); font-weight: 500; font-style: italic; }
+.seg-source {
+  font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+}
+.seg-title-input {
+  background: var(--surface-2); border: 1px solid rgba(74, 222, 128, 0.5); color: var(--text);
+  font-family: var(--body); font-size: 13px; font-weight: 600; padding: 4px 8px; border-radius: 6px; width: 100%;
+  box-shadow: var(--ring);
+}
+.seg-title-input:focus { outline: none; }
+.seg-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.seg-add-tag {
+  all: unset;
+  display: inline-flex; align-items: center; gap: 3px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  padding: 2px 7px; border: 1px dashed var(--border); border-radius: 6px; cursor: pointer;
+}
+.seg-add-tag:hover { color: var(--text); border-color: rgba(74, 222, 128, 0.4); }
+.seg-row-actions { display: flex; align-items: center; gap: 4px; opacity: 0.55; transition: opacity 0.15s; }
+.seg-row:hover .seg-row-actions, .seg-row:focus-within .seg-row-actions { opacity: 1; }
+
 /* ── Stats page ─────────────────────────────────────────── */
 .btn-export { font-size: 12px; padding: 7px 13px; }
 

@@ -68,3 +68,22 @@ export function safeUrl(url, schemes = ["http:", "https:"]) {
     return undefined;
   }
 }
+
+/* Positions on a timeline, unlike durations, must render at zero and line up in
+   a column: "0:00", "12:05", "1:02:09". */
+export function fmtTime(secs) {
+  const n = Math.max(0, Math.floor(Number(secs) || 0));
+  const h = Math.floor(n / 3600), m = Math.floor((n % 3600) / 60), s = n % 60;
+  const mm = h ? String(m).padStart(2, "0") : String(m);
+  return `${h ? h + ":" : ""}${mm}:${String(s).padStart(2, "0")}`;
+}
+
+/* "1:05" -> 65, "1:02:09" -> 3729, "90" -> 90. null when it is not a time. */
+export function parseTime(text) {
+  const t = String(text ?? "").trim();
+  if (!t) return null;
+  if (/^\d+(\.\d+)?$/.test(t)) return Number(t);
+  const parts = t.split(":").map(Number);
+  if (parts.length < 2 || parts.length > 3 || parts.some(Number.isNaN)) return null;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
+}
