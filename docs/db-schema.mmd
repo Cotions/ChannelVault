@@ -53,7 +53,45 @@ erDiagram
         TIMESTAMP captured_at
     }
 
+    tags {
+        INTEGER   id PK
+        TEXT      name "UNIQUE COLLATE NOCASE; user-defined"
+        TEXT      color "#rrggbb, auto from palette"
+        TIMESTAMP created_at
+    }
+    tag_rules {
+        INTEGER   id PK
+        INTEGER   tag_id FK
+        TEXT      keyword "substring match, case-insensitive"
+        TIMESTAMP created_at
+    }
+    segments {
+        INTEGER   id PK
+        TEXT      video_id FK
+        REAL      start_secs
+        REAL      end_secs
+        TEXT      title "chapter title or user text"
+        TEXT      source "chapter|manual"
+        TIMESTAMP created_at
+    }
+    segment_tags {
+        INTEGER   segment_id PK
+        INTEGER   tag_id PK
+        TEXT      source "manual|rule"
+    }
+    video_tags {
+        TEXT      video_id PK
+        INTEGER   tag_id PK
+        TEXT      source "manual|rule"
+    }
+
     playlists         ||--o{ playlist_items : "FK CASCADE"
+    tags              ||--o{ tag_rules      : "tag_id (manual cascade)"
+    tags              ||--o{ segment_tags   : "tag_id (manual cascade)"
+    tags              ||--o{ video_tags     : "tag_id (manual cascade)"
+    segments          ||--o{ segment_tags   : "segment_id (manual cascade)"
+    downloaded_videos ||--o{ segments       : "video_id (loose)"
+    downloaded_videos ||--o{ video_tags     : "video_id (loose)"
     downloaded_videos ||--o{ playlist_items : "video_id (loose)"
     downloaded_videos ||--o{ watch_sessions : "video_id (loose)"
     creators          ||--o{ downloaded_videos : "channel_name (loose)"
