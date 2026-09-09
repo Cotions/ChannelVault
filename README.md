@@ -54,6 +54,23 @@ Builds the UI if it is stale, sets up the virtualenv, starts the backend, opens 
 | `./run.sh --dev` | Vite dev server with hot reload + backend. UI only: the backend rejects cross-origin API calls, so data will not load. Use `--build` to test against real data |
 | `./run.sh --build` | Force a UI rebuild, then start |
 | `./run.sh --install-launcher` | Add "ChannelVault (source)" to the app menu |
+| `./testapp.sh` | Second instance on a **copy** of your database, port 3399 |
+
+### Trying things without risking your library
+
+`./testapp.sh` starts a throwaway instance that shares your videos but not your
+database. It copies your data directory once, writes its own config file that the
+live app never reads, and runs inside a bubblewrap sandbox where your media folders
+and your live database are mounted read-only. Reading and streaming work normally;
+a write to a real file fails at the kernel with `Read-only file system`.
+
+```bash
+./testapp.sh            # start it (copies the database on first run)
+./testapp.sh --status   # show what exists and where
+./testapp.sh --reset    # throw the copy away, take a fresh one
+```
+
+Both apps can run at once: live on 3360, test on 3399.
 
 ### One file, bundled
 
