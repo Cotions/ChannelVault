@@ -1633,6 +1633,87 @@ a.tag-chip:hover { filter: brightness(1.2); box-shadow: 0 0 0 1px currentColor i
 .tag-seg-title { font-family: var(--body); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; border-left: 1px solid var(--border); padding-left: 6px; margin-left: 1px; }
 .tag-video-list .tag-card { gap: 4px; }
 
+/* Segment play mode: the transport bar for a tag's queue. */
+.queue-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  border-radius: 9px;
+  overflow: hidden;
+  z-index: 2;
+  animation: statRise 0.25s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.queue-bar-progress {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: rgba(74, 222, 128, 0.09);
+  pointer-events: none;
+  transition: width 0.25s linear;
+}
+.queue-bar > *:not(.queue-bar-progress) { position: relative; }
+.queue-pos { font-family: var(--mono); font-size: 12px; font-weight: 800; color: var(--accent-hover); white-space: nowrap; }
+.queue-pos-sep { opacity: 0.45; margin: 0 1px; font-weight: 600; }
+.queue-title {
+  flex: 1; min-width: 0;
+  display: flex; align-items: baseline; gap: 7px;
+  font-size: 12px; color: var(--text); text-decoration: none;
+  overflow: hidden; white-space: nowrap;
+}
+.queue-title:hover .queue-video-title { color: var(--accent-hover); }
+.queue-seg-title { font-weight: 700; flex-shrink: 0; }
+.queue-video-title { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; transition: color 0.15s; }
+.queue-sep { opacity: 0.45; }
+.queue-range { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; display: inline-flex; gap: 4px; }
+.queue-controls { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.queue-controls .cv-mini-btn.is-on { color: var(--accent-hover); background: rgba(74, 222, 128, 0.15); }
+
+/* Inside the mini player the bar sits under the video, so it loses its own
+   frame and rounds only at the bottom. */
+.queue-bar-compact {
+  margin-top: 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  padding: 6px 8px;
+  gap: 7px;
+}
+.queue-bar-compact .queue-range,
+.queue-bar-compact .tag-chip { display: none; }
+.queue-bar-compact .queue-title { font-size: 11px; }
+
+.vp-tags-play { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vp-tags-play-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px; color: var(--muted); font-weight: 700; }
+.vp-play-tag {
+  all: unset;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+  padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, 0.04);
+  transition: background 0.15s, filter 0.15s;
+}
+.vp-play-tag:hover { background: rgba(255, 255, 255, 0.09); filter: brightness(1.2); }
+
+.tag-seg-pair { display: inline-flex; align-items: stretch; }
+.tag-seg-pair .tag-seg-link { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: none; }
+.tag-seg-play {
+  all: unset;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 7px; cursor: pointer;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-soft);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.tag-seg-play:hover { color: #04130a; background: var(--accent); border-color: var(--accent); }
+.tag-seg-play:disabled { opacity: 0.4; cursor: default; }
+
 /* ── Stats page ─────────────────────────────────────────── */
 .btn-export { font-size: 12px; padding: 7px 13px; }
 

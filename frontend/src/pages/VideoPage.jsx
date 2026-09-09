@@ -3,12 +3,13 @@ import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom"
 import {
   thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl,
   getSegments, createSegment, updateSegment, deleteSegment, addSegmentTag, removeSegmentTag,
-  addVideoTag, removeVideoTag, importChapters,
+  addVideoTag, removeVideoTag, importChapters, getTagSegments,
 } from "../lib/api";
 import { artistsOf } from "../lib/artists";
 import { fmt, fmtBytes, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import { usePlayer } from "../player/playerContext";
 import { usePlaybackTime } from "../player/usePlaybackTime";
+import QueueBar from "../player/QueueBar";
 import Icon from "../components/Icon";
 import TagPicker from "../components/TagPicker";
 import SegmentTimeline from "../components/SegmentTimeline";
@@ -20,7 +21,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const [params] = useSearchParams();
   const player = usePlayer();
   // Stable callbacks (useCallback in the provider) — safe as effect deps.
-  const { openInline, onLeavePage, setPoster, close: closePlayer, setDock, seek } = player;
+  const { openInline, onLeavePage, setPoster, close: closePlayer, setDock, seek, playQueue } = player;
   const playback = usePlaybackTime(player.videoRef, player.activeId);
   const [segments,   setSegments]   = useState([]);
   const [videoTags,  setVideoTags]  = useState([]);
@@ -97,6 +98,15 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const handleAddVideoTag   = name          => mutate(() => addVideoTag(id, name));
   const handleRemoveVideoTag = tag          => mutate(() => removeVideoTag(id, tag.id));
   const handleImportChapters = ()           => mutate(() => importChapters(id));
+
+  // Play just this video's segments that carry one tag, in order.
+  const playSegmentsOfTag = useCallback(async (tag) => {
+    const r = await getTagSegments(tag.id);
+    if (!r.ok || !r.items?.length) return;
+    const mine = r.items.filter(i => i.video_id === id);
+    if (!mine.length) return;
+    playQueue(mine, { tagId: tag.id, tagName: tag.name, color: tag.color });
+  }, [id, playQueue]);
 
   // Hand the video off to the persistent player; minimize/close on leave.
   useEffect(() => {
@@ -184,6 +194,10 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
 
   const ytUrl  = `https://www.youtube.com/watch?v=${video.video_id}`;
   const artists = artistsOf(video);
+  // Tags that actually mark parts of this video, so "play only X" has something to play.
+  const segmentTags = [...new Map(
+    segments.flatMap(sg => sg.tags || []).map(t => [t.id, t])
+  ).values()];
   const poster = thumbs[thumbIdx] || thumbUrl(video.video_id);
   const cycle  = () => thumbs.length > 1 && setThumbIdx(i => (i + 1) % thumbs.length);
   const watched = video.watch_count > 0 || player.completedId === video.video_id;
@@ -282,6 +296,8 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
         )}
       </div>
 
+      {player.queue && <QueueBar />}
+
       {segments.length > 0 && (
         <SegmentTimeline
           segments={segments}
@@ -305,6 +321,22 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
             placeholder={videoTags.length ? "Add another…" : "Tag this video…"}
             disabled={segBusy}
           />
+          {segmentTags.length > 0 && (
+            <span className="vp-tags-play">
+              <span className="vp-tags-play-label">Play only</span>
+              {segmentTags.map(t => (
+                <button
+                  key={t.id}
+                  className="vp-play-tag"
+                  style={{ borderColor: `${t.color}66`, color: t.color }}
+                  onClick={() => playSegmentsOfTag(t)}
+                  title={`Play this video's ${t.name} parts back to back`}
+                >
+                  <Icon name="play" size={10} className="icon-fill" /> {t.name}
+                </button>
+              ))}
+            </span>
+          )}
         </div>
         <div className="vp-channels" style={{ animationDelay: "60ms" }}>
           {artists.map(artist => (

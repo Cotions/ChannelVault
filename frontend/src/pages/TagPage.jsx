@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
-import { getTagVideos } from "../lib/api";
+import { getTagVideos, getTagSegments } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
 import { fmtTime } from "../lib/fmt";
@@ -10,6 +10,7 @@ import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import TagChip from "../components/TagChip";
 import Icon from "../components/Icon";
+import { usePlayer } from "../player/playerContext";
 
 /* The home of one tag: every video carrying it, and under each card the exact
    segments, as links that open the video at that second. */
@@ -22,6 +23,20 @@ export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddTo
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");
+  const [queueBusy, setQueueBusy] = useState(false);
+  const { playQueue } = usePlayer();
+
+  // Start segment play mode: fetch the flat queue for this tag, then hand it to
+  // the player. startAt jumps straight to one segment; shuffle randomises the rest.
+  const startPlay = useCallback(async ({ startAt = null, shuffle = false } = {}) => {
+    setQueueBusy(true);
+    try {
+      const r = await getTagSegments(id);
+      if (!r.ok || !r.items?.length) return;
+      const idx = startAt == null ? 0 : Math.max(0, r.items.findIndex(i => i.segment_id === startAt));
+      playQueue(r.items, { tagId: r.tag.id, tagName: r.tag.name, color: r.tag.color }, idx, { shuffle });
+    } finally { setQueueBusy(false); }
+  }, [id, playQueue]);
 
   const load = useCallback(async () => {
     try {
@@ -74,6 +89,16 @@ export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddTo
           </span>
         )}
         <div className="video-page-spacer" />
+        {videos.length > 0 && (
+          <>
+            <button className="btn-primary btn-export" onClick={() => startPlay()} disabled={queueBusy} title="Play only the parts carrying this tag, one after another, across every video">
+              <Icon name="play" size={14} className="icon-fill" /> Play segments
+            </button>
+            <button className="icon-btn" onClick={() => startPlay({ shuffle: true })} disabled={queueBusy} title="Play them shuffled">
+              <Icon name="shuffle" size={15} />
+            </button>
+          </>
+        )}
         {videos.length > 1 && <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />}
         {videos.length > 0 && (
           <div className="layout-toggle">
@@ -108,18 +133,26 @@ export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddTo
                     </Link>
                   )}
                   {(v.matched_segments || []).map(s => (
-                    <Link
-                      key={s.id}
-                      to={`/video/${v.video_id}?t=${Math.floor(s.start_secs)}`}
-                      className="tag-seg-link"
-                      title={s.title ? `${s.title} — opens at ${fmtTime(s.start_secs)}` : `Opens at ${fmtTime(s.start_secs)}`}
-                    >
-                      <Icon name="play" size={10} />
-                      <span className="tag-seg-time">{fmtTime(s.start_secs)}</span>
-                      <span className="tag-seg-sep">→</span>
-                      <span className="tag-seg-time">{fmtTime(s.end_secs)}</span>
-                      {s.title && <span className="tag-seg-title">{s.title}</span>}
-                    </Link>
+                    <span key={s.id} className="tag-seg-pair">
+                      <button
+                        className="tag-seg-play"
+                        onClick={() => startPlay({ startAt: s.id })}
+                        disabled={queueBusy}
+                        title="Start playing the tag from this segment"
+                      >
+                        <Icon name="play" size={10} className="icon-fill" />
+                      </button>
+                      <Link
+                        to={`/video/${v.video_id}?t=${Math.floor(s.start_secs)}`}
+                        className="tag-seg-link"
+                        title={s.title ? `${s.title} — opens at ${fmtTime(s.start_secs)}` : `Opens at ${fmtTime(s.start_secs)}`}
+                      >
+                        <span className="tag-seg-time">{fmtTime(s.start_secs)}</span>
+                        <span className="tag-seg-sep">→</span>
+                        <span className="tag-seg-time">{fmtTime(s.end_secs)}</span>
+                        {s.title && <span className="tag-seg-title">{s.title}</span>}
+                      </Link>
+                    </span>
                   ))}
                 </div>
               </div>

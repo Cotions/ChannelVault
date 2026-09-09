@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createTag, updateTag, deleteTag, addTagRule, deleteTagRule, applyTagRules, backfillSegments } from "../lib/api";
+import { createTag, updateTag, deleteTag, addTagRule, deleteTagRule, applyTagRules, backfillSegments, getTagSegments } from "../lib/api";
 import Icon from "../components/Icon";
+import { usePlayer } from "../player/playerContext";
 
 /* One row per tag: colour, name, counts, keyword rules, delete. Plus the two
    library-wide actions: run every rule, and read chapters out of files that
    have no segments yet. */
 export default function TagsPage({ tags = [], query, onChanged }) {
   const navigate = useNavigate();
+  const { playQueue } = usePlayer();
   const [name,      setName]      = useState("");
   const [busy,      setBusy]      = useState(false);
   const [openId,    setOpenId]    = useState(null);
@@ -89,6 +91,12 @@ export default function TagsPage({ tags = [], query, onChanged }) {
     }
   }
 
+  async function playTag(t) {
+    const r = await getTagSegments(t.id);
+    if (!r.ok || !r.items?.length) { setToast(`Nothing tagged ${t.name} to play yet.`); return; }
+    playQueue(r.items, { tagId: t.id, tagName: t.name, color: t.color });
+  }
+
   const totalRules = tags.reduce((n, t) => n + t.rules.length, 0);
 
   return (
@@ -146,6 +154,9 @@ export default function TagsPage({ tags = [], query, onChanged }) {
                     <span title="Segments carrying this tag">{t.segment_count} segment{t.segment_count === 1 ? "" : "s"}</span>
                   </span>
 
+                  <button className="icon-btn" onClick={() => playTag(t)} disabled={t.video_count === 0} title={`Play every part tagged ${t.name}`}>
+                    <Icon name="play" size={14} className="icon-fill" />
+                  </button>
                   <button className={`btn-ghost tag-rules-toggle${t.rules.length ? " has-rules" : ""}`} onClick={() => { setOpenId(open ? null : t.id); setRuleText(""); }} title="Keyword rules">
                     <Icon name="search" size={13} /> {t.rules.length ? `${t.rules.length} rule${t.rules.length === 1 ? "" : "s"}` : "rules"}
                   </button>
