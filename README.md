@@ -4,14 +4,15 @@
 [![Release](https://img.shields.io/github/v/release/Cotions/ChannelVault?sort=semver)](https://github.com/Cotions/ChannelVault/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Tracks locally downloaded YouTube videos. Shows a green badge on YouTube pages for videos you already have. Dashboard at `localhost:3360`.
+Tracks locally downloaded YouTube videos. Shows a green badge on YouTube pages for videos you already have. Tag whole videos or individual parts of them, then play only the parts you tagged. Dashboard at `localhost:3360`.
 
 ---
 
 ## How it works
 
 1. **Backend** — Flask server scans your download folder, reads metadata from `.mp4`/`.mkv` files, stores it in SQLite, and watches for new downloads in real time.
-2. **Userscript** — Runs in your browser via Tampermonkey. Calls the backend to show a badge on YouTube video pages and cards.
+2. **Dashboard** — React UI to browse, play, tag and organise the library.
+3. **Userscript** — Runs in your browser via Tampermonkey. Calls the backend to show a badge on YouTube video pages and cards.
 
 ---
 
@@ -123,6 +124,37 @@ The badge appears automatically on YouTube video pages and card thumbnails for a
 
 ---
 
+## 4 — Tags and segments
+
+Two different things, used together.
+
+- A **segment** is a slice of one video: a start, an end and an optional title.
+- A **tag** is a word you invent. It exists once for the whole library, has a colour, and can be attached to a segment or to a whole video.
+
+One segment can carry several tags, and one tag can sit on hundreds of segments across hundreds of videos. Deleting a tag leaves the segments alone; deleting a segment leaves the tag alone.
+
+### Segments arrive on their own
+
+Videos downloaded with chapters already have them embedded. ChannelVault reads those with `ffprobe` and turns each one into a segment, so most of the work is done before you touch anything. On the **Tags** page, **Import chapters** does this for every video that has none yet.
+
+A rescan never overwrites a video that already has segments, so your edits are safe. **Re-import chapters** on a video page refreshes the ones that came from the file and keeps the ones you drew by hand.
+
+### Marking a part yourself
+
+On any video page, the bar under the player shows every segment as a block, stacked into lanes when they overlap. Click a block to jump there. Below it, **New segment** opens a form where the **now** buttons copy the current playback position, so you can mark a range while watching.
+
+### Keyword rules
+
+Give a tag some keywords and any chapter or video title containing one gets that tag, on import and whenever you press **Apply rules**. Rules only ever add, so a tag you removed by hand stays removed until you apply them again.
+
+### Playing only what you tagged
+
+This is the point of the whole thing. Open a tag and press **Play segments**: the player runs every stretch carrying that tag, one after another, switching video files by itself. Shuffle, loop, skip forward and back. It keeps going in the mini player while you browse, so you never have to hunt for the good parts again.
+
+You can also filter the home grid by tag chips, search by tag name, and jump straight to a timestamp from a tag's page.
+
+---
+
 ## yt-dlp tip
 
 Use this flag so metadata is embedded and ChannelVault can read it:
@@ -138,7 +170,10 @@ yt-dlp --embed-metadata -o "~/Downloads/%(title)s.%(ext)s" <URL>
 ```
 ChannelVault/
 ├── run.sh               # One-click start from source
+├── testapp.sh           # Test instance: copied database, real videos read-only
 ├── bundle.sh            # Build the single-file executable
+├── agents/agent.md      # Orientation for AI coding agents
+├── SECURITY.md          # Threat model and how to report an issue
 ├── packaging/
 │   ├── channelvault.spec        # PyInstaller bundle definition
 │   ├── ChannelVault.desktop     # App menu entry template
@@ -147,6 +182,7 @@ ChannelVault/
 │   ├── tracker.py       # Flask API + file watcher + SPA serving
 │   ├── start.sh         # Compatibility shim → run.sh
 │   └── requirements.txt
+├── docs/db-schema.mmd   # Database diagram
 ├── frontend/            # React + Vite dashboard (built into frontend/dist)
 └── userscript/
     └── channelvault.user.js
@@ -191,15 +227,106 @@ curl -H 'X-ChannelVault: 1' http://localhost:3360/videos
 
 Video ids must be the 11 character YouTube shape; anything else is a 404.
 
+**Library**
+
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/` | Dashboard UI |
-| GET | `/config` | Get watch directory |
-| POST | `/config` | Set watch directory |
-| GET | `/browse` | Open folder picker dialog |
-| POST | `/scan` | Scan watch folder recursively |
-| GET | `/videos` | List all tracked videos |
-| GET | `/videos/ids` | List video IDs only |
-| DELETE | `/videos/<id>` | Remove from vault |
-| GET | `/check-video/<id>` | Check if video is tracked |
-| POST | `/update-stats/<id>` | Update view/like counts |
+| GET | `/videos` | Every tracked video, each with its tags |
+| GET | `/videos/ids` | Ids only, split into downloaded / wanted / ignored (the userscript uses this) |
+| GET | `/check-video/<id>` | Is this video in the vault? |
+| POST | `/videos/manual` | Add a video by id or URL, no file needed |
+| DELETE | `/videos/<id>` | Remove from the vault |
+| POST | `/update-stats/<id>` | Store view and like counts |
+| POST | `/fetch-metadata/<id>` | Refresh title, stats and availability from YouTube |
+| GET | `/stream/<id>` | Stream the file, with range requests |
+| GET | `/export/json`, `/export/csv` | Download the whole library, tags and segments included |
+
+**Wishlist**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/want-to-download` | Mark a video you want |
+| POST | `/do-not-want` | Mark a video to ignore |
+| GET | `/wanted`, `/ignored` | List either set |
+| DELETE | `/mark/<id>` | Clear a mark |
+
+**Tags and segments**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/tags` | Tags with video and segment counts, and their keyword rules |
+| POST | `/tags` | Create a tag; returns the existing one if the name is taken |
+| PATCH | `/tags/<id>` | Rename or recolour |
+| DELETE | `/tags/<id>` | Delete it; segments stay, just untagged |
+| GET | `/tags/<id>/videos` | Videos carrying the tag, with the matching segments |
+| GET | `/tags/<id>/segments` | Flat play queue for the tag, across the library |
+| POST | `/tags/<id>/rules` | Add a keyword rule |
+| DELETE | `/tags/<id>/rules/<rule_id>` | Remove a keyword rule |
+| POST | `/tags/apply-rules` | Run every rule over the library; only ever adds |
+| GET | `/videos/<id>/segments` | Segments of one video, plus the tags on the video itself |
+| POST | `/videos/<id>/segments` | Create a segment |
+| PATCH | `/segments/<id>` | Change its times or title |
+| DELETE | `/segments/<id>` | Delete a segment |
+| POST | `/segments/<id>/tags` | Tag a segment, creating the tag if it is new |
+| DELETE | `/segments/<id>/tags/<tag_id>` | Untag a segment |
+| POST | `/videos/<id>/tags` | Tag a whole video |
+| DELETE | `/videos/<id>/tags/<tag_id>` | Untag a whole video |
+| POST | `/videos/<id>/segments/import-chapters` | Re-read the file's chapters, keeping manual segments |
+| POST | `/segments/backfill` | Import chapters library-wide, streaming progress |
+
+**Playlists**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/playlists` | All playlists with their counts |
+| POST | `/playlists` | Create one |
+| GET | `/playlists/<id>` | One playlist and its videos |
+| DELETE | `/playlists/<id>` | Delete it |
+| POST | `/playlists/<id>/videos` | Add a video |
+| DELETE | `/playlists/<id>/videos/<video_id>` | Remove a video |
+
+**Watch history**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/watch-progress/<id>` | Report playback progress; opens or updates a session |
+| GET | `/watch-history` | Completed sessions, newest first |
+| DELETE | `/watch-history/<id>` | Forget a video's history |
+
+**Thumbnails**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/thumb/<id>` | Original thumbnail |
+| GET | `/thumb-latest/<id>` | Newest fetched thumbnail, else the original |
+| GET | `/thumbnails/<id>` | List every version held |
+| GET | `/thumbnail-version/<id>/<file>` | One specific version |
+| POST | `/fetch-thumbnail/<id>` | Fetch from YouTube, with duplicate detection |
+| GET | `/artist-thumb/<name>` | A channel's avatar |
+
+**Creators**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/creator` | Save an About-panel snapshot (the userscript posts this) |
+| GET | `/creators` | Every stored profile |
+| GET | `/creator/<name>` | One profile |
+
+**Files, importing and housekeeping**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/config` | Current watch folder, data folder and media roots |
+| POST | `/config` | Change any of them |
+| POST | `/scan` | Index the watch folder, streaming progress |
+| GET | `/browse`, `/browse-file` | Native folder and file pickers (needs `zenity`) |
+| POST | `/read-file-tags` | Read one file's embedded metadata |
+| GET | `/data-quality/duplicates` | Files sharing a video id |
+| GET | `/data-quality/missing` | Rows whose file no longer resolves |
+| GET | `/organize/preview` | What tidying would do, before it does it |
+| POST | `/organize/apply` | Move or copy files into per-artist folders |
+| GET | `/import/inspect` | Look at a file before importing it |
+| GET | `/import/thumb` | Its sidecar thumbnail |
+| POST | `/import/fetch-meta` | Suggest metadata from YouTube, writing nothing |
+| POST | `/import/enrich` | Write tags into the file itself with ffmpeg |
+| GET | `/userscript/channelvault.user.js` | The userscript, always fresh |
