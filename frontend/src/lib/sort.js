@@ -67,9 +67,13 @@ function cmpDesc(key, a, b) {
   }
 }
 
-export function sortVideos(videos, key, dir = "desc") {
+// `pins` (see lib/sortPins.js) maps video_id -> a pre-fetch snapshot of the row.
+// A pinned video is compared on its snapshot, so a just-fetched card keeps its
+// slot for a few seconds instead of jumping the moment its stats change.
+export function sortVideos(videos, key, dir = "desc", pins = null) {
   const arr = [...videos];
-  arr.sort((a, b) => cmpDesc(key, a, b));
+  const row = pins ? (v => pins[v.video_id] || v) : (v => v);
+  arr.sort((a, b) => cmpDesc(key, row(a), row(b)));
   if (dir === "asc") arr.reverse();
   return arr;
 }

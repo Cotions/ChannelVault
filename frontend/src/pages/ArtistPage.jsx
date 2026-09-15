@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useSortPins } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
 import { useRememberedPage } from "../lib/usePagination";
 import { getCreator, artistThumbUrl } from "../lib/api";
@@ -32,10 +33,11 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   }
 
   const q = (query || "").trim();
+  const pins = useSortPins();   // videos fetched seconds ago hold their slot
   const [page, setPage] = useRememberedPage(`artist:${artist}`, [q, sort, dir]);
   const artistVideos  = sortVideos(
     videos.filter(v => artistsOf(v).includes(artist) && videoMatches(v, q)),
-    sort, dir
+    sort, dir, pins
   );
 
   const pageCount = Math.max(1, Math.ceil(artistVideos.length / PAGE_SIZE));

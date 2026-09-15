@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { latestThumbUrl } from "../lib/api";
+import { pinSortSlot, releaseSortSlot, PIN_MS } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
 import { fmt, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import Icon from "./Icon";
@@ -72,6 +73,10 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
   async function handleFetchMeta() {
     setFetching(true);
     setFetchErr(null);
+    // Hold this card's place in the list while the fetch runs and for as long as
+    // the timer below stays up, so the numbers it just pulled can be read before
+    // a stats-driven sort ("Oldest fetch") moves the card away.
+    pinSortSlot(video);
     try {
       await onFetchMeta(video.video_id);
     } catch (e) {
@@ -79,7 +84,8 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
       setTimeout(() => setFetchErr(null), 8000);
     } finally {
       setFetching(false);
-      setTimeout(() => setElapsed(null), 5000);
+      releaseSortSlot(video.video_id);
+      setTimeout(() => setElapsed(null), PIN_MS);
     }
   }
 

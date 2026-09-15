@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { sortVideos, videoMatches, hasAllTags } from "../lib/sort";
+import { useSortPins } from "../lib/sortPins";
 import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
@@ -11,6 +12,7 @@ export default function Overview({ videos, playlists, tags = [], query, onAddToP
   const [browseSort, setBrowseSort] = useState("upload");
   const [browseDir,  setBrowseDir]  = useState("desc");
   const [tagIds,     setTagIds]     = useState([]);   // selected tag filter, AND across ids
+  const pins = useSortPins();   // videos fetched seconds ago hold their slot
 
   const q = (query || "").trim();
   const tagKey = tagIds.join(",");   // primitives only for the page-reset deps
@@ -18,8 +20,8 @@ export default function Overview({ videos, playlists, tags = [], query, onAddToP
   const browse = useMemo(() => {
     let filtered = q ? videos.filter(v => videoMatches(v, q)) : videos;
     if (tagIds.length) filtered = filtered.filter(v => hasAllTags(v, tagIds));
-    return sortVideos(filtered, q ? "upload" : browseSort, q ? "desc" : browseDir);
-  }, [videos, browseSort, browseDir, q, tagIds]);
+    return sortVideos(filtered, q ? "upload" : browseSort, q ? "desc" : browseDir, pins);
+  }, [videos, browseSort, browseDir, q, tagIds, pins]);
 
   const usedTags = useMemo(() => tags.filter(t => t.video_count > 0), [tags]);
   function toggleTag(id) {

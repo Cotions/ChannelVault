@@ -3,6 +3,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getPlaylist, removeFromPlaylist } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useSortPins } from "../lib/sortPins";
 import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
@@ -33,6 +34,7 @@ export default function PlaylistPage({ query, onEdit, onFetchMeta }) {
   useEffect(() => { load(); }, [load]);
 
   const q = (query || "").trim();
+  const pins = useSortPins();   // videos fetched seconds ago hold their slot
   const [page, setPage] = useRememberedPage(`playlist:${id}`, [q, sort, dir]);
 
   function switchLayout(next) {
@@ -64,7 +66,7 @@ export default function PlaylistPage({ query, onEdit, onFetchMeta }) {
     );
   }
 
-  const sorted = sortVideos(q ? videos.filter(v => videoMatches(v, q)) : videos, sort, dir);
+  const sorted = sortVideos(q ? videos.filter(v => videoMatches(v, q)) : videos, sort, dir, pins);
   const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
   const pageVideos = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);

@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import { getTagVideos, getTagSegments } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useSortPins } from "../lib/sortPins";
 import { fmtTime } from "../lib/fmt";
 import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
@@ -51,6 +52,7 @@ export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddTo
   useEffect(() => { load(); }, [load]);
 
   const q = (query || "").trim();
+  const pins = useSortPins();   // videos fetched seconds ago hold their slot
   const [page, setPage] = useRememberedPage(`tag:${id}`, [q, sort, dir]);
 
   function switchLayout(next) { setLayout(next); saveLayout(next); }
@@ -70,7 +72,7 @@ export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddTo
     );
   }
 
-  const sorted     = sortVideos(q ? videos.filter(v => videoMatches(v, q)) : videos, sort, dir);
+  const sorted     = sortVideos(q ? videos.filter(v => videoMatches(v, q)) : videos, sort, dir, pins);
   const pageCount  = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage   = Math.min(page, pageCount);
   const pageVideos = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
