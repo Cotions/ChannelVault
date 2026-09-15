@@ -1,4 +1,5 @@
 import WatchFolder from "./WatchFolder";
+import YtdlpSettings from "./YtdlpSettings";
 import Icon from "./Icon";
 
 export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone }) {
@@ -16,6 +17,9 @@ export default function SettingsModal({ onClose, initialDir, initialDataDir, ini
           onScanDone={onScanDone}
           embedded
         />
+        <div className="watch-folder-body" style={{ paddingTop: 0 }}>
+          <YtdlpSettings />
+        </div>
       </div>
     </div>
   );

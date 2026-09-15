@@ -877,7 +877,8 @@ button:disabled { opacity: 0.4; cursor: default; }
   transition: opacity 0.18s;
 }
 .avail-badge.avail-members,
-.avail-badge.avail-geo {
+.avail-badge.avail-geo,
+.avail-badge.avail-age {
   color: #ffd591;
   background: rgba(48, 34, 10, 0.82);
   border-color: rgba(214, 158, 46, 0.5);

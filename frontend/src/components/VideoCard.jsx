@@ -11,7 +11,9 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
   const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
   const [fetching,   setFetching]   = useState(false);
-  const [fetchErr,   setFetchErr]   = useState(false);
+  // Holds yt-dlp's own reason ("Sign in to confirm your age", …) so the button
+  // tooltip says why instead of a bare "Fetch failed".
+  const [fetchErr,   setFetchErr]   = useState(null);
   const [elapsed,    setElapsed]    = useState(null);
   const [plOpen,     setPlOpen]     = useState(false);
   const [plAdded,    setPlAdded]    = useState(null);
@@ -69,12 +71,12 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
 
   async function handleFetchMeta() {
     setFetching(true);
-    setFetchErr(false);
+    setFetchErr(null);
     try {
       await onFetchMeta(video.video_id);
-    } catch {
-      setFetchErr(true);
-      setTimeout(() => setFetchErr(false), 3000);
+    } catch (e) {
+      setFetchErr(e?.message || "Fetch failed");
+      setTimeout(() => setFetchErr(null), 8000);
     } finally {
       setFetching(false);
       setTimeout(() => setElapsed(null), 5000);
@@ -87,7 +89,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
 
   const AVAIL_LABELS = {
     private: "Private", deleted: "Deleted", members: "Members",
-    geo: "Geo-blocked", unavailable: "Unavailable",
+    geo: "Geo-blocked", age: "Age-gated", unavailable: "Unavailable",
   };
   const dead       = video.availability && video.availability !== "available";
   const availLabel = dead ? (AVAIL_LABELS[video.availability] || "Unavailable") : null;
@@ -167,7 +169,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
               {onFetchMeta && (
                 <button
                   className={`del-btn fetch-btn${fetching ? " spinning" : ""}${fetchErr ? " fetch-err" : ""}${dead ? " fetch-dead" : ""}`}
-                  title={fetchErr ? "Fetch failed" : dead ? `${availLabel} — fetch may fail` : "Fetch metadata from YouTube"}
+                  title={fetchErr || (dead ? `${availLabel} — fetch may fail` : "Fetch metadata from YouTube")}
                   disabled={fetching}
                   onClick={handleFetchMeta}
                 >

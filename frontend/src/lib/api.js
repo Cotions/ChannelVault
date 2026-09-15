@@ -43,6 +43,8 @@ export function getConfig()          { return get("/config"); }
 export function saveConfig(dir)      { return post("/config", { watch_directory: dir }); }
 export function saveDataDir(dir)     { return post("/config", { data_directory: dir }); }
 export function saveMediaRoots(roots) { return post("/config", { media_roots: roots }); }
+export function saveYtdlp(opts)      { return post("/config", opts); }
+export function getYtdlpStatus()     { return get("/ytdlp/status"); }
 export function browse()             { return get("/browse"); }
 export function browseData()         { return get("/browse?title=Select+data+directory"); }
 export function browseFile()         { return get("/browse-file"); }

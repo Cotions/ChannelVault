@@ -160,6 +160,11 @@ def load_config():
     cfg.setdefault("watch_directory", DEFAULT_WATCH)
     cfg.setdefault("data_directory", DEFAULT_DATA)
     cfg.setdefault("media_roots", [])
+    # yt-dlp knobs. Age-restricted videos need a signed-in cookie jar, and
+    # YouTube's "n" challenge needs a JavaScript runtime, or the fetch dies with
+    # "The page needs to be reloaded". Both are opt-in and empty by default.
+    cfg.setdefault("ytdlp_cookies_from_browser", "")
+    cfg.setdefault("ytdlp_js_runtime", "")
     return cfg
 
 def save_config(cfg):
@@ -378,7 +383,7 @@ def init_db():
         conn.execute("ALTER TABLE downloaded_videos ADD COLUMN status TEXT DEFAULT 'downloaded'")
         conn.execute("UPDATE downloaded_videos SET status='downloaded' WHERE status IS NULL")
 
-    # Migrate: availability — NULL/'available' = ok; 'private'/'deleted'/'members'/'geo'/'unavailable' = can't fetch
+    # Migrate: availability — NULL/'available' = ok; 'private'/'deleted'/'members'/'geo'/'age'/'unavailable' = can't fetch
     if "availability" not in cols:
         conn.execute("ALTER TABLE downloaded_videos ADD COLUMN availability TEXT")
 
@@ -802,6 +807,29 @@ def spa_icon():
 def get_config():
     return jsonify(load_config())
 
+@app.get("/ytdlp/status")
+def ytdlp_status():
+    """What yt-dlp we have and whether it can get past age gates and the n challenge."""
+    cfg     = load_config()
+    version = None
+    try:
+        r = subprocess.run(["yt-dlp", "--no-update", "--version"],
+                           capture_output=True, text=True, timeout=15)
+        version = (r.stdout or "").strip() or None
+    except Exception:
+        pass
+    runtimes = {name: shutil.which(name) for name in _JS_RUNTIMES}
+    return jsonify({
+        "ok":            True,
+        "installed":     bool(version),
+        "version":       version,
+        "cookies_from":  cfg.get("ytdlp_cookies_from_browser") or None,
+        "js_runtime":    cfg.get("ytdlp_js_runtime") or None,
+        "js_available":  {k: v for k, v in runtimes.items() if v},
+        "js_args":       _js_runtime_args(),
+    })
+
+
 @app.post("/config")
 def set_config():
     body = request.get_json(silent=True) or {}
@@ -827,6 +855,23 @@ def set_config():
         cfg["media_roots"] = [str(r).strip() for r in roots if str(r).strip()]
         save_config(cfg)
         clear_media_index()
+
+    # yt-dlp: cookie jar for age-gated videos, JS runtime for the "n" challenge.
+    if "ytdlp_js_runtime" in body:
+        cfg["ytdlp_js_runtime"] = str(body["ytdlp_js_runtime"] or "").strip()
+        save_config(cfg)
+
+    if "ytdlp_cookies_from_browser" in body:
+        cfg["ytdlp_cookies_from_browser"] = str(body["ytdlp_cookies_from_browser"] or "").strip()
+        save_config(cfg)
+        # Videos parked as "age" were only unfetchable because we had no cookies.
+        # Now that there are some, put them back in the queue.
+        if cfg["ytdlp_cookies_from_browser"]:
+            with _db_lock:
+                conn = get_conn()
+                conn.execute("UPDATE downloaded_videos SET availability = NULL WHERE availability = 'age'")
+                conn.commit()
+                conn.close()
 
     if "data_directory" in body:
         data_dir = body["data_directory"].strip()
@@ -1656,6 +1701,67 @@ def read_file_tags():
     })
 
 
+# ---------------------------------------------------------------------------
+# yt-dlp invocation
+# ---------------------------------------------------------------------------
+
+# Runtimes yt-dlp can drive, highest priority first. Only "deno" is enabled by
+# default, so an installed node/bun is invisible unless we pass --js-runtimes.
+_JS_RUNTIMES = ("deno", "node", "quickjs", "bun")
+
+
+def _js_runtime_args():
+    """--js-runtimes flags for whichever runtime is configured or on PATH.
+
+    Without one, YouTube's "n" challenge cannot be solved and a fetch that got
+    past the age gate still fails with "The page needs to be reloaded".
+    """
+    configured = (load_config().get("ytdlp_js_runtime") or "").strip()
+    if configured:
+        # Either "node" / "node:/path/to/node", or a bare path we name ourselves.
+        if ":" in configured or configured in _JS_RUNTIMES:
+            return ["--js-runtimes", configured]
+        name = os.path.basename(configured.rstrip("/"))
+        name = name if name in _JS_RUNTIMES else "node"
+        return ["--js-runtimes", f"{name}:{configured}"]
+
+    found = []
+    for name in _JS_RUNTIMES:
+        path = shutil.which(name)
+        if path:
+            found.append(f"{name}:{path}")
+    return [arg for f in found for arg in ("--js-runtimes", f)]
+
+
+def _cookie_args():
+    """--cookies-from-browser flags, if a browser is configured.
+
+    Age-restricted videos ("Sign in to confirm your age") cannot be fetched at
+    all without a signed-in cookie jar; no player client bypasses it.
+    """
+    browser = (load_config().get("ytdlp_cookies_from_browser") or "").strip()
+    return ["--cookies-from-browser", browser] if browser else []
+
+
+def _ytdlp(*args, timeout=45):
+    """Run yt-dlp with the configured cookie jar and JS runtime."""
+    cmd = ["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + list(args)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _ytdlp_error(stderr):
+    """The last ERROR line yt-dlp printed, trimmed for display."""
+    for line in reversed((stderr or "").splitlines()):
+        line = line.strip()
+        if line.startswith("ERROR:"):
+            line = line[len("ERROR:"):].strip()
+            # Drop the "[youtube] <id>: " prefix and the trailing help links.
+            line = re.sub(r"^\[[^\]]+\]\s*[A-Za-z0-9_-]{11}:\s*", "", line)
+            line = re.split(r"\s+(?:Use --cookies|See\s+https?://)", line)[0]
+            return line.strip()[:300]
+    return "yt-dlp failed"
+
+
 def _classify_unavailable(text):
     """Map a yt-dlp error message to an availability state, or None if it looks transient."""
     t = (text or "").lower()
@@ -1672,7 +1778,12 @@ def _classify_unavailable(text):
             or "this video has been removed" in t
             or "video has been deleted" in t):
         return "deleted"
-    # Other failures (network, rate limit, sign-in/age gate) are likely transient → don't mark.
+    # Age-gated. Only a signed-in cookie jar gets past it, so without one this is
+    # permanent, not transient — mark it so the video stops sitting at the top of
+    # the "oldest fetch" list forever. Configuring cookies clears the mark.
+    if "confirm your age" in t and not _cookie_args():
+        return "age"
+    # Other failures (network, rate limit, bot check) are likely transient → don't mark.
     return None
 
 
@@ -1689,19 +1800,17 @@ def _set_availability(video_id, availability):
 
 @app.post("/fetch-metadata/<vid:video_id>")
 def fetch_metadata(video_id):
-    import subprocess, json as _json
+    import json as _json
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        result = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-download", "--no-playlist", url],
-            capture_output=True, text=True, timeout=30
-        )
+        result = _ytdlp("--dump-json", "--no-download", "--no-playlist", url, timeout=60)
         if result.returncode != 0:
+            reason       = _ytdlp_error(result.stderr)
             availability = _classify_unavailable(result.stderr)
             if availability:
                 _set_availability(video_id, availability)
-                return jsonify({"ok": False, "error": "yt-dlp failed", "availability": availability}), 200
-            return jsonify({"ok": False, "error": "yt-dlp failed"}), 502
+                return jsonify({"ok": False, "error": reason, "availability": availability}), 200
+            return jsonify({"ok": False, "error": reason}), 502
         info = _json.loads(result.stdout)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -2083,10 +2192,7 @@ def import_fetch_meta():
         return jsonify({"ok": False, "error": "no YouTube id — add a URL first"}), 400
     url = f"https://www.youtube.com/watch?v={vid}"
     try:
-        res = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-download", "--no-playlist", url],
-            capture_output=True, text=True, timeout=45,
-        )
+        res = _ytdlp("--dump-json", "--no-download", "--no-playlist", url, timeout=60)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
     if res.returncode != 0:
@@ -2094,7 +2200,7 @@ def import_fetch_meta():
         if avail and path:
             # remember unavailability if this id is already tracked
             _set_availability(vid, avail)
-        return jsonify({"ok": False, "error": "yt-dlp failed", "availability": avail}), 200
+        return jsonify({"ok": False, "error": _ytdlp_error(res.stderr), "availability": avail}), 200
     info = json.loads(res.stdout)
     ud   = info.get("upload_date")
     rec  = f"{ud[:4]}-{ud[4:6]}-{ud[6:]}" if ud and len(ud) == 8 else None
@@ -2345,16 +2451,13 @@ def fetch_thumbnail(video_id):
     body  = request.get_json(silent=True) or {}
     force = bool(body.get("force")) or request.args.get("force") in ("1", "true")
     url = f"https://www.youtube.com/watch?v={video_id}"
-    res = subprocess.run(
-        ["yt-dlp", "--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url],
-        capture_output=True, text=True, timeout=30,
-    )
+    res = _ytdlp("--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url, timeout=60)
     if res.returncode != 0:
         avail = _classify_unavailable(res.stderr)
         if avail:
             _set_availability(video_id, avail)
-            return jsonify({"ok": False, "error": "yt-dlp failed", "availability": avail}), 200
-        return jsonify({"ok": False, "error": "yt-dlp failed"}), 502
+            return jsonify({"ok": False, "error": _ytdlp_error(res.stderr), "availability": avail}), 200
+        return jsonify({"ok": False, "error": _ytdlp_error(res.stderr)}), 502
 
     thumb_url = (res.stdout or "").strip().splitlines()[0] if res.stdout.strip() else ""
     try:
