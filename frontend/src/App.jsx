@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags } from "./lib/api";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, shutdownApp } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
@@ -30,7 +30,10 @@ export default function App() {
   const [ignored, setIgnored] = useState([]);
   const [playlists, setPlaylists] = useState([]);
   const [tags,      setTags]      = useState([]);
+  const [confirmQuit, setConfirmQuit] = useState(false);
+  const [quit,        setQuit]        = useState(false);
   const searchRef = useRef(null);
+  const quitRef   = useRef(null);
 
   // "/" and ⌘/Ctrl-K jump to search from anywhere, Esc drops focus.
   useEffect(() => {
@@ -48,6 +51,14 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (!confirmQuit) return;
+    quitRef.current?.focus();
+    function onKey(e) { if (e.key === "Escape") setConfirmQuit(false); }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmQuit]);
 
   async function load() {
     try {
@@ -109,11 +120,30 @@ export default function App() {
     setPlaylists(await getPlaylists());
   }
 
+  // The backend exits right after answering, so the response may never land.
+  // Either way the app is going down: show the farewell screen regardless.
+  async function handleQuit() {
+    setConfirmQuit(false);
+    setQuit(true);
+    setOnline(false);
+    try { await shutdownApp(); } catch { /* connection dropped as it exited */ }
+  }
+
   async function handleRemoveMark(id) {
     await removeMark(id);
     const [w, i] = await Promise.all([getWanted(), getIgnored()]);
     setWanted(w);
     setIgnored(i);
+  }
+
+  if (quit) {
+    return (
+      <div className="quit-screen">
+        <span className="quit-mark"><Icon name="vault" size={26} /></span>
+        <h2>ChannelVault closed</h2>
+        <p>The backend has stopped. Close this tab, and start the app again when you need it.</p>
+      </div>
+    );
   }
 
   return (
@@ -179,6 +209,21 @@ export default function App() {
           <div className="side-sep" />
           <button className="side-link" onClick={() => setShowAddVideo(true)}><Icon name="plus" />Add Video</button>
           <button className="side-link" onClick={() => setShowWatchFolder(true)}><Icon name="settings" />Settings</button>
+          {confirmQuit ? (
+            <div className="side-quit-confirm">
+              <span className="del-confirm-label">Quit ChannelVault?</span>
+              <button ref={quitRef} className="del-btn del-btn-confirm" onClick={handleQuit} title="Confirm quit">
+                <Icon name="check" />
+              </button>
+              <button className="del-btn" onClick={() => setConfirmQuit(false)} title="Cancel (Esc)">
+                <Icon name="close" />
+              </button>
+            </div>
+          ) : (
+            <button className="side-link side-link-quit" onClick={() => setConfirmQuit(true)} title="Stop the backend and close the app">
+              <Icon name="power" />Quit
+            </button>
+          )}
         </nav>
 
         <main>

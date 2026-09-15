@@ -3219,6 +3219,31 @@ def backfill_segments():
 
 
 # ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
+
+@app.route("/shutdown", methods=["POST"])
+def shutdown_app():
+    """Quit the app from the dashboard.
+
+    Werkzeug removed its shutdown function in 2.1 and the watcher runs in a
+    daemon thread, so there is nothing to unwind: exit the process. The timer
+    exists only so Flask can flush this response before the interpreter dies.
+    os._exit skips atexit handlers, which is safe here because every request
+    commits its own SQLite transaction.
+    """
+    def quit_now():
+        with _observer_lock:
+            if _observer:
+                _observer.stop()
+        os._exit(0)
+
+    threading.Timer(0.4, quit_now).start()
+    print("[api] Shutdown requested from the dashboard")
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 

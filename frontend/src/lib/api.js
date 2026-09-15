@@ -135,6 +135,8 @@ export function deleteAudioTrack(id)         { return del(`/audio-tracks/${id}`)
 export function audioTrackUrl(id)            { return `${BASE}/audio-track/${id}`; }
 export function browseAudioFile()            { return get("/browse-file?kind=audio&title=Select+audio+file"); }
 
+export function shutdownApp()      { return post("/shutdown", {}); }
+
 export function scan(onEvent) { return stream("/scan", onEvent); }
 
 // Server-sent progress: POST, then hand each `data:` JSON line to onEvent.
