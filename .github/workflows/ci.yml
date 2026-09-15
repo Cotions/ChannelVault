@@ -83,6 +83,7 @@ jobs:
           expect 403 /browse
           expect 403 /config                 -X POST -H 'Content-Type: application/json' -d '{}'
           expect 403 /scan                   -X POST
+          expect 403 /shutdown               -X POST
           expect 403 /videos/aaaaaaaaaaa     -X DELETE
           expect 200 /mark/aaaaaaaaaaa       -X DELETE -H "$H"
 
@@ -106,6 +107,12 @@ jobs:
           expect 404 /videos/aaaaaaaaaaa/segments -X POST -H "$H" -H 'Content-Type: application/json' -d '{"start_secs":0,"end_secs":5}'
           expect 200 /videos/aaaaaaaaaaa/segments -H "$H"
 
+          echo "-- audio tracks: header for the API, URL alone for the stream"
+          expect 403 /videos/aaaaaaaaaaa/audio-tracks
+          expect 200 /videos/aaaaaaaaaaa/audio-tracks -H "$H"
+          expect 400 /videos/aaaaaaaaaaa/audio-tracks -X POST -H "$H" -H 'Content-Type: application/json' -d '{"file_path":"/etc/passwd"}'
+          expect 404 /audio-track/999999
+
           echo "-- no CORS grant, ever"
           if curl -s -D - -o /dev/null -H 'Origin: http://evil.example' -H "$H" http://localhost:3399/config \
                | grep -qi 'access-control-allow'; then echo "✗ CORS header present"; fail=1; else echo "✓ no CORS headers"; fi
@@ -113,6 +120,12 @@ jobs:
           # The SPA fetches JSON from the same paths the router also renders.
           [ "$(curl -s -H "$H" http://localhost:3399/playlists)" = "[]" ] \
             || { echo "✗ /playlists did not return JSON for fetch"; fail=1; }
+
+          # Last, because it takes the server down: the quit button's endpoint.
+          echo "-- quit stops the process"
+          expect 200 /shutdown               -X POST -H "$H"
+          for _ in $(seq 1 10); do kill -0 $PID 2>/dev/null || break; sleep 1; done
+          if kill -0 $PID 2>/dev/null; then echo "✗ still running after /shutdown"; fail=1; else echo "✓ exited after /shutdown"; fi
 
           exit $fail
 

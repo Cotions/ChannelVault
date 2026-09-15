@@ -70,6 +70,11 @@ many-to-many. Each link records `source`, `manual` or `rule`, so a keyword rule
 never silently overwrites a human decision. Deleting a tag leaves the segments;
 deleting a segment leaves the tag.
 
+`audio_tracks` holds alternate soundtracks for a video: one row per extra file,
+with a `label`, the `file_path`, a sync `offset_secs` and the duration read at
+attach time. The video's own audio is the implicit "Original" track and has no
+row. Paths arriving from the client are only accepted inside a media root.
+
 Migrations follow the existing style: `CREATE TABLE IF NOT EXISTS`, then column
 adds guarded by a single `PRAGMA table_info` read. There is no version table.
 
@@ -95,9 +100,53 @@ so navigation cannot pause it. The provider exposes the element plus
 state, since the provider wraps the whole app; `usePlaybackTime` subscribes to the
 element from the one page that needs it.
 
+**The controls are ours**, not the browser's (`PlayerControls.jsx`, rendered
+inside the shell so it serves inline, mini and fullscreen alike). Native controls
+could not tell the truth here: they cap volume at 100%, their speaker lies while
+an alternate soundtrack plays, and they know nothing about segments. The bar
+carries scrub with buffered range and the video's segments drawn into it, clock,
+volume with boost, the leveller, soundtrack and speed menus and fullscreen, plus
+keyboard (space/K, J/L, arrows, M, F, N/P, `[`/`]`, digits) which is ignored while
+a text field has focus. The playhead is written straight to the DOM from a rAF
+loop — the shell wraps every page, so re-rendering it at 60 Hz would be paid for
+by the whole app. Segments and the track list are *published into* the provider by
+the video page (`setSegments(id, list)`, `setAudioTracks(id, list)`) and keyed by
+video id, because a page's fetch and the player's own switch land in whichever
+order the network decides.
+
+**Loudness** goes through `player/audioGraph.js`: each element → its own gain →
+one master gain → optionally a compressor with makeup gain → speakers. That is
+the only way past the element's 1.0 ceiling, and the compressor ("LVL") is what
+keeps a boosted quiet rip from clipping. Routing an element into a graph is
+permanent and a suspended AudioContext on that path means *silence*, so the graph
+is built only when asked for (volume past 100%, or the leveller) and only under a
+gesture — play, or a touch of the volume. At or below 100% with the leveller off,
+no AudioContext is ever created and the elements carry their own volume. Volume
+and the leveller persist in `localStorage` (`cv.volume`, `cv.levelling`); mute
+does not.
+
+**Alternate audio** is the same one `<video>` silenced, with an `<audio>` element
+next to it carrying the sound. Everything the user touches is forwarded: play,
+pause, seek, rate. Drift past `AUDIO_DRIFT` is pulled back from the time-update
+handler rather than by a timer of its own. The picture is silenced two ways at
+once — `muted` on the element and a gain of 0 on its branch of the graph —
+because which one bites depends on the browser. There is one volume for whichever
+soundtrack is audible, in the player's own bar, and switching tracks is the
+player's Audio menu. The page keeps only the library side: a toolbar button with
+the track count whose panel attaches, renames, detaches and nudges. That panel is
+portalled to `<body>`, since the player shell is fixed and paints above the card
+it would otherwise open inside. Choosing another video clears the
+track, since a track belongs to one video.
+
 **Segment play mode** is a queue in the provider. Advancing is watched from the
 existing time-update handler. Opening another video by hand ends the queue; the
 queue moving itself does not, which a short-lived flag distinguishes.
+
+**Quitting.** `POST /shutdown` answers, then a 0.4 s timer calls `os._exit(0)`.
+Werkzeug dropped its shutdown function in 2.1 and the watcher is a daemon
+thread, so there is nothing to unwind; each request commits its own
+transaction, so skipping atexit costs nothing. The UI swaps the whole app for a
+farewell screen, which also unmounts the player and stops the audio.
 
 ## Frontend conventions
 

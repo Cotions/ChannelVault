@@ -57,6 +57,10 @@ Builds the UI if it is stale, sets up the virtualenv, starts the backend, opens 
 | `./run.sh --install-launcher` | Add "ChannelVault (source)" to the app menu |
 | `./testapp.sh` | Second instance on a **copy** of your database, port 3399 |
 
+To stop it, use **Quit** at the bottom of the sidebar: it asks once, then stops
+the backend and the process. Closing the tab only closes the tab, and Ctrl-C in
+the terminal still works.
+
 ### Trying things without risking your library
 
 `./testapp.sh` starts a throwaway instance that shares your videos but not your
@@ -141,7 +145,7 @@ A rescan never overwrites a video that already has segments, so your edits are s
 
 ### Marking a part yourself
 
-On any video page, the bar under the player shows every segment as a block, stacked into lanes when they overlap. Click a block to jump there. Below it, **New segment** opens a form where the **now** buttons copy the current playback position, so you can mark a range while watching.
+On any video page, every segment is drawn into the player's own scrub bar in its tag's colour: hover to read the name and the time, click to jump there. Under the player, **New segment** opens a form where the **now** buttons copy the current playback position, so you can mark a range while watching, and the list below it edits and retags the ones you have.
 
 ### Keyword rules
 
@@ -155,6 +159,77 @@ You can also filter the home grid by tag chips, search by tag name, and jump str
 
 ---
 
+## 4b — The player
+
+ChannelVault draws its own player controls instead of the browser's, because the
+browser's could not say what is true here.
+
+**Volume goes past 100%.** A media element stops at its own 100%, which on a
+library of quiet rips is still too soft. Push the slider higher and the sound
+runs through a gain stage that has no such ceiling — up to 300%. **LVL** next to
+it is the leveller: it lifts quiet passages, holds the peaks down and keeps a
+boosted track from distorting. Both settings stick between videos and between
+nights.
+
+Nothing extra runs while you stay at 100% with the leveller off — the audio path
+is then exactly what it always was.
+
+**The scrub bar shows your segments.** Every tagged part of the video is drawn
+into the bar in its tag's colour, so you can see the good stretches coming and
+hover to read the name and the time before you jump.
+
+**Keys**, whenever a video is loaded and you are not typing:
+
+| | |
+|---|---|
+| `Space` / `K` | play, pause |
+| `←` `→` | 5 seconds |
+| `J` `L` | 10 seconds |
+| `↑` `↓` | volume |
+| `0`–`9` | jump to that tenth of the video |
+| `M` | mute |
+| `F` | fullscreen |
+| `N` `P` | next, previous segment in a queue |
+| `[` `]` | slower, faster |
+
+---
+
+## 5 — Alternate audio tracks
+
+Some uploads ship the same picture twice: one file with the room noise, one with
+the sound cleaned up or re-mixed. When the second version is audio only, attach
+it to the video instead of keeping two copies.
+
+Switching is in the player's **Audio** menu: **Original** plus every track you
+attached. Pick one and the picture keeps playing while the sound comes from that
+file: the video is muted and the track runs against it, staying in sync through
+seeks, pauses, speed changes and the mini player. The menu is part of the player,
+so it works in fullscreen and from the mini player too.
+
+Managing them is the speaker button in the video page's toolbar, next to the
+thumbnail tools; it carries the number of tracks attached. Its panel attaches,
+renames and detaches files, and holds the sync nudge that shifts the sound
+against the picture.
+
+Volume is not in the row either: the player's bar carries one volume for
+whichever soundtrack is audible, so there is never a second slider claiming
+something else.
+
+The panel scans the library for audio files whose
+name is close to the video's, so a `… ( quiet version )-(123k).mp3` sitting a
+folder away is usually offered straight away; **Browse…** picks any file inside a
+media root by hand. A track's length is shown next to it and flagged when it does
+not match the video, which is the quickest way to spot a file that belongs to
+something else.
+
+If the two were not cut from the same master, the **− +0.0s +** buttons shift the
+sound against the picture in tenths of a second. The offset is saved with the
+track.
+
+Removing a track only detaches it. The audio file itself is never touched.
+
+---
+
 ## yt-dlp tip
 
 Use this flag so metadata is embedded and ChannelVault can read it:
@@ -162,6 +237,24 @@ Use this flag so metadata is embedded and ChannelVault can read it:
 ```bash
 yt-dlp --embed-metadata -o "~/Downloads/%(title)s.%(ext)s" <URL>
 ```
+
+---
+
+## Age-restricted videos
+
+Two things stop a fetch from reaching YouTube, and both live under **Settings → YouTube Fetching**.
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Sign in to confirm your age` | The video is age-gated. No player client gets around it | Pick a browser to read cookies from. You must be signed in to YouTube in that browser |
+| `The page needs to be reloaded` | No JavaScript runtime, so yt-dlp cannot solve YouTube's `n` challenge | Install `deno`, `node` or `bun`. Anything on PATH is picked up automatically; otherwise give a path |
+
+Chromium-based browsers keep their cookie jar encrypted while running, so close the
+browser before fetching. Firefox works either way.
+
+Videos that fail the age gate while no browser is configured are badged **Age-gated** and
+sort to the bottom of *Oldest fetch*, so they stop sitting at the top of the list forever.
+Choosing a browser clears that badge and puts them back in the queue.
 
 ---
 
@@ -219,7 +312,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## API endpoints
 
-Every API call must send the header `X-ChannelVault: 1`, GET included, or the server answers 403. That is what keeps a random web page in another tab from driving your vault: a cross-origin page cannot attach a custom header. The dashboard and the userscript add it for you. Only the SPA pages, `/assets`, the userscript file, media routes loaded into `<img>`/`<video>` (`/thumb*`, `/stream`, `/artist-thumb`, `/thumbnail-version`, `/import/thumb`) and the `/export/*` downloads are reachable by URL alone.
+Every API call must send the header `X-ChannelVault: 1`, GET included, or the server answers 403. That is what keeps a random web page in another tab from driving your vault: a cross-origin page cannot attach a custom header. The dashboard and the userscript add it for you. Only the SPA pages, `/assets`, the userscript file, media routes loaded into `<img>`/`<video>` (`/thumb*`, `/stream`, `/audio-track`, `/artist-thumb`, `/thumbnail-version`, `/import/thumb`) and the `/export/*` downloads are reachable by URL alone.
 
 ```bash
 curl -H 'X-ChannelVault: 1' http://localhost:3360/videos
@@ -238,6 +331,7 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | DELETE | `/videos/<id>` | Remove from the vault |
 | POST | `/update-stats/<id>` | Store view and like counts |
 | POST | `/fetch-metadata/<id>` | Refresh title, stats and availability from YouTube |
+| GET | `/ytdlp/status` | yt-dlp version, configured cookie jar and detected JS runtimes |
 | GET | `/stream/<id>` | Stream the file, with range requests |
 | GET | `/export/json`, `/export/csv` | Download the whole library, tags and segments included |
 
@@ -273,6 +367,16 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | DELETE | `/videos/<id>/tags/<tag_id>` | Untag a whole video |
 | POST | `/videos/<id>/segments/import-chapters` | Re-read the file's chapters, keeping manual segments |
 | POST | `/segments/backfill` | Import chapters library-wide, streaming progress |
+
+**Audio tracks**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/videos/<id>/audio-tracks` | Attached tracks, plus audio files that look like this video (`?suggest=0` skips the scan) |
+| POST | `/videos/<id>/audio-tracks` | Attach a file; it must sit inside a media root |
+| PATCH | `/audio-tracks/<id>` | Rename it or change its sync offset |
+| DELETE | `/audio-tracks/<id>` | Detach it; the file stays on disk |
+| GET | `/audio-track/<id>` | Stream the track, with range requests |
 
 **Playlists**
 
@@ -330,3 +434,4 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | POST | `/import/fetch-meta` | Suggest metadata from YouTube, writing nothing |
 | POST | `/import/enrich` | Write tags into the file itself with ffmpeg |
 | GET | `/userscript/channelvault.user.js` | The userscript, always fresh |
+| POST | `/shutdown` | Stop the backend and exit (the sidebar's Quit button) |
