@@ -36,6 +36,8 @@ const PATHS = {
   skipBack:  <><path d="M19 5.5 9.5 12l9.5 6.5z" /><path d="M5.5 5.5v13" /></>,
   skipFwd:   <><path d="M5 5.5 14.5 12 5 18.5z" /><path d="M18.5 5.5v13" /></>,
   pause:     <><path d="M8 5.5v13" /><path d="M16 5.5v13" /></>,
+  volume:    <><path d="M4 9.2h3.4L12 5.2v13.6l-4.6-4H4z" /><path d="M15.6 9.4a3.7 3.7 0 0 1 0 5.2" /><path d="M18.2 6.8a7.3 7.3 0 0 1 0 10.4" /></>,
+  volumeOff: <><path d="M4 9.2h3.4L12 5.2v13.6l-4.6-4H4z" /><path d="M16.2 9.8 21 14.6" /><path d="M21 9.8l-4.8 4.8" /></>,
   vault:     <><rect x="3.2" y="4.2" width="17.6" height="15.6" rx="2.4" /><circle cx="10.6" cy="12" r="3.6" /><path d="M10.6 8.4v7.2" /><path d="M7 12h7.2" /><path d="M17 9.4v5.2" /></>,
 };
 

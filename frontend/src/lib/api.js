@@ -123,6 +123,16 @@ export function removeVideoTag(videoId, tagId) { return del(`/videos/${videoId}/
 export function importChapters(videoId)      { return post(`/videos/${videoId}/segments/import-chapters`, {}); }
 export function backfillSegments(onEvent)    { return stream("/segments/backfill", onEvent); }
 
+// Alternate audio tracks
+export function getAudioTracks(videoId, { suggest = true } = {}) {
+  return get(`/videos/${videoId}/audio-tracks${suggest ? "" : "?suggest=0"}`);
+}
+export function addAudioTrack(videoId, data) { return post(`/videos/${videoId}/audio-tracks`, data); }
+export function updateAudioTrack(id, fields) { return patch(`/audio-tracks/${id}`, fields); }
+export function deleteAudioTrack(id)         { return del(`/audio-tracks/${id}`); }
+export function audioTrackUrl(id)            { return `${BASE}/audio-track/${id}`; }
+export function browseAudioFile()            { return get("/browse-file?kind=audio&title=Select+audio+file"); }
+
 export function scan(onEvent) { return stream("/scan", onEvent); }
 
 // Server-sent progress: POST, then hand each `data:` JSON line to onEvent.

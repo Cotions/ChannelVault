@@ -14,6 +14,7 @@ import subprocess
 import urllib.request
 import threading
 import unicodedata
+import difflib
 from tinytag import TinyTag
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -115,7 +116,7 @@ _PUBLIC_ENDPOINTS = {
     "spa_assets", "spa_icon", "serve_userscript",
     "serve_thumb", "serve_thumb_latest", "serve_artist_thumb",
     "serve_thumbnail_version", "import_thumb", "stream_video",
-    "export_json", "export_csv",
+    "export_json", "export_csv", "stream_audio_track",
 }
 
 
@@ -488,6 +489,23 @@ def init_db():
             PRIMARY KEY (video_id, tag_id)
         )
     ''')
+    # A video can carry alternate soundtracks that live in their own files: a
+    # re-mixed upload, a dub, a quieter master. The video's own audio is the
+    # implicit "Original" track, so only the extra ones get a row. offset_secs
+    # shifts the file against the picture when the two were not cut in sync.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS audio_tracks (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id      TEXT NOT NULL,
+            label         TEXT,
+            file_path     TEXT NOT NULL,
+            offset_secs   REAL NOT NULL DEFAULT 0,
+            duration_secs REAL,
+            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (video_id, file_path)
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audio_tracks_video ON audio_tracks(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segment_tags_tag ON segment_tags(tag_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)")
@@ -844,14 +862,21 @@ def browse():
         pass
     return jsonify({"ok": False, "directory": None})
 
+_PICKER_FILTERS = {
+    "video": "Video files (mp4 mkv webm avi mov) | *.mp4 *.mkv *.webm *.avi *.mov",
+    "audio": "Audio files (mp3 m4a aac opus ogg flac wav) | *.mp3 *.m4a *.aac *.opus *.ogg *.oga *.flac *.wav *.weba",
+}
+
+
 @app.get("/browse-file")
 def browse_file():
     import subprocess
     title = request.args.get("title", "Select video file")
+    kind  = request.args.get("kind", "video")
     try:
         result = subprocess.run(
             ["zenity", "--file-selection", f"--title={title}",
-             "--file-filter=Video files (mp4 mkv webm avi mov) | *.mp4 *.mkv *.webm *.avi *.mov",
+             "--file-filter=" + _PICKER_FILTERS.get(kind, _PICKER_FILTERS["video"]),
              "--file-filter=All files | *"],
             capture_output=True, text=True, timeout=60
         )
@@ -1047,6 +1072,268 @@ def stream_video(video_id):
     ext  = os.path.splitext(path)[1].lower()
     from flask import send_file
     return send_file(path, mimetype=_STREAM_MIMES.get(ext, "application/octet-stream"), conditional=True)
+
+# ---------------------------------------------------------------------------
+# Alternate audio tracks
+#
+# Some uploads ship the same picture with a second soundtrack in a separate
+# file (a remaster, a quieter mix, a dub). Attaching one to a video lets the
+# player mute the video and play that file alongside it instead.
+# ---------------------------------------------------------------------------
+
+_AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".oga", ".flac", ".wav", ".weba")
+
+_AUDIO_MIMES = {
+    ".mp3":  "audio/mpeg",
+    ".m4a":  "audio/mp4",
+    ".aac":  "audio/aac",
+    ".opus": "audio/ogg",
+    ".ogg":  "audio/ogg",
+    ".oga":  "audio/ogg",
+    ".flac": "audio/flac",
+    ".wav":  "audio/wav",
+    ".weba": "audio/webm",
+}
+
+# Trailing "-<youtube id>" or "-(123k)" that downloaders append to a name.
+_NAME_SUFFIX_RE = re.compile(r"-(?:[A-Za-z0-9_-]{11}|\(\d+k\))$")
+
+
+def _under_media_roots(path):
+    """The real path when it is a file inside a configured media root, else None.
+
+    Every path that arrives from the client and gets opened goes through here:
+    the browser must not be able to name an arbitrary file on disk and stream
+    it back through the audio endpoint."""
+    if not path:
+        return None
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return None
+    if not os.path.isfile(real):
+        return None
+    for root in get_media_roots():
+        r = os.path.realpath(root)
+        if real == r or real.startswith(r + os.sep):
+            return real
+    return None
+
+
+def _resolve_audio_path(stored):
+    """Same stale-path handling as video files, then the media-root check."""
+    return _under_media_roots(resolve_media_path(stored) or stored)
+
+
+def _norm_stem(path):
+    """Filename reduced to comparable words: no extension, no download suffix,
+    no punctuation or decoration, lowercased."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = _NAME_SUFFIX_RE.sub("", stem)
+    return re.sub(r"[\W_]+", " ", stem, flags=re.UNICODE).strip().lower()
+
+
+def _default_audio_label(path):
+    """A short name for a track. Alternate mixes are usually marked by a
+    parenthetical at the end of the filename, so prefer that."""
+    stem  = _NAME_SUFFIX_RE.sub("", os.path.splitext(os.path.basename(path))[0]).strip()
+    parts = re.findall(r"[(\[]([^()\[\]]{1,40})[)\]]", stem)
+    return ((parts[-1].strip() if parts else stem)[:60]) or "Alternate"
+
+
+def _parse_offset(value):
+    if value is None:
+        return None
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Beyond a few minutes it is a different recording, not a sync nudge.
+    return max(-600.0, min(600.0, secs))
+
+
+def _audio_duration(path):
+    try:
+        return TinyTag.get(path).duration
+    except Exception:
+        return None
+
+
+# Name closeness above which two files are offered as the same recording.
+_AUDIO_MATCH_MIN = 0.55
+
+
+def _audio_suggestions(video_path, attached):
+    """Audio files in the library whose name is close to the video's.
+
+    An alternate mix keeps almost the whole title and changes one word, so
+    comparing normalised names finds it even when it sits in another folder."""
+    if not video_path:
+        return []
+    target = _norm_stem(video_path)
+    if not target:
+        return []
+    vdir = os.path.dirname(os.path.realpath(video_path))
+    seen = {os.path.realpath(p) for p in attached if p}
+    out  = []
+    for path in set(_basename_index().values()):
+        if not path.lower().endswith(_AUDIO_EXTS):
+            continue
+        real = os.path.realpath(path)
+        if real in seen:
+            continue
+        # The name index is built once and kept, so it outlives a file that was
+        # moved or renamed since. Offering one of those ends in a refusal at
+        # attach time, which reads as a button that does nothing.
+        if not os.path.isfile(real):
+            continue
+        score = difflib.SequenceMatcher(None, target, _norm_stem(path)).ratio()
+        if os.path.dirname(real) == vdir:
+            score += 0.1                       # a sibling file is the usual case
+        if score >= _AUDIO_MATCH_MIN:
+            out.append({
+                "file_path": path,
+                "name":      os.path.basename(path),
+                "label":     _default_audio_label(path),
+                "score":     round(min(score, 1.0), 3),
+            })
+    out.sort(key=lambda s: (-s["score"], s["name"]))
+    out = out[:8]
+    for s in out:                              # only the shortlist pays for a tag read
+        s["duration_secs"] = _audio_duration(s["file_path"])
+    return out
+
+
+def _track_row(row):
+    resolved = _resolve_audio_path(row["file_path"])
+    return {
+        "id":            row["id"],
+        "video_id":      row["video_id"],
+        "label":         row["label"] or _default_audio_label(row["file_path"]),
+        "file_path":     row["file_path"],
+        "offset_secs":   row["offset_secs"],
+        "duration_secs": row["duration_secs"],
+        "missing":       resolved is None,
+        "url":           f"/audio-track/{row['id']}",
+    }
+
+
+def _tracks_for(conn, video_id):
+    rows = conn.execute(
+        "SELECT * FROM audio_tracks WHERE video_id = ? ORDER BY created_at, id", (video_id,)
+    ).fetchall()
+    return [_track_row(r) for r in rows]
+
+
+@app.get("/videos/<vid:video_id>/audio-tracks")
+def list_audio_tracks(video_id):
+    """Attached tracks, plus files that look like they belong to this video."""
+    conn = get_conn()
+    vrow = conn.execute(
+        "SELECT file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
+    ).fetchone()
+    tracks = _tracks_for(conn, video_id)
+    conn.close()
+    video_path = resolve_media_path(vrow["file_path"]) if vrow else None
+    suggest    = request.args.get("suggest") != "0"
+    attached   = [t["file_path"] for t in tracks]
+    if video_path:
+        attached.append(video_path)
+    return jsonify({
+        "ok": True,
+        "tracks": tracks,
+        "suggestions": _audio_suggestions(video_path, attached) if suggest else [],
+    })
+
+
+@app.post("/videos/<vid:video_id>/audio-tracks")
+def add_audio_track(video_id):
+    body = request.get_json(silent=True) or {}
+    raw  = (body.get("file_path") or "").strip()
+    if not raw:
+        return jsonify({"ok": False, "error": "need file_path"}), 400
+    path = _under_media_roots(raw) or _resolve_audio_path(raw)
+    if not path:
+        # Either a path the user should not be able to name, or one the cached
+        # index still believes in. Dropping the index costs one rescan and makes
+        # the second attempt tell the truth.
+        clear_media_index()
+        return jsonify({"ok": False, "error": "file is not inside a media root"}), 400
+    if not path.lower().endswith(_AUDIO_EXTS):
+        return jsonify({"ok": False, "error": "not an audio file"}), 400
+    label  = (body.get("label") or "").strip() or _default_audio_label(path)
+    offset = _parse_offset(body.get("offset_secs"))
+    with _db_lock:
+        conn = get_conn()
+        if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone():
+            conn.close()
+            return jsonify({"ok": False, "error": "video not found"}), 404
+        try:
+            cur = conn.execute(
+                "INSERT INTO audio_tracks (video_id, label, file_path, offset_secs, duration_secs)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (video_id, label, path, offset or 0.0, _audio_duration(path)),
+            )
+            track_id = cur.lastrowid
+        except sqlite3.IntegrityError:
+            conn.close()
+            return jsonify({"ok": False, "error": "already attached"}), 409
+        conn.commit()
+        row = conn.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
+        conn.close()
+    return jsonify({"ok": True, "track": _track_row(row)})
+
+
+@app.patch("/audio-tracks/<int:track_id>")
+def update_audio_track(track_id):
+    body = request.get_json(silent=True) or {}
+    with _db_lock:
+        conn = get_conn()
+        cur  = conn.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
+        if not cur:
+            conn.close()
+            return jsonify({"ok": False, "error": "not found"}), 404
+        label  = ((body.get("label") or "").strip() or None) if "label" in body else cur["label"]
+        offset = cur["offset_secs"]
+        if "offset_secs" in body:
+            parsed = _parse_offset(body.get("offset_secs"))
+            if parsed is None:
+                conn.close()
+                return jsonify({"ok": False, "error": "bad offset_secs"}), 400
+            offset = parsed
+        conn.execute("UPDATE audio_tracks SET label = ?, offset_secs = ? WHERE id = ?",
+                     (label, offset, track_id))
+        conn.commit()
+        row = conn.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
+        conn.close()
+    return jsonify({"ok": True, "track": _track_row(row)})
+
+
+@app.delete("/audio-tracks/<int:track_id>")
+def delete_audio_track(track_id):
+    """Detach only. The audio file itself is left alone on disk."""
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("DELETE FROM audio_tracks WHERE id = ?", (track_id,))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.get("/audio-track/<int:track_id>")
+def stream_audio_track(track_id):
+    conn = get_conn()
+    row  = conn.execute("SELECT file_path FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "no such track"}), 404
+    path = _resolve_audio_path(row["file_path"])
+    if not path:
+        return jsonify({"ok": False, "error": "file missing on disk"}), 404
+    ext = os.path.splitext(path)[1].lower()
+    from flask import send_file
+    return send_file(path, mimetype=_AUDIO_MIMES.get(ext, "application/octet-stream"), conditional=True)
+
 
 # ---------------------------------------------------------------------------
 # Watch history
@@ -1462,6 +1749,7 @@ def delete_video(video_id):
     conn.execute("DELETE FROM segment_tags WHERE segment_id IN (SELECT id FROM segments WHERE video_id = ?)", (video_id,))
     conn.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM video_tags WHERE video_id = ?", (video_id,))
+    conn.execute("DELETE FROM audio_tracks WHERE video_id = ?", (video_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})

@@ -12,8 +12,8 @@ import { usePlaybackTime } from "../player/usePlaybackTime";
 import QueueBar from "../player/QueueBar";
 import Icon from "../components/Icon";
 import TagPicker from "../components/TagPicker";
-import SegmentTimeline from "../components/SegmentTimeline";
 import SegmentList from "../components/SegmentList";
+import AudioTracks from "../components/AudioTracks";
 
 export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, onFetchMeta, onDelete }) {
   const { id } = useParams();
@@ -21,7 +21,10 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const [params] = useSearchParams();
   const player = usePlayer();
   // Stable callbacks (useCallback in the provider) — safe as effect deps.
-  const { openInline, onLeavePage, setPoster, close: closePlayer, setDock, seek, playQueue } = player;
+  const {
+    openInline, onLeavePage, setPoster, close: closePlayer, setDock, seek, playQueue,
+    setSegments: publishSegments,
+  } = player;
   const playback = usePlaybackTime(player.videoRef, player.activeId);
   const [segments,   setSegments]   = useState([]);
   const [videoTags,  setVideoTags]  = useState([]);
@@ -65,6 +68,8 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     } catch { setSegments([]); setVideoTags([]); }
   }, [id]);
   useEffect(() => { setSelectedSeg(null); loadSegments(); }, [loadSegments]);
+  // The player's scrub bar draws the same parts, and it outlives this page.
+  useEffect(() => { publishSegments(id, segments); }, [id, segments, publishSegments]);
 
   // Deep links from tag pages: /video/:id?t=754 lands on that second, once.
   const jumpTo = params.get("t");
@@ -250,6 +255,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
               <span className="icon-btn-num">{thumbIdx + 1}/{thumbs.length}</span>
             </button>
           )}
+          <AudioTracks videoId={id} duration={playback.duration || video.duration_secs || 0} />
           <button className="icon-btn" onClick={() => onEdit(video)} title="Edit metadata">
             <Icon name="pencil" size={16} />
           </button>
@@ -297,17 +303,6 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
       </div>
 
       {player.queue && <QueueBar />}
-
-      {segments.length > 0 && (
-        <SegmentTimeline
-          segments={segments}
-          duration={playback.duration || video.duration_secs || 0}
-          time={playback.time}
-          selectedId={selectedSeg}
-          onSelect={setSelectedSeg}
-          onSeek={secs => seek(secs)}
-        />
-      )}
 
       <div className="vp-below">
         <h1 className="vp-title">{video.title || video.video_id}</h1>

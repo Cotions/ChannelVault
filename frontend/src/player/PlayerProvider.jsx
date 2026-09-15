@@ -1,11 +1,24 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { streamUrl, thumbUrl, postWatchProgress, watchBeacon } from "../lib/api";
+import { streamUrl, thumbUrl, audioTrackUrl, postWatchProgress, watchBeacon } from "../lib/api";
 import { PlayerCtx } from "./playerContext";
+import * as graph from "./audioGraph";
 import QueueBar from "./QueueBar";
+import PlayerControls from "./PlayerControls";
 import Icon from "../components/Icon";
 
+// Past this much apart, an alternate soundtrack is audibly off the picture.
+const AUDIO_DRIFT = 0.25;
+
 const fresh = () => ({ watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0, posting: false });
+
+// Volume outlives the page: a library that plays quiet plays quiet every night.
+const readStored = (key, fallback) => {
+  const raw = localStorage.getItem(key);
+  if (raw == null) return fallback;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+};
 
 export default function PlayerProvider({ onCompleted, children }) {
   const navigate = useNavigate();
@@ -17,8 +30,25 @@ export default function PlayerProvider({ onCompleted, children }) {
   const [completedId, setCompletedId] = useState(null);
   // Segment play mode: { items, idx, orig, meta: {tagId, tagName, color}, shuffle, loop } | null
   const [queue,       setQueue]       = useState(null);
+  // Alternate soundtrack for the current video, or null for the file's own audio.
+  const [audioTrack,  setAudioTrack]  = useState(null);
+  // What the pages publish for the controls to draw: this video's parts and the
+  // soundtracks attached to it. The bar lives above every page, so it cannot go
+  // and fetch them itself without duplicating the page's request. Both carry the
+  // video they describe, because a page's fetch and the player's own switch land
+  // in whichever order the network decides.
+  const [segments,    setSegments]    = useState({ id: null, list: [] });
+  const [audioTracks, setAudioTracks] = useState({ id: null, list: [] });
+  // One loudness for whichever soundtrack is audible. Past 1 it is carried by
+  // the WebAudio graph, which is the only way past the element's ceiling.
+  const [volume,      setVolumeState]   = useState(() => readStored("cv.volume", 1));
+  const [muted,       setMuted]         = useState(false);
+  const [levelling,   setLevellingState] = useState(() => localStorage.getItem("cv.levelling") === "1");
+  const [rate,        setRateState]   = useState(1);
+  const [fullscreen,  setFullscreen]  = useState(false);
 
   const videoRef = useRef(null);
+  const audioRef = useRef(null);
   const shellRef = useRef(null);
   const dockRef  = useRef(null);   // the placeholder slot on the video page
   const watchRef = useRef(fresh());
@@ -31,10 +61,91 @@ export default function PlayerProvider({ onCompleted, children }) {
   const pendingSeekRef = useRef(null);   // seconds to jump to once the next file has metadata
   const advancingRef   = useRef(false);  // one advance per item end
   const queueLoadRef   = useRef(false);  // true while the queue itself switches video
+  const fsRef          = useRef(false);  // fullscreen, read by the placement loop
   useEffect(() => { activeIdRef.current = activeId; }, [activeId]);
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { onCompletedRef.current = onCompleted; }, [onCompleted]);
   useEffect(() => { queueRef.current = queue; }, [queue]);
+
+  // Alternate audio: the video plays silent and a parallel <audio> element
+  // carries the sound. Every transport the user touches (play, pause, seek,
+  // speed) is mirrored onto it, and drift is pulled back on the tick.
+  const trackRef    = useRef(null);   // latest audioTrack, for the handlers
+  const lastAudioEl = useRef(null);   // the element the graph is hooked into
+  useEffect(() => { trackRef.current = audioTrack; }, [audioTrack]);
+
+  const syncAudio = useCallback((force = false) => {
+    const v = videoRef.current, a = audioRef.current, track = trackRef.current;
+    if (!v || !a || !track) return;
+    const target = Math.max(0, v.currentTime + (track.offset_secs || 0));
+    if (force || Math.abs(a.currentTime - target) > AUDIO_DRIFT) a.currentTime = target;
+    if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;
+    if (v.paused || v.ended) { if (!a.paused) a.pause(); }
+    else if (a.paused) a.play().catch(() => {});
+  }, []);
+
+  const selectAudioTrack = useCallback((track) => setAudioTrack(track || null), []);
+
+  // Building the graph is only safe under a gesture: an AudioContext created
+  // cold starts suspended, and a suspended context on the output path is
+  // silence, not merely no boost. A stored boost from last night must therefore
+  // wait for the first play or the first touch of the volume.
+  const gestureRef = useRef(false);
+  const setVolume = useCallback((v) => { gestureRef.current = true; setVolumeState(v); }, []);
+  const setLevelling = useCallback((on) => { gestureRef.current = true; setLevellingState(on); }, []);
+
+  const publishSegments    = useCallback((id, list) => setSegments({ id, list: list || [] }), []);
+  const publishAudioTracks = useCallback((id, list) => setAudioTracks({ id, list: list || [] }), []);
+
+  // ---- loudness -----------------------------------------------------------
+  // One place decides how loud everything is. Below 100% with the leveller off
+  // the elements do it themselves and no AudioContext is ever created; the
+  // moment either is asked for, both elements move into the graph for good.
+  const applyAudio = useCallback(() => {
+    const v = videoRef.current, a = audioRef.current;
+    if (!v) return;
+    const wantGraph = (volume > 1 || levelling) && (gestureRef.current || !v.paused);
+    if ((wantGraph || graph.live()) && graph.ensure() && graph.attach(v)) {
+      // A track's <audio> is keyed by track id, so switching tracks replaces the
+      // element; unhook the old one or its branch of the graph outlives it.
+      if (lastAudioEl.current && lastAudioEl.current !== a) graph.detach(lastAudioEl.current);
+      lastAudioEl.current = a;
+      if (a) graph.attach(a);
+      graph.resume();
+      graph.setLevelling(levelling);
+      graph.setVolume(muted ? 0 : volume);
+      // Two ways to silence the picture under an alternate track: the element's
+      // own mute and its branch of the graph. Which one bites depends on the
+      // browser, so both are set.
+      graph.elementGain(v, audioTrack ? 0 : 1);
+      v.muted  = !!audioTrack;
+      v.volume = 1;
+      if (a) { graph.elementGain(a, 1); a.muted = false; a.volume = 1; }
+    } else {
+      v.volume = Math.min(1, volume);
+      v.muted  = muted || !!audioTrack;
+      if (a) { a.volume = Math.min(1, volume); a.muted = muted; }
+    }
+  }, [volume, muted, levelling, audioTrack]);
+
+  useEffect(() => { applyAudio(); }, [applyAudio, activeId]);
+  useEffect(() => { localStorage.setItem("cv.volume", String(volume)); }, [volume]);
+  useEffect(() => { localStorage.setItem("cv.levelling", levelling ? "1" : "0"); }, [levelling]);
+
+  // Hand the sound over (or take it back) whenever the chosen track changes.
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!audioTrack) { a?.pause(); return; }
+    if (a) a.playbackRate = videoRef.current?.playbackRate || 1;
+    syncAudio(true);
+  }, [audioTrack, syncAudio]);
+
+  const setRate = useCallback((r) => {
+    const v = videoRef.current;
+    if (v) v.playbackRate = r;
+    setRateState(r);
+    syncAudio(true);
+  }, [syncAudio]);
 
   const reportProgress = useCallback(async () => {
     const w = watchRef.current;
@@ -80,6 +191,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     if (activeIdRef.current !== id) {
       if (activeIdRef.current) reportProgress(); // flush previous video
       watchRef.current = fresh();
+      setAudioTrack(null);                       // tracks belong to one video
     }
     setActiveId(id);
     if (title != null) setTitle(title);
@@ -115,6 +227,36 @@ export default function PlayerProvider({ onCompleted, children }) {
   }, []);
   const play  = useCallback(() => { videoRef.current?.play().catch(() => {}); }, []);
   const pause = useCallback(() => { videoRef.current?.pause(); }, []);
+  const togglePlay = useCallback(() => {
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.paused) el.play().catch(() => {}); else el.pause();
+  }, []);
+
+  // ---- fullscreen ---------------------------------------------------------
+  // The shell goes fullscreen, not the <video>: the controls are ours and sit
+  // beside it, and a fullscreen <video> would take the picture and leave them.
+  const toggleFullscreen = useCallback(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else el.requestFullscreen?.().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onChange = () => {
+      const on = !!document.fullscreenElement && document.fullscreenElement === shellRef.current;
+      fsRef.current = on;
+      setFullscreen(on);
+      // Inline placement writes left/top/width/height; fullscreen needs them gone.
+      if (on && shellRef.current) {
+        const s = shellRef.current.style;
+        s.left = s.top = s.width = s.height = "";
+      }
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
 
   // ---- segment queue ------------------------------------------------------
   // Items: { segment_id, video_id, video_title, start_secs, end_secs, title }.
@@ -198,11 +340,14 @@ export default function PlayerProvider({ onCompleted, children }) {
   }, []);
 
   function handleLoadedMetadata(e) {
-    if (pendingSeekRef.current == null) return;
     const el = e.target;
+    if (el.playbackRate !== rate) el.playbackRate = rate;
+    applyAudio();
+    if (pendingSeekRef.current == null) return;
     el.currentTime = pendingSeekRef.current;
     pendingSeekRef.current = null;
     el.play().catch(() => {});
+    syncAudio(true);
   }
   function queueTick(t) {
     const q = queueRef.current;
@@ -215,6 +360,7 @@ export default function PlayerProvider({ onCompleted, children }) {
   }
   function handleEnded() {
     reportProgress();
+    audioRef.current?.pause();
     if (queueRef.current && !advancingRef.current) { advancingRef.current = true; queueStep(1); }
   }
 
@@ -233,7 +379,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     const place = () => {
       const shell = shellRef.current;
       const dock  = dockRef.current;
-      if (shell && activeIdRef.current && modeRef.current === "inline" && dock) {
+      if (shell && !fsRef.current && activeIdRef.current && modeRef.current === "inline" && dock) {
         const r = dock.getBoundingClientRect();
         shell.style.left   = `${r.left}px`;
         shell.style.top    = `${r.top}px`;
@@ -273,16 +419,31 @@ export default function PlayerProvider({ onCompleted, children }) {
     }
     w.lastTime = t;
     if (w.watched - w.reported >= 15) reportProgress();
+    syncAudio();
     queueTick(t);
   }
-  function handleSeeked(e) { watchRef.current.lastTime = e.target.currentTime; }
+  function handleSeeked(e) { watchRef.current.lastTime = e.target.currentTime; syncAudio(true); }
   function handleError() { if (modeRef.current === "mini") stop(); else setError(true); }
+
+  // The picture stalls on its own buffer; hold the sound until it is back.
+  function handleWaiting() { if (trackRef.current) audioRef.current?.pause(); }
+  function handlePlaying() { syncAudio(true); }
+
+  // A track that will not play is worse than no track: fall back to the original.
+  function handleAudioError() { setAudioTrack(null); }
 
   const ctx = {
     activeId, mode, error, completedId, title,
     openInline, onLeavePage, close: stop, setDock, setPoster: setPosterUrl,
-    videoRef, seek, play, pause,
+    videoRef, seek, play, pause, togglePlay,
     queue, playQueue, queueNext, queuePrev, toggleShuffle, toggleLoop, clearQueue,
+    audioTrack, selectAudioTrack,
+    audioTracks: audioTracks.id === activeId ? audioTracks.list : [],
+    setAudioTracks: publishAudioTracks,
+    segments: segments.id === activeId ? segments.list : [],
+    setSegments: publishSegments,
+    volume, setVolume, muted, setMuted, levelling, setLevelling,
+    rate, setRate, fullscreen, toggleFullscreen,
   };
 
   return (
@@ -290,7 +451,7 @@ export default function PlayerProvider({ onCompleted, children }) {
       {children}
 
       {activeId && (
-        <div ref={shellRef} className={`cv-shell cv-shell-${mode}`}>
+        <div ref={shellRef} className={`cv-shell cv-shell-${mode}${fullscreen ? " cv-shell-fs" : ""}`}>
           {mode === "mini" && (
             <div className="cv-mini-bar" key="bar">
               <button className="cv-mini-btn" title="Expand" onClick={() => navigate(`/video/${activeId}`)}><Icon name="expand" size={14} /></button>
@@ -299,22 +460,38 @@ export default function PlayerProvider({ onCompleted, children }) {
             </div>
           )}
           {mode === "mini" && queue && <QueueBar compact />}
-          <video
-            key="cv-video"
-            ref={videoRef}
-            className="cv-video"
-            controls
-            preload="metadata"
-            poster={poster || thumbUrl(activeId)}
-            src={streamUrl(activeId)}
-            onError={handleError}
-            onPlay={() => setError(false)}
-            onTimeUpdate={handleTimeUpdate}
-            onSeeked={handleSeeked}
-            onLoadedMetadata={handleLoadedMetadata}
-            onPause={reportProgress}
-            onEnded={handleEnded}
-          />
+          <div className="cv-stage" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
+            <video
+              key="cv-video"
+              ref={videoRef}
+              className="cv-video"
+              playsInline
+              preload="metadata"
+              poster={poster || thumbUrl(activeId)}
+              src={streamUrl(activeId)}
+              onError={handleError}
+              onPlay={() => { setError(false); gestureRef.current = true; applyAudio(); syncAudio(true); }}
+              onTimeUpdate={handleTimeUpdate}
+              onSeeked={handleSeeked}
+              onLoadedMetadata={handleLoadedMetadata}
+              onPause={() => { reportProgress(); audioRef.current?.pause(); }}
+              onEnded={handleEnded}
+              onWaiting={handleWaiting}
+              onPlaying={handlePlaying}
+              onRateChange={e => { setRateState(e.target.playbackRate); syncAudio(true); }}
+            />
+          </div>
+          <PlayerControls compact={mode === "mini"} />
+          {audioTrack && (
+            <audio
+              key={`cv-audio-${audioTrack.id}`}
+              ref={audioRef}
+              preload="auto"
+              src={audioTrackUrl(audioTrack.id)}
+              onLoadedMetadata={() => { applyAudio(); syncAudio(true); }}
+              onError={handleAudioError}
+            />
+          )}
         </div>
       )}
     </PlayerCtx.Provider>
