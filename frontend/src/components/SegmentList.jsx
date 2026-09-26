@@ -19,7 +19,8 @@ export default function SegmentList({
   const [form,       setForm]       = useState(emptyForm);
   const [formErr,    setFormErr]    = useState(null);
   const [editingId,  setEditingId]  = useState(null);
-  const [editTitle,  setEditTitle]  = useState("");
+  const [edit,       setEdit]       = useState(emptyForm);
+  const [editErr,    setEditErr]    = useState(null);
   const [confirmId,  setConfirmId]  = useState(null);
   const [taggingId,  setTaggingId]  = useState(null);
 
@@ -27,31 +28,50 @@ export default function SegmentList({
     if (confirmId == null && editingId == null && !showForm) return;
     function onKey(e) {
       if (e.key !== "Escape") return;
-      setConfirmId(null); setEditingId(null); setTaggingId(null);
+      setConfirmId(null); setEditingId(null); setEditErr(null); setTaggingId(null);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [confirmId, editingId, showForm]);
 
   function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
+  function setEd(k, v) { setEdit(e => ({ ...e, [k]: v })); }
+
+  /* Shared by the new-segment form and the row editor: times have to parse,
+     the range has to run forwards and it has to start inside the video. */
+  function readTimes(start, end) {
+    const a = parseTime(start), b = parseTime(end);
+    if (a == null || b == null)    return { error: "Times look like 12:30 or 1:02:09." };
+    if (b <= a)                    return { error: "End must come after start." };
+    if (duration && a >= duration) return { error: "Start is past the end of the video." };
+    return { start: a, end: Math.min(b, duration || b) };
+  }
 
   async function submit(e) {
     e.preventDefault();
-    const start = parseTime(form.start);
-    const end   = parseTime(form.end);
-    if (start == null || end == null) { setFormErr("Times look like 12:30 or 1:02:09."); return; }
-    if (end <= start)                 { setFormErr("End must come after start."); return; }
-    if (duration && start >= duration) { setFormErr("Start is past the end of the video."); return; }
+    const times = readTimes(form.start, form.end);
+    if (times.error) { setFormErr(times.error); return; }
     setFormErr(null);
-    const ok = await onCreate?.({ start_secs: start, end_secs: Math.min(end, duration || end), title: form.title.trim() || null, tags: form.tags.map(t => t.name) });
+    const ok = await onCreate?.({ start_secs: times.start, end_secs: times.end, title: form.title.trim() || null, tags: form.tags.map(t => t.name) });
     if (ok !== false) { setForm(emptyForm()); setShowForm(false); }
   }
 
-  function startEdit(s) { setEditingId(s.id); setEditTitle(s.title || ""); }
+  function startEdit(s) {
+    setEditingId(s.id);
+    setEditErr(null);
+    setEdit({ start: fmtTime(s.start_secs), end: fmtTime(s.end_secs), title: s.title || "", tags: [] });
+  }
   async function saveEdit(s) {
-    const title = editTitle.trim() || null;
+    const times = readTimes(edit.start, edit.end);
+    if (times.error) { setEditErr(times.error); return; }
+    const title = edit.title.trim() || null;
+    const fields = {};
+    if (times.start !== s.start_secs) fields.start_secs = times.start;
+    if (times.end   !== s.end_secs)   fields.end_secs   = times.end;
+    if (title !== (s.title || null))  fields.title      = title;
     setEditingId(null);
-    if (title !== (s.title || null)) await onUpdate?.(s.id, { title });
+    setEditErr(null);
+    if (Object.keys(fields).length) await onUpdate?.(s.id, fields);
   }
 
   const sorted = [...segments].sort((a, b) => a.start_secs - b.start_secs);
@@ -132,31 +152,62 @@ export default function SegmentList({
             style={color ? { "--seg-color": color } : undefined}
             onClick={() => onSelect?.(s.id)}
           >
-            <button type="button" className="seg-time" onClick={e => { e.stopPropagation(); onSeek?.(s.start_secs); }} title="Play from here">
-              <Icon name="play" size={11} />
-              <span>{fmtTime(s.start_secs)}</span>
-              <span className="seg-time-sep">→</span>
-              <span>{fmtTime(s.end_secs)}</span>
-            </button>
+            {editingId === s.id ? (
+              <form
+                className="seg-edit"
+                onClick={e => e.stopPropagation()}
+                onSubmit={e => { e.preventDefault(); saveEdit(s); }}
+              >
+                <div className="seg-edit-fields">
+                  <span className="seg-time-field">
+                    <input
+                      className="seg-edit-time"
+                      value={edit.start}
+                      autoFocus
+                      aria-label="Start"
+                      onChange={e => setEd("start", e.target.value)}
+                    />
+                    <button type="button" className="seg-now" onClick={() => setEd("start", fmtTime(time))} title="Use the current position">now</button>
+                  </span>
+                  <span className="seg-time-sep">→</span>
+                  <span className="seg-time-field">
+                    <input
+                      className="seg-edit-time"
+                      value={edit.end}
+                      aria-label="End"
+                      onChange={e => setEd("end", e.target.value)}
+                    />
+                    <button type="button" className="seg-now" onClick={() => setEd("end", fmtTime(time))} title="Use the current position">now</button>
+                  </span>
+                  <input
+                    className="seg-title-input"
+                    value={edit.title}
+                    placeholder="What happens here"
+                    aria-label="Title"
+                    onChange={e => setEd("title", e.target.value)}
+                  />
+                  <button type="submit" className="btn-primary btn-export" disabled={busy}>Save</button>
+                  <button type="button" className="icon-btn" onClick={() => { setEditingId(null); setEditErr(null); }} title="Cancel (Esc)">
+                    <Icon name="close" size={14} />
+                  </button>
+                </div>
+                {editErr && <div className="msg show err seg-edit-err">{editErr}</div>}
+              </form>
+            ) : (
+              <>
+              <button type="button" className="seg-time" onClick={e => { e.stopPropagation(); onSeek?.(s.start_secs); }} title="Play from here">
+                <Icon name="play" size={11} />
+                <span>{fmtTime(s.start_secs)}</span>
+                <span className="seg-time-sep">→</span>
+                <span>{fmtTime(s.end_secs)}</span>
+              </button>
 
-            <div className="seg-main">
-              {editingId === s.id ? (
-                <input
-                  className="seg-title-input"
-                  value={editTitle}
-                  autoFocus
-                  onChange={e => setEditTitle(e.target.value)}
-                  onBlur={() => saveEdit(s)}
-                  onKeyDown={e => { if (e.key === "Enter") saveEdit(s); }}
-                  onClick={e => e.stopPropagation()}
-                />
-              ) : (
-                <div className="seg-title" onDoubleClick={() => startEdit(s)} title="Double-click to rename">
+              <div className="seg-main">
+                <div className="seg-title" onDoubleClick={() => startEdit(s)} title="Double-click to edit">
                   {s.title || <span className="seg-untitled">Untitled</span>}
                   {s.source === "chapter" && <span className="seg-source" title="Read from the file's chapters">chapter</span>}
                 </div>
-              )}
-              <div className="seg-tags" onClick={e => e.stopPropagation()}>
+                <div className="seg-tags" onClick={e => e.stopPropagation()}>
                 {(s.tags || []).map(t => (
                   <TagChip key={t.id} tag={t} size="sm" link onRemove={() => onRemoveTag?.(s.id, t.id)} title={t.source === "rule" ? `${t.name} (from a keyword rule)` : undefined} />
                 ))}
@@ -173,11 +224,11 @@ export default function SegmentList({
                     <Icon name="plus" size={11} /> tag
                   </button>
                 )}
+                </div>
               </div>
-            </div>
 
-            <div className="seg-row-actions" onClick={e => e.stopPropagation()}>
-              <button className="icon-btn" onClick={() => startEdit(s)} title="Rename"><Icon name="pencil" size={14} /></button>
+              <div className="seg-row-actions" onClick={e => e.stopPropagation()}>
+                <button className="icon-btn" onClick={() => startEdit(s)} title="Edit times and title"><Icon name="pencil" size={14} /></button>
               {confirmId === s.id ? (
                 <>
                   <button className="btn-danger btn-export" autoFocus onClick={async () => { setConfirmId(null); await onDelete?.(s.id); }}>Delete</button>
@@ -186,7 +237,9 @@ export default function SegmentList({
               ) : (
                 <button className="icon-btn icon-btn-danger" onClick={() => setConfirmId(s.id)} title="Delete segment"><Icon name="trash" size={14} /></button>
               )}
-            </div>
+              </div>
+              </>
+            )}
           </div>
         );
       })}

@@ -65,6 +65,15 @@ Then the tagging pair, which people mix up:
 - **A tag** is a word the user invents. It exists once, library-wide, with a
   colour and optional keyword rules.
 
+`TagPicker` is the one way tags are attached anywhere in the UI. It is a
+hand-rolled combobox, not a `<datalist>`: the list has to rank near-misses
+(substring, then subsequence, then two edits) so a typo offers the tag that was
+meant, and creating a word takes picking the "create" row, which is what keeps
+the library from filling with near-duplicates. It also swallows Enter, since it
+usually sits inside a form that would otherwise submit half-filled. The
+library's tag filter is `TagSelect` in the header; its selection lives in
+`App.jsx` because the control and the grid it narrows are in different trees.
+
 A tag attaches to a segment (`segment_tags`) or to a whole video (`video_tags`),
 many-to-many. Each link records `source`, `manual` or `rule`, so a keyword rule
 never silently overwrites a human decision. Deleting a tag leaves the segments;
