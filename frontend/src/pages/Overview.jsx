@@ -5,13 +5,11 @@ import { useRememberedPage } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
-import TagChip, { tagStyle } from "../components/TagChip";
-import Icon from "../components/Icon";
+import TagChip from "../components/TagChip";
 
-export default function Overview({ videos, playlists, tags = [], query, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
+export default function Overview({ videos, playlists, tags = [], tagIds = [], onTagIds, query, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
   const [browseSort, setBrowseSort] = useState("upload");
   const [browseDir,  setBrowseDir]  = useState("desc");
-  const [tagIds,     setTagIds]     = useState([]);   // selected tag filter, AND across ids
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
 
   const q = (query || "").trim();
@@ -23,10 +21,9 @@ export default function Overview({ videos, playlists, tags = [], query, onAddToP
     return sortVideos(filtered, q ? "upload" : browseSort, q ? "desc" : browseDir, pins);
   }, [videos, browseSort, browseDir, q, tagIds, pins]);
 
-  const usedTags = useMemo(() => tags.filter(t => t.video_count > 0), [tags]);
-  function toggleTag(id) {
-    setTagIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
-  }
+  // What the header's tag menu has switched on, in the order it was picked.
+  const activeTags = tagIds.map(id => tags.find(t => t.id === id)).filter(Boolean);
+  function dropTag(id) { onTagIds?.(ids => ids.filter(x => x !== id)); }
 
   const pageCount = Math.max(1, Math.ceil(browse.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
@@ -43,6 +40,11 @@ export default function Overview({ videos, playlists, tags = [], query, onAddToP
             ? `${browse.length.toLocaleString()} for “${q}”`
             : browse.length.toLocaleString()}
         </span>
+        {activeTags.length > 0 && (
+          <span className="page-head-tags">
+            {activeTags.map(t => <TagChip key={t.id} tag={t} size="sm" onRemove={() => dropTag(t.id)} />)}
+          </span>
+        )}
         <div className="page-head-spacer" />
         {!q && (
           <div className="sort-controls">
@@ -50,33 +52,6 @@ export default function Overview({ videos, playlists, tags = [], query, onAddToP
           </div>
         )}
       </div>
-      {usedTags.length > 0 && (
-        <div className="tag-filter">
-          <Icon name="tag" size={13} className="tag-filter-icon" />
-          {usedTags.map(t => {
-            const on = tagIds.includes(t.id);
-            return (
-              <button
-                key={t.id}
-                type="button"
-                className={`tag-chip tag-chip-sm tag-filter-chip${on ? " is-on" : ""}`}
-                style={on ? tagStyle(t.color) : undefined}
-                onClick={() => toggleTag(t.id)}
-                title={on ? `Stop filtering by ${t.name}` : `Only videos tagged ${t.name}`}
-              >
-                <span className="tag-chip-dot" style={{ background: t.color }} />
-                <span className="tag-chip-name">{t.name}</span>
-                <span className="tag-filter-count">{t.video_count}</span>
-              </button>
-            );
-          })}
-          {tagIds.length > 0 && (
-            <button type="button" className="btn-ghost tag-filter-clear" onClick={() => setTagIds([])}>
-              <Icon name="close" size={12} /> clear
-            </button>
-          )}
-        </div>
-      )}
       {browse.length === 0 ? (
         <div className="empty">
           {q ? "No matches." : tagIds.length ? (

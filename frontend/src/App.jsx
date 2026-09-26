@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Routes, Route, NavLink } from "react-router-dom";
+import { Routes, Route, NavLink, useLocation } from "react-router-dom";
 import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, shutdownApp } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
 import PlayerProvider  from "./player/PlayerProvider";
 import SettingsModal   from "./components/SettingsModal";
+import TagSelect       from "./components/TagSelect";
 import AddVideoModal   from "./components/AddVideoModal";
 import Overview        from "./pages/Overview";
 import ArtistPage      from "./pages/ArtistPage";
@@ -30,9 +31,13 @@ export default function App() {
   const [ignored, setIgnored] = useState([]);
   const [playlists, setPlaylists] = useState([]);
   const [tags,      setTags]      = useState([]);
+  // The tag filter belongs to the library grid but its control sits in the
+  // header next to search, so the selection lives up here.
+  const [tagIds,    setTagIds]    = useState([]);
   const [confirmQuit, setConfirmQuit] = useState(false);
   const [quit,        setQuit]        = useState(false);
   const searchRef = useRef(null);
+  const onLibrary = useLocation().pathname === "/";
   const quitRef   = useRef(null);
 
   // "/" and ⌘/Ctrl-K jump to search from anywhere, Esc drops focus.
@@ -155,6 +160,7 @@ export default function App() {
           <span className="brand-mark"><Icon name="vault" size={17} /></span>
           <h1>ChannelVault</h1>
         </div>
+        <div className="header-center">
         <div className="header-search-wrap">
           <Icon name="search" size={15} className="header-search-icon" />
           <input
@@ -172,6 +178,15 @@ export default function App() {
           ) : (
             <kbd className="search-kbd">/</kbd>
           )}
+        </div>
+        {onLibrary && (
+          <TagSelect
+            tags={tags}
+            selected={tagIds}
+            onToggle={id => setTagIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id])}
+            onClear={() => setTagIds([])}
+          />
+        )}
         </div>
         <div className="header-right">
           <span className="header-count" title="Videos in vault">{videos.length.toLocaleString()}</span>
@@ -235,6 +250,8 @@ export default function App() {
                   videos={videos}
                   playlists={playlists}
                   tags={tags}
+                  tagIds={tagIds}
+                  onTagIds={setTagIds}
                   query={query}
                   onAddToPlaylist={handleAddToPlaylist}
                   onDelete={handleDelete}

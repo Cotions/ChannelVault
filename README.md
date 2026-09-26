@@ -145,7 +145,7 @@ A rescan never overwrites a video that already has segments, so your edits are s
 
 ### Marking a part yourself
 
-On any video page, every segment is drawn into the player's own scrub bar in its tag's colour: hover to read the name and the time, click to jump there. Under the player, **New segment** opens a form where the **now** buttons copy the current playback position, so you can mark a range while watching, and the list below it edits and retags the ones you have.
+On any video page, every segment is drawn into the player's own scrub bar in its tag's colour: hover to read the name and the time, click to jump there. Under the player, **New segment** opens a form where the **now** buttons copy the current playback position, so you can mark a range while watching. The pencil on any row reopens the same fields, so a chapter read from the file can have its start, end or title nudged without being deleted and remade. Tag fields search what you already have and only invent a word when you pick **Create** on purpose, so a typo lands on the tag you meant.
 
 ### Keyword rules
 
@@ -155,7 +155,7 @@ Give a tag some keywords and any chapter or video title containing one gets that
 
 This is the point of the whole thing. Open a tag and press **Play segments**: the player runs every stretch carrying that tag, one after another, switching video files by itself. Shuffle, loop, skip forward and back. It keeps going in the mini player while you browse, so you never have to hunt for the good parts again.
 
-You can also filter the home grid by tag chips, search by tag name, and jump straight to a timestamp from a tag's page.
+You can also narrow the home grid with the **Tags** menu beside the search field — pick several and only the videos carrying all of them stay — search by tag name, and jump straight to a timestamp from a tag's page.
 
 ---
 
