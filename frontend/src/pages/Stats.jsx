@@ -67,6 +67,23 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
     .filter(v => v.watch_count > 0)
     .reduce((best, v) => (best == null || v.watch_count > best.watch_count ? v : best), null);
 
+  // What is left of the channel on YouTube, as of each video's last fetch.
+  // Geo-blocked and age-gated videos are still up for the public, just gated.
+  // Unfetched videos (no availability yet) count toward none of these.
+  const availCount = (...states) => scopeVideos.filter(v => states.includes(v.availability)).length;
+  const publicCount    = availCount("available", "geo", "age");
+  const deletedCount   = availCount("deleted", "unavailable");
+  const privateCount   = availCount("private");
+  const membersCount   = availCount("members");
+  const uncheckedCount = scopeVideos.filter(v => !v.availability).length;
+  const youtubeStats = artist ? [
+    { num: fmt(publicCount),  label: uncheckedCount ? `still public · ${uncheckedCount} unchecked` : "still public" },
+    { num: fmt(deletedCount), label: "deleted", color: "#ef9a9a" },
+    { num: fmt(privateCount), label: "private", color: "#ffd591" },
+    // Most channels have none; an always-zero tile would just push the grid to a third row.
+    ...(membersCount ? [{ num: fmt(membersCount), label: "members only", color: "#90caf9" }] : []),
+  ] : [];
+
   const heroStats = [
     // Row 1: count, breadth, coverage, queue
     { num: fmt(scopeVideos.length),                              label: "videos vaulted" },
@@ -78,6 +95,7 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
     { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < scopeVideos.length ? `on disk · ${withSize.length}/${scopeVideos.length} known` : "on disk" },
     { num: fmtHours(totalSecs),                                  label: "of footage" },
     ...(artist ? [] : [{ num: fmt(ignored.length),               label: "ignored", color: "#ef9a9a" }]),
+    ...youtubeStats,
   ];
 
   const title    = artist ? `${artist} · Stats` : "Stats";
