@@ -799,9 +799,9 @@ for _rule in (
 def spa_assets(filename):
     return send_from_directory(os.path.join(STATIC_DIR, "assets"), filename)
 
-@app.get("/vite.svg")
+@app.get("/favicon.svg")
 def spa_icon():
-    return send_from_directory(STATIC_DIR, "vite.svg")
+    return send_from_directory(STATIC_DIR, "favicon.svg")
 
 @app.get("/config")
 def get_config():
