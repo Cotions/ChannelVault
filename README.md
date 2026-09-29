@@ -109,7 +109,7 @@ CHANNELVAULT_CONFIG=/tmp/cv.json CHANNELVAULT_PORT=3399 ./run.sh
 
 Open the dashboard, click **Browse…**, select your downloads folder, then click **Save**.
 
-Click **Scan Now** to index existing files. The watcher picks up new downloads automatically (including subfolders).
+Click **Scan Now** to index existing files. The watcher picks up new downloads automatically (including subfolders). A download that lands directly in the library root is moved into `<library>/<artist>/` (from its embedded artist tag) and tracked there; files with no artist tag, or already tracked elsewhere, stay where they are.
 
 ---
 

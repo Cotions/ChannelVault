@@ -278,7 +278,7 @@ export default function App() {
             <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
             <Route
               path="/artist/:name"
-              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} onScanDone={load} />}
             />
             <Route
               path="/video/:id"

@@ -5,14 +5,14 @@ import { sortVideos, videoMatches } from "../lib/sort";
 import { useSortPins } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
 import { useRememberedPage } from "../lib/usePagination";
-import { getCreator, artistThumbUrl } from "../lib/api";
+import { getCreator, artistThumbUrl, scan } from "../lib/api";
 import { fmt, safeUrl } from "../lib/fmt";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 
-export default function ArtistPage({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist }) {
+export default function ArtistPage({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = decodeURIComponent(name);
@@ -20,12 +20,34 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");
   const [creator, setCreator] = useState(null);
+  const [scanMsg, setScanMsg] = useState(null);   // null = idle
+  const [scanning, setScanning] = useState(false);
 
   useEffect(() => {
     let alive = true;
     getCreator(artist).then(c => { if (alive) setCreator(c); });
     return () => { alive = false; };
   }, [artist]);
+
+  // Rescan only this artist's folders instead of the whole library.
+  async function handleScan() {
+    setScanning(true);
+    setScanMsg("Scanning…");
+    try {
+      await scan(evt => {
+        if (evt.type === "start")    setScanMsg(evt.total ? `Scanning 0/${evt.total}…` : "No files found");
+        if (evt.type === "progress") setScanMsg(`Scanning ${evt.done}/${evt.total}…`);
+        if (evt.type === "done") {
+          setScanMsg(evt.total ? `${evt.total} file${evt.total !== 1 ? "s" : ""} scanned${evt.errors ? `, ${evt.errors} error${evt.errors !== 1 ? "s" : ""}` : ""}` : "No files found");
+          onScanDone?.();
+        }
+      }, artist);
+    } catch {
+      setScanMsg("Scan failed");
+    }
+    setScanning(false);
+    setTimeout(() => setScanMsg(null), 4000);
+  }
 
   function switchLayout(next) {
     setLayout(next);
@@ -65,6 +87,14 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
         {artistVideos.length > 0 && (
           <Link to={`/artist/${encodeURIComponent(artist)}/stats`} className="btn-secondary btn-export">Stats</Link>
         )}
+        <button
+          className="btn-secondary btn-export"
+          onClick={handleScan}
+          disabled={scanning}
+          title="Scan this artist's folders for new files"
+        >
+          <Icon name="refresh" size={13} />{scanMsg || "Scan folder"}
+        </button>
         {artistVideos.length > 1 && (
           <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />
         )}

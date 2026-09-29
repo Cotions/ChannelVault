@@ -732,7 +732,33 @@ def _handle_new_path(path):
     # Download may still be settling / renamed again during the wait.
     if not os.path.isfile(path):
         return
+    # A download that lands straight in the library root gets filed into its
+    # artist folder, like "Organize loose files" would. Anything deeper, or a
+    # file we can't file (no artist tag, already tracked elsewhere, name clash),
+    # is tracked where it sits.
+    watch_dir = load_config().get("watch_directory", DEFAULT_WATCH)
+    if os.path.realpath(os.path.dirname(path)) == os.path.realpath(watch_dir) \
+            and not _tracked_elsewhere(path):
+        r = _file_into_library(path, watch_dir)
+        if r["status"] == "filed":
+            clear_media_index()
+            print(f"[watcher] Filed {os.path.basename(path)} into {os.path.dirname(r['dest'])}")
+            return
     process_video_file(path)
+
+
+def _tracked_elsewhere(path):
+    """True when this file's video is already tracked at a different path that still exists."""
+    vid = _video_id_from_url(_read_meta(path).get("url"))
+    if not vid:
+        return False
+    conn = get_conn()
+    row  = conn.execute(
+        "SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'", (vid,)
+    ).fetchone()
+    conn.close()
+    tracked = resolve_media_path(row["file_path"]) if row else None
+    return bool(tracked and os.path.abspath(tracked) != os.path.abspath(path))
 
 
 class VideoDownloadHandler(FileSystemEventHandler):
@@ -932,21 +958,81 @@ def browse_file():
         pass
     return jsonify({"ok": False, "file": None})
 
-@app.post("/scan")
-def scan():
-    cfg       = load_config()
-    directory = cfg.get("watch_directory", DEFAULT_WATCH)
-    if not os.path.isdir(directory):
-        return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
-
+def _walk_videos(directory):
+    """Every video file under directory, skipping .vaultIgnore'd subtrees and temp files."""
     files = []
     for root_dir, dirs, filenames in os.walk(directory):
         if os.path.exists(os.path.join(root_dir, ".vaultIgnore")):
             dirs.clear()
             continue
         for f in filenames:
-            if f.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")) and not _is_temp_file(f):
+            if f.lower().endswith(_VIDEO_EXTS) and not _is_temp_file(f):
                 files.append(os.path.join(root_dir, f))
+    return files
+
+
+def _artist_scan_files(artist):
+    """Files that may belong to one artist: everything under <root>/<artist>/ in
+    any media root, plus videos tagged with this artist that sit (non-recursively)
+    next to the files we already track for them."""
+    files, seen = [], set()
+
+    def add(fp):
+        key = os.path.realpath(fp)
+        if key not in seen:
+            seen.add(key)
+            files.append(fp)
+
+    for root in get_media_roots():
+        folder = os.path.join(root, _safe_dirname(artist))
+        if os.path.isdir(folder):
+            for fp in _walk_videos(folder):
+                add(fp)
+
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT channel_name, file_path FROM downloaded_videos WHERE file_path IS NOT NULL AND channel_name LIKE ?",
+        (f"%{artist}%",),
+    ).fetchall()
+    conn.close()
+    dirs = set()
+    for row in rows:
+        if artist not in _artist_names(row["channel_name"]):
+            continue
+        real = resolve_media_path(row["file_path"])
+        if real:
+            dirs.add(os.path.dirname(real))
+
+    # These folders can be shared (a loose-files root), so only take files whose
+    # artist tag credits this artist.
+    for d in dirs:
+        if _is_ignored(os.path.join(d, "_")):
+            continue
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for f in names:
+            fp = os.path.join(d, f)
+            if os.path.realpath(fp) in seen or not f.lower().endswith(_VIDEO_EXTS) \
+                    or _is_temp_file(f) or not os.path.isfile(fp):
+                continue
+            if artist in _artist_names(_read_meta(fp).get("artist")):
+                add(fp)
+    return files
+
+
+@app.post("/scan")
+def scan():
+    artist = (request.args.get("artist") or "").strip()
+    if artist:
+        files = _artist_scan_files(artist)
+    else:
+        cfg       = load_config()
+        directory = cfg.get("watch_directory", DEFAULT_WATCH)
+        if not os.path.isdir(directory):
+            return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
+        files = _walk_videos(directory)
 
     BATCH = 10
 
@@ -1997,6 +2083,58 @@ def _transfer(src, dest, mode):
                 pass
 
 
+def _file_into_library(src, watch_dir, mode="move"):
+    """Move (or copy) one file into <watch>/<artist>/, verify it landed, then track it.
+    Returns a per-file result dict; never raises."""
+    r = {"file": src, "dest": None, "moved": False, "verified": False,
+         "added": False, "video_id": None, "status": None}
+    if not os.path.isfile(src):
+        r["status"] = "missing-source"; return r
+
+    artist = (_read_meta(src).get("artist") or "").strip()
+    if not artist:
+        r["status"] = "no-artist"; return r
+
+    dest_dir = os.path.join(watch_dir, _safe_dirname(artist))
+    dest     = os.path.join(dest_dir, os.path.basename(src))
+    r["dest"] = dest
+
+    if os.path.abspath(dest) == os.path.abspath(src):
+        r["verified"] = True              # already in the right folder
+    elif os.path.exists(dest):
+        r["status"] = "dest-exists"; return r
+    else:
+        try:
+            os.makedirs(dest_dir, exist_ok=True)
+            _transfer(src, dest, mode)
+            r["moved"] = True
+        except Exception as e:
+            r["status"] = f"{mode}-failed: {e}"; return r
+        # Verify the file actually landed BEFORE writing to the DB.
+        r["verified"] = os.path.isfile(dest)
+        if not r["verified"]:
+            r["status"] = "verify-failed"; return r
+
+    pr  = process_video_file(dest)
+    vid = pr.get("video_id")
+    r["video_id"] = vid
+    if pr["status"] in ("skipped",) or (pr["status"] or "").startswith("error"):
+        r["status"] = pr["status"]; return r
+    # process_video_file won't overwrite the path of an already-'downloaded'
+    # row, so force file_path to the verified new location here.
+    if vid:
+        with _db_lock:
+            conn = get_conn()
+            conn.execute(
+                "UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (dest, vid)
+            )
+            conn.commit()
+            conn.close()
+    r["added"]  = True
+    r["status"] = "filed"
+    return r
+
+
 @app.get("/organize/preview")
 def organize_preview():
     cfg       = load_config()
@@ -2064,55 +2202,7 @@ def organize_apply():
     else:
         targets = _candidate_files(source, os.path.abspath(source) != os.path.abspath(watch_dir))
 
-    results = []
-    for src in targets:
-        r = {"file": src, "dest": None, "moved": False, "verified": False,
-             "added": False, "video_id": None, "status": None}
-        if not os.path.isfile(src):
-            r["status"] = "missing-source"; results.append(r); continue
-
-        artist = (_read_meta(src).get("artist") or "").strip()
-        if not artist:
-            r["status"] = "no-artist"; results.append(r); continue
-
-        dest_dir = os.path.join(watch_dir, _safe_dirname(artist))
-        dest     = os.path.join(dest_dir, os.path.basename(src))
-        r["dest"] = dest
-
-        if os.path.abspath(dest) == os.path.abspath(src):
-            r["verified"] = True              # already in the right folder
-        elif os.path.exists(dest):
-            r["status"] = "dest-exists"; results.append(r); continue
-        else:
-            try:
-                os.makedirs(dest_dir, exist_ok=True)
-                _transfer(src, dest, mode)
-                r["moved"] = True
-            except Exception as e:
-                r["status"] = f"{mode}-failed: {e}"; results.append(r); continue
-            # Verify the file actually landed BEFORE writing to the DB.
-            r["verified"] = os.path.isfile(dest)
-            if not r["verified"]:
-                r["status"] = "verify-failed"; results.append(r); continue
-
-        pr  = process_video_file(dest)
-        vid = pr.get("video_id")
-        r["video_id"] = vid
-        if pr["status"] in ("skipped",) or (pr["status"] or "").startswith("error"):
-            r["status"] = pr["status"]; results.append(r); continue
-        # process_video_file won't overwrite the path of an already-'downloaded'
-        # row, so force file_path to the verified new location here.
-        if vid:
-            with _db_lock:
-                conn = get_conn()
-                cur  = conn.execute(
-                    "UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (dest, vid)
-                )
-                conn.commit()
-                conn.close()
-        r["added"]  = True
-        r["status"] = "filed"
-        results.append(r)
+    results = [_file_into_library(src, watch_dir, mode) for src in targets]
 
     clear_media_index()
     return jsonify({"ok": True, "results": results})

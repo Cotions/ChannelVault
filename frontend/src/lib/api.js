@@ -137,7 +137,9 @@ export function browseAudioFile()            { return get("/browse-file?kind=aud
 
 export function shutdownApp()      { return post("/shutdown", {}); }
 
-export function scan(onEvent) { return stream("/scan", onEvent); }
+export function scan(onEvent, artist) {
+  return stream(artist ? `/scan?artist=${encodeURIComponent(artist)}` : "/scan", onEvent);
+}
 
 // Server-sent progress: POST, then hand each `data:` JSON line to onEvent.
 export async function stream(path, onEvent) {
