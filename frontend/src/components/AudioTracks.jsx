@@ -17,7 +17,7 @@ const NUDGE = 0.1;   // one tap of the sync buttons, in seconds
    the mini player and from fullscreen, which a row on this page cannot. This is
    the library side of it: one toolbar button carrying the count, and a panel
    that attaches, renames, detaches and nudges the sound against the picture. */
-export default function AudioTracks({ videoId, duration }) {
+export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
   const { audioTrack, selectAudioTrack, setAudioTracks } = usePlayer();
   const [tracks,   setTracks]   = useState([]);
   const [suggest,  setSuggest]  = useState(null);   // null = not looked yet
@@ -107,7 +107,13 @@ export default function AudioTracks({ videoId, duration }) {
       await load();
       setSuggest(s => (s || []).filter(x => x.file_path !== filePath));
       selectAudioTrack(r.track);
-      flash(`Added “${r.track.label}” — switch to it in the player`);
+      // The file was its own library entry; as a soundtrack it no longer is.
+      if (r.hidden?.length) {
+        onLibraryChanged?.();
+        flash(`Added “${r.track.label}” — its own library entry is now hidden`);
+      } else {
+        flash(`Added “${r.track.label}” — switch to it in the player`);
+      }
     } catch { flash("Could not add — the backend did not answer", true); } finally {
       setBusy(false);
       setAdding(null);
@@ -125,7 +131,8 @@ export default function AudioTracks({ videoId, duration }) {
   async function detach(track) {
     setConfirmId(null);
     if (audioTrack?.id === track.id) selectAudioTrack(null);
-    await deleteAudioTrack(track.id);
+    const r = await deleteAudioTrack(track.id);
+    if (r?.restored?.length) onLibraryChanged?.();
     await load();
     setSuggest(null);
   }

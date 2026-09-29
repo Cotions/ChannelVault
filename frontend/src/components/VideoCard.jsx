@@ -7,6 +7,8 @@ import { fmt, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import Icon from "./Icon";
 import TagChip from "./TagChip";
 
+const AUDIO_FILE_RE = /\.(mp3|m4a|aac|opus|ogg|oga|flac|wav|weba)$/i;
+
 export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid" }) {
   const [thumbOk,    setThumbOk]    = useState(true);
   const [confirming, setConfirming] = useState(false);
@@ -97,6 +99,8 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
     private: "Private", deleted: "Deleted", members: "Members",
     geo: "Geo-blocked", age: "Age-gated", unavailable: "Unavailable",
   };
+  // Kept for the sound only: plays over its thumbnail, so say so on the card.
+  const audioOnly  = AUDIO_FILE_RE.test(video.file_path || "");
   const dead       = video.availability && video.availability !== "available";
   const availLabel = dead ? (AVAIL_LABELS[video.availability] || "Unavailable") : null;
 
@@ -123,6 +127,11 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         {video.watch_count > 0 && (
           <span className="watched-badge" title={`Watched ${video.watch_count}×`}>
             <Icon name="check" size={11} />{video.watch_count > 1 ? video.watch_count : ""}
+          </span>
+        )}
+        {audioOnly && (
+          <span className="audio-badge" title="Audio only — plays over the thumbnail">
+            <Icon name="volume" size={11} />Audio
           </span>
         )}
         {dur && <span className="dur-badge">{dur}</span>}

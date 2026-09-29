@@ -602,11 +602,73 @@ def _read_chapters(file_path):
     return result
 
 
+_COVER_EXTS = {"mjpeg": ".jpg", "png": ".png", "webp": ".webp"}
+
+
+def _extract_cover(file_path, dest_base):
+    """Write the file's embedded cover art (yt-dlp --embed-thumbnail) to
+    dest_base + its own extension. Returns the written path, or None.
+
+    Only a stream flagged as attached picture counts: in a video file the first
+    video stream is the picture itself, not its thumbnail."""
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", file_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        streams = (json.loads(out.stdout or "{}")).get("streams") or []
+    except Exception:
+        return None
+    for st in streams:
+        ext = _COVER_EXTS.get(st.get("codec_name"))
+        if not ext or not (st.get("disposition") or {}).get("attached_pic"):
+            continue
+        dest = dest_base + ext
+        try:
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", file_path, "-map", f"0:{st['index']}",
+                 "-frames:v", "1", "-c", "copy", dest],
+                capture_output=True, timeout=30, check=True,
+            )
+        except Exception:
+            return None
+        return dest if os.path.isfile(dest) and os.path.getsize(dest) > 0 else None
+    return None
+
+
+def _is_attached_track(file_path, conn=None):
+    """True when this audio file is already an alternate soundtrack of some video.
+    Those stay tracks; they must not also turn up as library entries."""
+    real = os.path.realpath(file_path)
+    own  = conn is None
+    conn = conn or get_conn()
+    rows = conn.execute("SELECT file_path FROM audio_tracks").fetchall()
+    if own:
+        conn.close()
+    return any(os.path.realpath(resolve_media_path(r["file_path"]) or r["file_path"]) == real
+               for r in rows)
+
+
+def _entries_for_file(conn, path, status):
+    """Audio-only library rows (with this status) whose file is path."""
+    real = os.path.realpath(path)
+    rows = conn.execute(
+        "SELECT video_id, title, file_path FROM downloaded_videos WHERE status = ? AND file_path IS NOT NULL",
+        (status,),
+    ).fetchall()
+    return [r for r in rows
+            if r["file_path"].lower().endswith(_AUDIO_EXTS)
+            and os.path.realpath(resolve_media_path(r["file_path"]) or r["file_path"]) == real]
+
+
 def process_video_file(file_path):
     result = {"file": file_path, "status": None, "title": None, "video_id": None}
     # File can vanish between discovery and parsing (download still finishing,
     # temp file renamed). Skip quietly instead of logging a scary error.
     if not os.path.isfile(file_path):
+        result["status"] = "skipped"
+        return result
+    if file_path.lower().endswith(_AUDIO_EXTS) and _is_attached_track(file_path):
         result["status"] = "skipped"
         return result
     try:
@@ -674,18 +736,19 @@ def process_video_file(file_path):
                 conn.close()
         except Exception as e:
             print(f"[segments] chapter import failed for {video_id}: {e}")
-        # Copy thumbnail into each collaborating artist's folder
-        base = os.path.splitext(file_path)[0]
+        # Copy thumbnail into each collaborating artist's folder. No sidecar
+        # image (audio downloads usually embed theirs) → pull the embedded one.
+        src = _sidecar_thumb(file_path)
         for name in _artist_names(artist):
             artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(name))
             os.makedirs(artist_dir, exist_ok=True)
-            for ext in (".jpg", ".jpeg", ".webp", ".png"):
-                src = base + ext
-                if os.path.exists(src):
-                    dest = os.path.join(artist_dir, f"{video_id}{ext}")
-                    if not os.path.exists(dest):
-                        shutil.copy2(src, dest)
-                    break
+            dest_base = os.path.join(artist_dir, video_id)
+            if any(os.path.exists(dest_base + e) for e in (".jpg", ".jpeg", ".webp", ".png")):
+                continue
+            if src:
+                shutil.copy2(src, dest_base + os.path.splitext(src)[1])
+            else:
+                src = _extract_cover(file_path, dest_base)
     except Exception as e:
         result["status"] = f"error: {e}"
         print(f"[tracker] Error parsing {file_path}: {e}")
@@ -721,10 +784,14 @@ def _is_temp_file(path):
 
 
 _VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".avi", ".mov")
+_AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".oga", ".flac", ".wav", ".weba")
+# What becomes a library entry. An audio-only download (sound worth keeping,
+# picture not) is tracked like a video and plays over its thumbnail.
+_LIBRARY_EXTS = _VIDEO_EXTS + _AUDIO_EXTS
 
 
 def _handle_new_path(path):
-    if not path.lower().endswith(_VIDEO_EXTS):
+    if not path.lower().endswith(_LIBRARY_EXTS):
         return
     if _is_temp_file(path) or _is_ignored(path):
         return
@@ -959,14 +1026,14 @@ def browse_file():
     return jsonify({"ok": False, "file": None})
 
 def _walk_videos(directory):
-    """Every video file under directory, skipping .vaultIgnore'd subtrees and temp files."""
+    """Every library file (video or audio) under directory, skipping .vaultIgnore'd subtrees and temp files."""
     files = []
     for root_dir, dirs, filenames in os.walk(directory):
         if os.path.exists(os.path.join(root_dir, ".vaultIgnore")):
             dirs.clear()
             continue
         for f in filenames:
-            if f.lower().endswith(_VIDEO_EXTS) and not _is_temp_file(f):
+            if f.lower().endswith(_LIBRARY_EXTS) and not _is_temp_file(f):
                 files.append(os.path.join(root_dir, f))
     return files
 
@@ -1014,7 +1081,7 @@ def _artist_scan_files(artist):
             continue
         for f in names:
             fp = os.path.join(d, f)
-            if os.path.realpath(fp) in seen or not f.lower().endswith(_VIDEO_EXTS) \
+            if os.path.realpath(fp) in seen or not f.lower().endswith(_LIBRARY_EXTS) \
                     or _is_temp_file(f) or not os.path.isfile(fp):
                 continue
             if artist in _artist_names(_read_meta(fp).get("artist")):
@@ -1069,7 +1136,9 @@ def check_video(video_id):
     conn.close()
     if row:
         d = dict(row)
-        return jsonify({"downloaded": d.get("status") == "downloaded", "status": d.get("status"), "data": d})
+        # An entry folded into another video as its soundtrack is still in the vault.
+        status = "downloaded" if d.get("status") == "attached" else d.get("status")
+        return jsonify({"downloaded": status == "downloaded", "status": status, "data": d})
     return jsonify({"downloaded": False, "status": None})
 
 @app.post("/update-stats/<vid:video_id>")
@@ -1107,7 +1176,7 @@ def _upsert_mark(video_id, title, channel_name, url, status):
             channel_name=COALESCE(excluded.channel_name, downloaded_videos.channel_name),
             url=COALESCE(excluded.url, downloaded_videos.url),
             status=excluded.status
-        WHERE downloaded_videos.status != 'downloaded'
+        WHERE downloaded_videos.status NOT IN ('downloaded', 'attached')
     ''', (video_id, title, channel_name, url, status))
     conn.commit()
     conn.close()
@@ -1134,7 +1203,7 @@ def add_ignored():
 def remove_mark(video_id):
     conn = get_conn()
     conn.execute(
-        "DELETE FROM downloaded_videos WHERE video_id = ? AND status != 'downloaded'",
+        "DELETE FROM downloaded_videos WHERE video_id = ? AND status NOT IN ('downloaded', 'attached')",
         (video_id,)
     )
     conn.commit()
@@ -1202,7 +1271,8 @@ def stream_video(video_id):
         return jsonify({"ok": False, "error": "file missing on disk"}), 404
     ext  = os.path.splitext(path)[1].lower()
     from flask import send_file
-    return send_file(path, mimetype=_STREAM_MIMES.get(ext, "application/octet-stream"), conditional=True)
+    mime = _STREAM_MIMES.get(ext) or _AUDIO_MIMES.get(ext, "application/octet-stream")
+    return send_file(path, mimetype=mime, conditional=True)
 
 # ---------------------------------------------------------------------------
 # Alternate audio tracks
@@ -1211,8 +1281,6 @@ def stream_video(video_id):
 # file (a remaster, a quieter mix, a dub). Attaching one to a video lets the
 # player mute the video and play that file alongside it instead.
 # ---------------------------------------------------------------------------
-
-_AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".oga", ".flac", ".wav", ".weba")
 
 _AUDIO_MIMES = {
     ".mp3":  "audio/mpeg",
@@ -1409,10 +1477,17 @@ def add_audio_track(video_id):
         except sqlite3.IntegrityError:
             conn.close()
             return jsonify({"ok": False, "error": "already attached"}), 409
+        # The file was its own library entry until now. As a soundtrack it lives
+        # under this video instead, so the entry drops out of the library; its
+        # history and tags stay, and detaching brings it back.
+        hidden = [r for r in _entries_for_file(conn, path, "downloaded") if r["video_id"] != video_id]
+        for r in hidden:
+            conn.execute("UPDATE downloaded_videos SET status = 'attached' WHERE video_id = ?", (r["video_id"],))
         conn.commit()
         row = conn.execute("SELECT * FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
         conn.close()
-    return jsonify({"ok": True, "track": _track_row(row)})
+    return jsonify({"ok": True, "track": _track_row(row),
+                    "hidden": [{"video_id": r["video_id"], "title": r["title"]} for r in hidden]})
 
 
 @app.patch("/audio-tracks/<int:track_id>")
@@ -1445,10 +1520,19 @@ def delete_audio_track(track_id):
     """Detach only. The audio file itself is left alone on disk."""
     with _db_lock:
         conn = get_conn()
+        row = conn.execute("SELECT file_path FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
         conn.execute("DELETE FROM audio_tracks WHERE id = ?", (track_id,))
+        # Back in the library once no video keeps the file as a soundtrack.
+        restored = []
+        if row:
+            path = resolve_media_path(row["file_path"]) or row["file_path"]
+            if not _is_attached_track(path, conn):
+                restored = _entries_for_file(conn, path, "attached")
+                for r in restored:
+                    conn.execute("UPDATE downloaded_videos SET status = 'downloaded' WHERE video_id = ?", (r["video_id"],))
         conn.commit()
         conn.close()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "restored": [r["video_id"] for r in restored]})
 
 
 @app.get("/audio-track/<int:track_id>")
@@ -1957,7 +2041,7 @@ def data_quality_duplicates():
     groups = defaultdict(list)
     for root, _dirs, files in os.walk(watch_dir):
         for fname in files:
-            if not fname.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov")):
+            if not fname.lower().endswith(_LIBRARY_EXTS):
                 continue
             fpath = os.path.join(root, fname)
             try:
@@ -2046,7 +2130,7 @@ def _loose_video_files(watch_dir):
         src = os.path.join(watch_dir, fname)
         if not os.path.isfile(src):
             continue
-        if not fname.lower().endswith(_VIDEO_EXTS) or _is_temp_file(fname):
+        if not fname.lower().endswith(_LIBRARY_EXTS) or _is_temp_file(fname):
             continue
         out.append(src)
     return out
@@ -2062,7 +2146,7 @@ def _candidate_files(root, recursive):
             dirs.clear()
             continue
         for f in files:
-            if f.lower().endswith(_VIDEO_EXTS) and not _is_temp_file(f):
+            if f.lower().endswith(_LIBRARY_EXTS) and not _is_temp_file(f):
                 out.append(os.path.join(dirpath, f))
     return sorted(out)
 

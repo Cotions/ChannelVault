@@ -773,6 +773,27 @@ button:disabled { opacity: 0.4; cursor: default; }
   transition: opacity 0.2s;
 }
 .video-card:hover .dur-badge { opacity: 0; }
+.audio-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+  color: #a5f0bf;
+  background: rgba(8, 12, 10, 0.82);
+  border: 1px solid rgba(74, 222, 128, 0.4);
+  border-radius: 6px;
+  padding: 4px 6px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  pointer-events: none;
+}
 .video-thumb {
   width: 100%;
   aspect-ratio: 16/9;

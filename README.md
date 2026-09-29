@@ -228,6 +228,23 @@ track.
 
 Removing a track only detaches it. The audio file itself is never touched.
 
+### Audio-only downloads
+
+When only the sound of a channel is worth keeping, download the audio alone. It
+is a fraction of the size, and the audio is the same stream the full video uses:
+
+```bash
+yt-dlp -f bestaudio -x --embed-thumbnail --embed-metadata <URL>
+```
+
+The file becomes a normal library entry with an **Audio** badge on its card, and
+it plays over its thumbnail (taken from the file when there is no image beside
+it) in the same player as any video.
+
+An audio file attached to another video as its soundtrack stops being its own
+entry: it drops out of the library, keeping its history and tags, and comes back
+once no video uses it as a track anymore.
+
 ---
 
 ## yt-dlp tip

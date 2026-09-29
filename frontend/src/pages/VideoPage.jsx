@@ -255,7 +255,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
               <span className="icon-btn-num">{thumbIdx + 1}/{thumbs.length}</span>
             </button>
           )}
-          <AudioTracks videoId={id} duration={playback.duration || video.duration_secs || 0} />
+          <AudioTracks videoId={id} duration={playback.duration || video.duration_secs || 0} onLibraryChanged={onTagsChanged} />
           <button className="icon-btn" onClick={() => onEdit(video)} title="Edit metadata">
             <Icon name="pencil" size={16} />
           </button>
