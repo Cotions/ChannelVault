@@ -259,7 +259,7 @@ yt-dlp --embed-metadata -o "~/Downloads/%(title)s.%(ext)s" <URL>
 
 ## Age-restricted videos
 
-Two things stop a fetch from reaching YouTube, and both live under **Settings → YouTube Fetching**.
+Two things stop a fetch from reaching YouTube, and both live under **Settings → YouTube**.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
