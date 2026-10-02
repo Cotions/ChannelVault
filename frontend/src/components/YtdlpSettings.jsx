@@ -48,7 +48,7 @@ export default function YtdlpSettings() {
 
   return (
     <>
-      <div className="card-title" style={{ marginTop: "16px" }}>YouTube Fetching</div>
+      <div className="card-title">YouTube Fetching</div>
 
       <div className="folder-row">
         <select value={browser} onChange={e => setBrowser(e.target.value)}>
