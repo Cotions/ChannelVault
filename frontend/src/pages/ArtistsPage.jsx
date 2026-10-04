@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { artistThumbUrl } from "../lib/api";
+import { artistThumbUrl, getCreators, getChannelStatuses } from "../lib/api";
+import { CHANNEL_STATUS } from "../lib/channelStatus";
 import { artistsOf } from "../lib/artists";
 import Icon from "../components/Icon";
 
-function ArtistCard({ name, stats, onClick }) {
+function ArtistCard({ name, stats, status, onClick }) {
   const [hasThumb, setHasThumb] = useState(true);
   return (
-    <div className="creator-card" onClick={onClick}>
+    <div className={`creator-card${CHANNEL_STATUS[status]?.gone ? " is-gone" : ""}`} onClick={onClick}>
       {hasThumb && (
         <img
           className="creator-avatar"
@@ -17,6 +18,9 @@ function ArtistCard({ name, stats, onClick }) {
         />
       )}
       <span className="creator-name" title={name}>{name}</span>
+      {CHANNEL_STATUS[status] && (
+        <span className={`channel-status-badge is-${status}`}>{CHANNEL_STATUS[status].label}</span>
+      )}
       <div className="creator-counts">
         {stats.downloaded > 0 && <span className="creator-count">{stats.downloaded}</span>}
         {stats.wanted > 0 && (
@@ -37,6 +41,15 @@ function ArtistCard({ name, stats, onClick }) {
 export default function ArtistsPage({ videos, wanted, ignored, query }) {
   const navigate = useNavigate();
   const q = (query || "").trim().toLowerCase();
+  const [creators, setCreators] = useState([]);
+  const [statuses, setStatuses] = useState({});
+
+  useEffect(() => {
+    let alive = true;
+    getCreators().then(c => { if (alive) setCreators(c || []); }).catch(() => {});
+    getChannelStatuses().then(m => { if (alive) setStatuses(m || {}); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const artistStats = {};
   const bump = (v, key) => {
@@ -48,6 +61,10 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
   for (const v of videos)  bump(v, "downloaded");
   for (const v of wanted)  bump(v, "wanted");
   for (const v of ignored) bump(v, "ignored");
+  // Channels saved from YouTube's About panel show up even with nothing in the vault yet.
+  for (const c of creators) {
+    if (!artistStats[c.channel_name]) artistStats[c.channel_name] = { downloaded: 0, wanted: 0, ignored: 0 };
+  }
   let artists = Object.entries(artistStats).sort((a, b) => b[1].downloaded - a[1].downloaded);
   if (q) artists = artists.filter(([name]) => name.toLowerCase().includes(q));
 
@@ -68,6 +85,7 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
               key={name}
               name={name}
               stats={stats}
+              status={statuses[name]?.status}
               onClick={() => navigate(`/artist/${encodeURIComponent(name)}`)}
             />
           ))}

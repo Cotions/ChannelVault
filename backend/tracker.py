@@ -12,6 +12,7 @@ import sqlite3
 import hashlib
 import subprocess
 import urllib.request
+import urllib.parse
 import threading
 import unicodedata
 import difflib
@@ -444,6 +445,28 @@ def init_db():
             links            TEXT,
             email            TEXT,
             captured_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Channels the user has marked as the same person (a main channel, a shorts
+    # channel, a second ASMR channel). Each name sits in at most one group; the
+    # artist page lists the rest of its group as "Also on". Names are channel_name
+    # display strings, the same key the artists grouping and creators use.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS artist_links (
+            channel_name TEXT PRIMARY KEY,
+            group_id     INTEGER NOT NULL
+        )
+    ''')
+
+    # The user's own mark on a channel's fate: "abandoned" when it is still up
+    # but the creator stopped uploading, "deleted" when the creator took it
+    # down, "banned" when YouTube terminated it. No row means active.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS channel_status (
+            channel_name TEXT PRIMARY KEY,
+            status       TEXT NOT NULL,
+            marked_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -2720,10 +2743,28 @@ _CREATOR_FIELDS = [
 _SAFE_LINK_SCHEMES = ("http://", "https://")
 
 
+def _unwrap_yt_redirect(url):
+    """YouTube wraps every About-panel link as youtube.com/redirect?...&q=<target>.
+    Return the real target so the link opens directly and its site is visible."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return url
+    host = (parts.hostname or "").lower()
+    if not (host == "youtube.com" or host.endswith(".youtube.com")) or parts.path != "/redirect":
+        return url
+    target = (urllib.parse.parse_qs(parts.query).get("q") or [""])[0].strip()
+    if not target:
+        return url
+    if "://" not in target:
+        target = "https://" + target
+    return target
+
+
 def _safe_link(url):
     """Only keep web URLs. Scraped About-panel links are attacker-controlled and
     a javascript: href would execute in the dashboard when clicked."""
-    u = (url or "").strip()
+    u = _unwrap_yt_redirect((url or "").strip())
     return u if u.lower().startswith(_SAFE_LINK_SCHEMES) else None
 
 
@@ -2746,7 +2787,9 @@ def _safe_links(links):
 def _creator_row_to_dict(row):
     d = dict(row)
     try:
-        d["links"] = json.loads(d["links"]) if d.get("links") else []
+        # Re-run the filter on read: rows saved before redirect unwrapping still
+        # hold youtube.com/redirect wrappers.
+        d["links"] = _safe_links(json.loads(d["links"])) if d.get("links") else []
     except (TypeError, ValueError):
         d["links"] = []
     return d
@@ -2815,6 +2858,122 @@ def get_creator(channel_name):
     if not row:
         return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify(_creator_row_to_dict(row))
+
+
+def _linked_artists(conn, channel_name):
+    row = conn.execute(
+        "SELECT group_id FROM artist_links WHERE channel_name = ?", (channel_name,)
+    ).fetchone()
+    if not row:
+        return []
+    rows = conn.execute(
+        "SELECT channel_name FROM artist_links WHERE group_id = ? AND channel_name != ? "
+        "ORDER BY channel_name COLLATE NOCASE",
+        (row["group_id"], channel_name),
+    ).fetchall()
+    return [r["channel_name"] for r in rows]
+
+
+@app.get("/artist-links/<path:channel_name>")
+def get_artist_links(channel_name):
+    conn = get_conn()
+    names = _linked_artists(conn, channel_name)
+    conn.close()
+    return jsonify(names)
+
+
+@app.post("/artist-links")
+def link_artists():
+    """Mark two channels as the same person. Linking into an existing group
+    pulls the whole other group along, so A-B plus B-C ends as one A-B-C group."""
+    body = request.get_json(silent=True) or {}
+    a = (body.get("a") or "").strip()
+    b = (body.get("b") or "").strip()
+    if not a or not b or a == b:
+        return jsonify({"ok": False, "error": "two different channel names required"}), 400
+    with _db_lock:
+        conn = get_conn()
+        groups = {
+            r["channel_name"]: r["group_id"]
+            for r in conn.execute(
+                "SELECT channel_name, group_id FROM artist_links WHERE channel_name IN (?, ?)", (a, b)
+            )
+        }
+        ga, gb = groups.get(a), groups.get(b)
+        if ga is None and gb is None:
+            gid = (conn.execute("SELECT MAX(group_id) FROM artist_links").fetchone()[0] or 0) + 1
+            conn.executemany(
+                "INSERT INTO artist_links (channel_name, group_id) VALUES (?, ?)", [(a, gid), (b, gid)]
+            )
+        elif ga is None:
+            conn.execute("INSERT INTO artist_links (channel_name, group_id) VALUES (?, ?)", (a, gb))
+            gid = gb
+        elif gb is None:
+            conn.execute("INSERT INTO artist_links (channel_name, group_id) VALUES (?, ?)", (b, ga))
+            gid = ga
+        else:
+            conn.execute("UPDATE artist_links SET group_id = ? WHERE group_id = ?", (ga, gb))
+            gid = ga
+        conn.commit()
+        names = _linked_artists(conn, a)
+        conn.close()
+    return jsonify({"ok": True, "linked": names})
+
+
+@app.delete("/artist-links/<path:channel_name>")
+def unlink_artist(channel_name):
+    """Take one channel out of its group. A group left with a single member is
+    dissolved, since one channel linked to nothing means nothing."""
+    with _db_lock:
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT group_id FROM artist_links WHERE channel_name = ?", (channel_name,)
+        ).fetchone()
+        if row:
+            conn.execute("DELETE FROM artist_links WHERE channel_name = ?", (channel_name,))
+            left = conn.execute(
+                "SELECT COUNT(*) FROM artist_links WHERE group_id = ?", (row["group_id"],)
+            ).fetchone()[0]
+            if left < 2:
+                conn.execute("DELETE FROM artist_links WHERE group_id = ?", (row["group_id"],))
+            conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+_CHANNEL_STATUSES = ("abandoned", "deleted", "banned")
+
+
+@app.get("/channel-status")
+def list_channel_status():
+    conn = get_conn()
+    rows = conn.execute("SELECT channel_name, status, marked_at FROM channel_status").fetchall()
+    conn.close()
+    return jsonify({r["channel_name"]: {"status": r["status"], "marked_at": r["marked_at"]} for r in rows})
+
+
+@app.post("/channel-status")
+def set_channel_status():
+    """Mark a channel abandoned, deleted or banned; a null status clears the mark."""
+    body         = request.get_json(silent=True) or {}
+    channel_name = (body.get("channel_name") or "").strip()
+    status       = body.get("status")
+    if not channel_name:
+        return jsonify({"ok": False, "error": "channel_name required"}), 400
+    if status is not None and status not in _CHANNEL_STATUSES:
+        return jsonify({"ok": False, "error": "status must be abandoned, deleted, banned or null"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if status is None:
+            conn.execute("DELETE FROM channel_status WHERE channel_name = ?", (channel_name,))
+        else:
+            conn.execute('''
+                INSERT INTO channel_status (channel_name, status) VALUES (?, ?)
+                ON CONFLICT(channel_name) DO UPDATE SET status = excluded.status, marked_at = CURRENT_TIMESTAMP
+            ''', (channel_name, status))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

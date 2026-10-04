@@ -738,6 +738,29 @@ button:disabled { opacity: 0.4; cursor: default; }
 .creator-count-wanted  { color: #9ecbff; background: rgba(91, 157, 255, 0.16); }
 .creator-count-ignored { color: #ffb3b5; background: rgba(229, 72, 77, 0.16); }
 
+/* Channel marked inactive: tag the name; dim the avatar when it is off YouTube. */
+.creator-card.is-gone .creator-avatar { filter: grayscale(1); opacity: 0.6; }
+.creator-card.is-gone .creator-name { color: var(--text-dim); }
+.channel-status-badge {
+  display: inline-flex; align-items: center;
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; line-height: 1;
+  border-radius: 5px; padding: 3px 6px; flex-shrink: 0;
+  vertical-align: middle;
+}
+.artist-page-title .channel-status-badge { margin-left: 10px; font-size: 11px; letter-spacing: 0.06em; }
+.channel-status-badge.is-abandoned { color: #c3c9d6; background: rgba(160, 170, 190, 0.14); }
+.channel-status-badge.is-deleted { color: #ffd591; background: rgba(255, 196, 92, 0.14); }
+.channel-status-badge.is-banned  { color: #ffb3b5; background: rgba(229, 72, 77, 0.18); }
+.channel-status-wrap { position: relative; }
+.channel-status-menu { left: auto; right: 0; min-width: 220px; }
+.channel-status-check { width: 12px; display: inline-flex; color: var(--glow); }
+.channel-status-option { display: flex; flex-direction: column; gap: 2px; }
+.channel-status-hint { font-size: 11px; color: var(--muted); }
+.channel-status-text.is-abandoned { color: #c3c9d6; }
+.channel-status-text.is-deleted { color: #ffd591; }
+.channel-status-text.is-banned  { color: #ffb3b5; }
+
 /* ── Wanted / Ignored ───────────────────────────────────── */
 .wanted-list { display: flex; flex-direction: column; gap: 6px; }
 .wanted-item, .ignored-item {
@@ -2159,7 +2182,7 @@ a.tag-chip:hover { filter: brightness(1.2); box-shadow: 0 0 0 1px currentColor i
   overflow: hidden;
 }
 @media (max-width: 720px) {
-  .stats-hero { grid-template-columns: repeat(2, 1fr); }
+  .stats-hero { grid-template-columns: repeat(2, 1fr) !important; }
 }
 .stats-hero-cell {
   background:
@@ -2188,6 +2211,44 @@ a.tag-chip:hover { filter: brightness(1.2); box-shadow: 0 0 0 1px currentColor i
   letter-spacing: 1.6px;
   color: var(--muted);
 }
+
+/* Stat groups: library full width, activity and YouTube side by side. */
+.stats-groups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.stats-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.stats-group.is-wide { grid-column: 1 / -1; }
+.stats-group > .stats-hero { flex: 1; }
+@media (max-width: 900px) {
+  .stats-groups { grid-template-columns: 1fr; }
+}
+.stats-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 4px; }
+.stats-group-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.6px;
+  color: var(--text-dim);
+}
+.stats-group-aside { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.stats-hero.is-compact .stats-hero-cell { padding: 22px 16px 18px; justify-content: center; }
+.stats-hero.is-compact .stats-hero-num { font-size: 32px; }
+.stats-hero-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); opacity: 0.8; }
+
+/* Share of checked videos per availability state, above the YouTube tiles. */
+.avail-bar {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border);
+  transform-origin: left;
+  animation: barSweep 0.9s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+.avail-bar-seg { flex-basis: 0; min-width: 3px; opacity: 0.85; }
 
 /* Record cards */
 .record-cards {
@@ -2420,6 +2481,38 @@ a.creator-profile-handle:hover { text-decoration: underline; }
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 .cp-link:hover { border-color: rgba(var(--glow-rgb), 0.45); color: var(--text); background: #222736; }
+.cp-link { display: inline-flex; align-items: center; gap: 6px; }
+.cp-link-platform { color: var(--text); }
+.cp-link-detail { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-link-platform + .cp-link-detail { color: var(--muted); font-weight: 500; }
+
+/* "Also on": other channels the user marked as the same person. */
+.artist-links-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 16px; }
+.artist-links-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.artist-link-chip {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 4px 3px 4px;
+  transition: border-color 0.15s;
+}
+.artist-link-chip:hover { border-color: rgba(var(--glow-rgb), 0.45); }
+.artist-link-name { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--text); padding-right: 4px; }
+.artist-link-avatar { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; }
+.artist-link-remove {
+  all: unset; display: inline-flex; padding: 3px; border-radius: 50%;
+  color: var(--muted); cursor: pointer;
+}
+.artist-link-remove:hover { color: #ef9a9a; background: #b71c1c33; }
+.artist-link-add {
+  all: unset; display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  border: 1px dashed var(--border); border-radius: 999px;
+  padding: 4px 10px; cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.artist-link-add:hover { color: var(--text); border-color: rgba(var(--glow-rgb), 0.45); }
 
 /* ── Alternate audio tracks ─────────────────────────────── */
 
