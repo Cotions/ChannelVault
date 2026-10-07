@@ -3803,6 +3803,7 @@ def serve_artist_thumb(name):
 # in; in a 16:9 player they end up small in the middle. Crop the bars at serve
 # time: files on disk stay byte-identical (OVD matching, dedup hashes).
 _letterbox_cache = {}
+_letterbox_bytes = 0
 
 def _letterbox_crop(path):
     """JPEG bytes of path without baked-in letterbox bars, or None to send the
@@ -3816,8 +3817,7 @@ def _letterbox_crop(path):
         return _letterbox_cache[key]
     out = None
     try:
-        from PIL import Image
-        with Image.open(path) as im:
+        with _pil_image().open(path) as im:
             w, h = im.size
             if h and abs(w / h - 4 / 3) < 0.02:
                 # Rows holding anything brighter than near-black are picture.
@@ -3833,9 +3833,13 @@ def _letterbox_crop(path):
                         out = buf.getvalue()
     except Exception:
         out = None
-    if len(_letterbox_cache) > 2000:
+    # Bounded by bytes, not entries: cropped JPEGs are tens of KB each.
+    global _letterbox_bytes
+    if len(_letterbox_cache) > 5000 or _letterbox_bytes > 32 * 1024 * 1024:
         _letterbox_cache.clear()
+        _letterbox_bytes = 0
     _letterbox_cache[key] = out
+    _letterbox_bytes += len(out or b"")
     return out
 
 
