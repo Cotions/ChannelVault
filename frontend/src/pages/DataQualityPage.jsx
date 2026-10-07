@@ -170,6 +170,7 @@ export default function DataQualityPage({ onLibraryChanged }) {
                 source={source}
                 mode={mode}
                 onTransferred={onTransferred}
+                locked={orgStatus === "applying"}   // the bulk run may be moving this file
                 onMetaChanged={onMetaChanged}
               />
             ))}

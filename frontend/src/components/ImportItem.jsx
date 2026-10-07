@@ -17,7 +17,7 @@ const STATUS_LABEL = {
   "bad-artist": "artist tag can't be a folder name", soundtrack: "attached as a soundtrack",
 };
 
-export default function ImportItem({ it, checked, onCheck, source, mode, onTransferred, onMetaChanged }) {
+export default function ImportItem({ it, checked, onCheck, source, mode, onTransferred, onMetaChanged, locked = false }) {
   const [open,    setOpen]    = useState(false);
   const [detail,  setDetail]  = useState(null);
   const [fields,  setFields]  = useState(null);
@@ -197,7 +197,7 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
                     {busy === "write" ? "Writing…" : "Write to file"}
                   </button>
                   <button className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
-                    onClick={transferThis} disabled={!!busy || done || !canImport}
+                    onClick={transferThis} disabled={!!busy || done || !canImport || locked}
                     title={canImport ? "" : "Write the artist into the file first"}>
                     {busy === "transfer" ? "Transferring…" : (mode === "copy" ? "Copy & Add" : "Move & Add")}
                   </button>

@@ -10,7 +10,14 @@ import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 
-export default function PlaylistPage({ libraryVersion, query, onEdit, onFetchMeta }) {
+// Remount per id: the previous one's data, errors and in-flight requests
+// must never show on the next.
+export default function PlaylistPage(props) {
+  const { id } = useParams();
+  return <PlaylistPageBody key={id} {...props} />;
+}
+
+function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [playlist, setPlaylist] = useState(null);
@@ -26,6 +33,7 @@ export default function PlaylistPage({ libraryVersion, query, onEdit, onFetchMet
       if (!r.ok) throw new Error(r.error || "not found");
       setPlaylist(r.playlist);
       setVideos(r.videos);
+      setError(null);
     } catch (e) {
       setError(e.message);
     }
