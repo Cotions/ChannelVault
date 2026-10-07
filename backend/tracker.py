@@ -26,6 +26,7 @@ import uuid
 import difflib
 import math
 import glob
+import gzip
 from tinytag import TinyTag
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -192,6 +193,23 @@ def _is_public_endpoint():
     if ep in ("list_playlists", "list_tags") and request.method == "GET" and _wants_html():
         return True                            # /playlists and /tags as pages, not as JSON
     return ep in _PUBLIC_ENDPOINTS
+
+
+@app.after_request
+def _gzip_json(resp):
+    """Compress big JSON answers. /videos carries every description and is
+    refetched after most actions; gzip takes it from megabytes to a fraction."""
+    if (resp.direct_passthrough or resp.status_code != 200 or resp.mimetype != "application/json"
+            or "Content-Encoding" in resp.headers
+            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()):
+        return resp
+    data = resp.get_data()
+    if len(data) < 4096:
+        return resp
+    resp.set_data(gzip.compress(data, compresslevel=5))
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers.add("Vary", "Accept-Encoding")
+    return resp
 
 
 @app.before_request
@@ -540,6 +558,7 @@ def clear_media_index():
     global _media_index
     with _media_index_lock:
         _media_index = None
+    _resolve_cache.clear()
 
 
 def _basename_index():
@@ -575,11 +594,31 @@ def _split_components(path):
     return [c for c in re.split(r"[\\/]+", path) if c not in ("", ".")]
 
 
+# Recent resolutions of paths that weren't where stored. A list page or a data
+# check resolves the same stale paths over and over, each costing a stat per
+# tail x root x Unicode form. Short-lived, and dropped with the media index.
+_resolve_cache = {}
+_RESOLVE_TTL   = 10.0
+
 def resolve_media_path(stored):
     """Map a stored (possibly stale / cross-OS / relative) path to a real file
     on this machine. Returns an existing absolute path, or None."""
     if not stored:
         return None
+    if os.path.isfile(stored):
+        return stored
+    key    = (load_config()["active_profile"], stored)   # roots differ per profile
+    cached = _resolve_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _RESOLVE_TTL \
+            and (cached[1] is None or os.path.isfile(cached[1])):
+        return cached[1]
+    hit = _resolve_uncached(stored)
+    if len(_resolve_cache) > 20000:
+        _resolve_cache.clear()
+    _resolve_cache[key] = (time.monotonic(), hit)
+    return hit
+
+def _resolve_uncached(stored):
     hit = _exists_norm(stored)
     if hit:
         return hit
@@ -1228,6 +1267,7 @@ class VideoDownloadHandler(FileSystemEventHandler):
 
     def on_created(self, event):
         if not event.is_directory:
+            _resolve_cache.clear()        # a path that didn't resolve may now resolve
             self.queue.put(event.src_path)
 
     # yt-dlp downloads to a .temp/.part file then RENAMES it to the final name.
@@ -1235,6 +1275,7 @@ class VideoDownloadHandler(FileSystemEventHandler):
     # download is never tracked.
     def on_moved(self, event):
         if not event.is_directory:
+            _resolve_cache.clear()
             self.queue.put(event.dest_path)
 
 _observer      = None
