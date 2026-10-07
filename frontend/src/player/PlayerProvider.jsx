@@ -186,6 +186,33 @@ export default function PlayerProvider({ onCompleted, children }) {
     watchRef.current = fresh();
   }, [reportProgress, clearQueue]);
 
+  // A video deleted from the library (App fires "cv:video-deleted") stops
+  // playing and leaves the queue; no progress is posted for it.
+  useEffect(() => {
+    const onDeleted = (e) => {
+      const id = e.detail;
+      const q  = queueRef.current;
+      if (q && q.items.some(i => i.video_id === id)) {
+        const cur   = q.items[q.idx];
+        const items = q.items.filter(i => i.video_id !== id);
+        if (items.length === 0 || cur.video_id === id) clearQueue();
+        else {
+          const next = { ...q, items, orig: q.orig.filter(i => i.video_id !== id), idx: items.indexOf(cur) };
+          queueRef.current = next;
+          setQueue(next);
+        }
+      }
+      if (activeIdRef.current === id) {
+        watchRef.current = fresh();
+        videoRef.current?.pause();
+        setActiveId(null);
+        setMode("inline");
+      }
+    };
+    window.addEventListener("cv:video-deleted", onDeleted);
+    return () => window.removeEventListener("cv:video-deleted", onDeleted);
+  }, [clearQueue]);
+
   // Swap the file without touching the mode. openInline builds on this.
   const loadVideo = useCallback((id, title) => {
     if (activeIdRef.current !== id) {

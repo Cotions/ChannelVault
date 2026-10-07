@@ -42,21 +42,26 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const [thumbMsg,   setThumbMsg]   = useState(null);
   const [dupPrompt,  setDupPrompt]  = useState(null);
 
+  // Loads answer late: one for a video we already left must not land on this one.
+  const idRef = useRef(id);
+  useEffect(() => { idRef.current = id; }, [id]);   // declared first, so it runs before the loads
+
   const loadThumbs = useCallback(async () => {
     try {
       const r = await getThumbnails(id);
+      if (idRef.current !== id) return [];
       const list = (r.thumbnails || []).map(t =>
         t.kind === "original" ? thumbUrl(id) : thumbnailVersionUrl(id, t.file)
       );
       setThumbs(list);
       return list;
-    } catch { setThumbs([]); return []; }
+    } catch { if (idRef.current === id) setThumbs([]); return []; }
   }, [id]);
 
   useEffect(() => {
     setThumbMsg(null);
     // Default to the newest thumbnail (last in the list: original first, fetched by age).
-    loadThumbs().then(list => setThumbIdx(Math.max(0, list.length - 1)));
+    loadThumbs().then(list => { if (idRef.current === id) setThumbIdx(Math.max(0, list.length - 1)); });
   }, [id, loadThumbs]);
 
   const video = videos.find(v => v.video_id === id);
@@ -64,11 +69,13 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const loadSegments = useCallback(async () => {
     try {
       const r = await getSegments(id);
+      if (idRef.current !== id) return;
       setSegments(r.segments || []);
       setVideoTags(r.video_tags || []);
-    } catch { setSegments([]); setVideoTags([]); }
+    } catch { if (idRef.current === id) { setSegments([]); setVideoTags([]); } }
   }, [id]);
-  useEffect(() => { setSelectedSeg(null); loadSegments(); }, [loadSegments]);
+  // Clear first: the last video's parts must not reach the player under this id.
+  useEffect(() => { setSelectedSeg(null); setSegments([]); setVideoTags([]); loadSegments(); }, [loadSegments]);
   // The player's scrub bar draws the same parts, and it outlives this page.
   useEffect(() => { publishSegments(id, segments); }, [id, segments, publishSegments]);
 

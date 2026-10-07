@@ -12,14 +12,17 @@ export const SORT_OPTIONS = [
 
 // Case-insensitive match across title, channel, description and tag names.
 // Empty/blank query matches everything.
+// Accents don't count: "beyonce" finds "Beyoncé".
+const fold = (s) => (s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
 export function videoMatches(v, query) {
-  const q = (query || "").trim().toLowerCase();
+  const q = fold(query).trim();
   if (!q) return true;
   return (
-    (v.title || "").toLowerCase().includes(q) ||
-    (v.channel_name || "").toLowerCase().includes(q) ||
-    (v.description || "").toLowerCase().includes(q) ||
-    (v.tags || []).some(t => (t.name || "").toLowerCase().includes(q))
+    fold(v.title).includes(q) ||
+    fold(v.channel_name).includes(q) ||
+    fold(v.description).includes(q) ||
+    (v.tags || []).some(t => fold(t.name).includes(q))
   );
 }
 
@@ -45,7 +48,13 @@ function byNum(a, b) {
 // A year-only date ("2024") counts as the end of that year.
 function recDate(v) {
   const d = (v || "").replace(/\D/g, "").slice(0, 8);
-  return d.length === 4 ? d + "9999" : d;
+  if (d.length === 8 && /^\d{4}-?\d{2}-?\d{2}/.test((v || "").trim())) return d;
+  if (d.length === 4 && /^\d{4}$/.test((v || "").trim())) return d + "9999";
+  // Typed-in dates ("Aug 25, 2025"): the digits alone would sort as year 2520.
+  const t = Date.parse(v || "");
+  if (Number.isNaN(t)) return "";
+  const x = new Date(t);
+  return `${x.getFullYear()}${String(x.getMonth() + 1).padStart(2, "0")}${String(x.getDate()).padStart(2, "0")}`;
 }
 
 // A video we can't refetch (private/deleted/etc, or not on YouTube at all).

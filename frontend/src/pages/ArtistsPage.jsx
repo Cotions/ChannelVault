@@ -51,7 +51,7 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
     return () => { alive = false; };
   }, []);
 
-  const artistStats = {};
+  const artistStats = Object.create(null);   // an artist called "constructor" is still an artist
   const bump = (v, key) => {
     for (const ch of artistsOf(v)) {
       if (!artistStats[ch]) artistStats[ch] = { downloaded: 0, wanted: 0, ignored: 0 };

@@ -1,7 +1,8 @@
 export function fmt(n) {
   if (n == null) return "—";
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000)     return (n / 1_000).toFixed(1) + "K";
+  // Unit picked after rounding: 999 960 is "1.0M", not "1000.0K".
+  if (n >= 999_950) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 999.95)  return (n / 1_000).toFixed(1) + "K";
   return n.toString();
 }
 

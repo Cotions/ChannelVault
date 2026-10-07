@@ -128,7 +128,8 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
       const res = await addVideoManual(payload);
       if (res.ok) {
         onClose();
-        if (res.source && res.source !== "youtube") onAdded();
+        // An edit keeps what was typed: a fetch would put YouTube's title back.
+        if (isEdit || (res.source && res.source !== "youtube")) onAdded();
         else fetchMetadata(res.video_id).then(() => onAdded()).catch(() => onAdded());
       } else {
         setErr(res.error || "Failed to save video.");
