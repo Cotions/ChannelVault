@@ -66,8 +66,10 @@ export default function SegmentList({
     if (times.error) { setEditErr(times.error); return; }
     const title = edit.title.trim() || null;
     const fields = {};
-    if (times.start !== s.start_secs) fields.start_secs = times.start;
-    if (times.end   !== s.end_secs)   fields.end_secs   = times.end;
+    // The editor shows whole seconds; only send a time the user actually
+    // changed, or renaming a chapter at 125.46s would move it to 125.
+    if (edit.start.trim() !== fmtTime(s.start_secs)) fields.start_secs = times.start;
+    if (edit.end.trim()   !== fmtTime(s.end_secs))   fields.end_secs   = times.end;
     if (title !== (s.title || null))  fields.title      = title;
     setEditingId(null);
     setEditErr(null);
