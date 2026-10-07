@@ -273,11 +273,17 @@ _config_write_lock = threading.RLock()   # re-entrant: also held around read-mod
 def _write_raw_config(raw):
     # Own temp name per write + a lock: two saves at once can't interleave
     # into one temp file and leave config.json half-written.
+    global _raw_config_cache
     with _config_write_lock:
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CONFIG_PATH) or ".", suffix=".tmp")
         with os.fdopen(fd, "w") as f:
             json.dump(raw, f, indent=2)
         os.replace(tmp, CONFIG_PATH)
+        # Cache what was just written. The temp file may reuse the inode of a
+        # config replaced two writes ago, and mtimes are coarse, so an older
+        # cache entry could otherwise match this file's key.
+        st = os.stat(CONFIG_PATH)
+        _raw_config_cache = ((st.st_ino, st.st_mtime_ns, st.st_size), copy.deepcopy(raw))
 
 
 def _config_locked(fn):
@@ -1587,7 +1593,7 @@ def list_profiles():
 @_config_locked
 def create_profile():
     body  = request.get_json(silent=True) or {}
-    name  = str(body.get("name") or "").strip()
+    name  = _body_str(body, "name")
     data  = _body_path(body, "data_directory") or ""
     watch = _body_path(body, "watch_directory") or ""
     roots = body.get("media_roots") or []
@@ -1639,7 +1645,7 @@ def create_profile():
 @_config_locked
 def rename_profile(profile_id):
     body = request.get_json(silent=True) or {}
-    name = str(body.get("name") or "").strip()
+    name = _body_str(body, "name")
     if not name:
         return jsonify({"ok": False, "error": "Name is required"}), 400
     raw = _read_raw_config()
@@ -1914,6 +1920,13 @@ def list_video_ids():
     ignored    = [r["video_id"] for r in rows if r["status"] == "ignored"]
     return jsonify({"ids": downloaded, "wanted_ids": wanted, "ignored_ids": ignored})
 
+def _body_str(body, key, limit=500):
+    """body[key] as a trimmed, capped string; "" when missing or not a string
+    (a number or list from a malformed request must not crash the handler)."""
+    v = body.get(key)
+    return v.strip()[:limit] if isinstance(v, str) else ""
+
+
 def _text(v, limit=500):
     """A request value as stored text: strings only (a dict/list from a
     malformed request is dropped, not crashed on), trimmed and capped."""
@@ -2135,6 +2148,8 @@ def _parse_offset(value):
         secs = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(secs):
+        return None
     # Beyond a few minutes it is a different recording, not a sync nudge.
     return max(-600.0, min(600.0, secs))
 
@@ -2247,7 +2262,7 @@ def list_audio_tracks(video_id):
 @app.post("/videos/<vid:video_id>/audio-tracks")
 def add_audio_track(video_id):
     body = request.get_json(silent=True) or {}
-    raw  = (body.get("file_path") or "").strip()
+    raw  = _body_str(body, "file_path", 4096)
     if not raw:
         return jsonify({"ok": False, "error": "need file_path"}), 400
     path = _under_media_roots(raw) or _resolve_audio_path(raw)
@@ -2259,7 +2274,7 @@ def add_audio_track(video_id):
         return jsonify({"ok": False, "error": "file is not inside a media root"}), 400
     if not path.lower().endswith(_AUDIO_EXTS):
         return jsonify({"ok": False, "error": "not an audio file"}), 400
-    label  = (body.get("label") or "").strip() or _default_audio_label(path)
+    label  = _body_str(body, "label") or _default_audio_label(path)
     offset = _parse_offset(body.get("offset_secs"))
     duration = _audio_duration(path)      # file read stays outside the DB lock
     with _db_lock:
@@ -2302,7 +2317,7 @@ def update_audio_track(track_id):
         if not cur:
             conn.close()
             return jsonify({"ok": False, "error": "not found"}), 404
-        label  = ((body.get("label") or "").strip() or None) if "label" in body else cur["label"]
+        label  = (_body_str(body, "label") or None) if "label" in body else cur["label"]
         offset = cur["offset_secs"]
         if "offset_secs" in body:
             parsed = _parse_offset(body.get("offset_secs"))
@@ -2376,6 +2391,9 @@ def watch_progress(video_id):
         watched_secs  = max(0.0, float(body.get("watched_secs") or 0))
         position_secs = max(0.0, float(body.get("position_secs") or 0))
         duration_secs = float(body["duration_secs"]) if body.get("duration_secs") else None
+        # float() takes "inf"/"nan"; stored, they'd turn stats into invalid JSON.
+        if not all(math.isfinite(x) for x in (watched_secs, position_secs, duration_secs or 0)):
+            raise ValueError
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "bad numbers"}), 400
 
@@ -2474,7 +2492,7 @@ def list_playlists():
 @app.post("/playlists")
 def create_playlist():
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
+    name = _body_str(body, "name")
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
     conn = get_conn()
@@ -2731,7 +2749,7 @@ def add_video_manual():
 
     # Nothing will ever fetch a thumbnail for a non-YouTube entry: take a frame.
     if source and source != "youtube" and os.path.isfile(file_path):
-        artist = (body.get("channel_name") or "").strip()
+        artist = _body_str(body, "channel_name")
         for name in _artist_names(artist):
             artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(name))
             dest_base  = os.path.join(artist_dir, video_id)
@@ -2750,7 +2768,7 @@ def add_video_manual():
 @app.post("/read-file-tags")
 def read_file_tags():
     body      = request.get_json(silent=True) or {}
-    file_path = (body.get("file_path") or "").strip()
+    file_path = _body_str(body, "file_path", 4096)
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"ok": False, "error": "File not found"}), 404
     if not _import_allowed(file_path):
@@ -3429,7 +3447,7 @@ def _organize_apply():
         return jsonify({"ok": False, "error": f"Directory not found: {watch_dir}"}), 400
 
     mode    = "copy" if body.get("mode") == "copy" else "move"
-    source  = (body.get("source") or "").strip() or watch_dir
+    source  = _body_str(body, "source", 4096) or watch_dir
     files   = body.get("files")
     # Only files the app can already see: media roots, or a folder scanned for import.
     if isinstance(files, list) and files:
@@ -3522,7 +3540,7 @@ def import_thumb():
 def import_fetch_meta():
     """Suggest metadata from YouTube (yt-dlp) WITHOUT writing anything."""
     body = request.get_json(silent=True) or {}
-    path = (body.get("file") or "").strip()
+    path = _body_str(body, "file", 4096)
     vid  = _valid_video_id(str(body.get("video_id") or ""))
     if not vid and path and os.path.isfile(path):
         vid = _video_id_from_url(_read_meta(path).get("url"))
@@ -3586,7 +3604,7 @@ def _tracked_row_for_file(conn, path):
 def import_enrich():
     """Write metadata tags into the file itself (ffmpeg stream copy), then verify."""
     body   = request.get_json(silent=True) or {}
-    path   = (body.get("file") or "").strip()
+    path   = _body_str(body, "file", 4096)
     fields = body.get("fields") or {}
     if not path or not os.path.isfile(path):
         return jsonify({"ok": False, "error": "file not found"}), 404
@@ -4459,7 +4477,7 @@ def list_tags():
 @app.post("/tags")
 def create_tag():
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
+    name = _body_str(body, "name")
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
     if len(name) > 60:
@@ -4477,14 +4495,14 @@ def update_tag(tag_id):
     body = request.get_json(silent=True) or {}
     sets, params = [], []
     if "name" in body:
-        name = (body.get("name") or "").strip()
+        name = _body_str(body, "name")
         if not name:
             return jsonify({"ok": False, "error": "name required"}), 400
         if len(name) > 60:
             return jsonify({"ok": False, "error": "name too long"}), 400
         sets.append("name = ?"); params.append(name)
     if "color" in body:
-        color = (body.get("color") or "").strip()
+        color = _body_str(body, "color")
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
             return jsonify({"ok": False, "error": "color must be #rrggbb"}), 400
         sets.append("color = ?"); params.append(color)
@@ -4611,7 +4629,7 @@ def _ts(value):
 @app.post("/tags/<int:tag_id>/rules")
 def add_tag_rule(tag_id):
     body    = request.get_json(silent=True) or {}
-    keyword = (body.get("keyword") or "").strip()
+    keyword = _body_str(body, "keyword")
     if not keyword:
         return jsonify({"ok": False, "error": "keyword required"}), 400
     with _db_lock:
@@ -4677,7 +4695,7 @@ def create_segment(video_id):
     end   = _parse_secs(body.get("end_secs"))
     if start is None or end is None or end <= start:
         return jsonify({"ok": False, "error": "need 0 <= start_secs < end_secs"}), 400
-    title = (body.get("title") or "").strip() or None
+    title = _body_str(body, "title") or None
     names = [n for n in (body.get("tags") or []) if isinstance(n, str) and n.strip()]
     with _db_lock:
         conn = get_conn()
@@ -4727,7 +4745,7 @@ def update_segment(segment_id):
             if end <= start:
                 conn.close()
                 return jsonify({"ok": False, "error": "start is past the end of the video"}), 400
-        title = ((body.get("title") or "").strip() or None) if "title" in body else cur["title"]
+        title = (_body_str(body, "title") or None) if "title" in body else cur["title"]
         # An edited chapter is the user's now: re-importing chapters must not replace it.
         changed = (start, end, title) != (cur["start_secs"], cur["end_secs"], cur["title"])
         source  = "manual" if changed else cur["source"]
@@ -4754,7 +4772,7 @@ def delete_segment(segment_id):
 @app.post("/segments/<int:segment_id>/tags")
 def add_segment_tag(segment_id):
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
+    name = _body_str(body, "name")
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
     with _db_lock:
@@ -4786,7 +4804,7 @@ def remove_segment_tag(segment_id, tag_id):
 @app.post("/videos/<vid:video_id>/tags")
 def add_video_tag(video_id):
     body = request.get_json(silent=True) or {}
-    name = (body.get("name") or "").strip()
+    name = _body_str(body, "name")
     if not name:
         return jsonify({"ok": False, "error": "name required"}), 400
     with _db_lock:
