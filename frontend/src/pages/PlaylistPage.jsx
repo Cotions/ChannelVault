@@ -4,7 +4,7 @@ import { getPlaylist, removeFromPlaylist } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
 import { useSortPins } from "../lib/sortPins";
-import { useRememberedPage } from "../lib/usePagination";
+import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -24,8 +24,8 @@ function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlayli
   const [videos,   setVideos]   = useState([]);
   const [error,    setError]    = useState(null);
   const [layout, setLayout] = useState(readLayout);
-  const [sort,   setSort]   = useState("upload");
-  const [dir,    setDir]    = useState("desc");
+  const [sort,   setSort]   = useRememberedState(`playlist:${id}:sort`, "upload");
+  const [dir,    setDir]    = useRememberedState(`playlist:${id}:dir`, "desc");
 
   const load = useCallback(async () => {
     try {

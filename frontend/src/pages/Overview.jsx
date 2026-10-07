@@ -1,15 +1,15 @@
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import { sortVideos, videoMatches, hasAllTags } from "../lib/sort";
 import { useSortPins } from "../lib/sortPins";
-import { useRememberedPage } from "../lib/usePagination";
+import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import TagChip from "../components/TagChip";
 
 export default function Overview({ videos, playlists, tags = [], tagIds = [], onTagIds, query, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
-  const [browseSort, setBrowseSort] = useState("upload");
-  const [browseDir,  setBrowseDir]  = useState("desc");
+  const [browseSort, setBrowseSort] = useRememberedState("home:sort", "upload");
+  const [browseDir,  setBrowseDir]  = useRememberedState("home:dir", "desc");
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
 
   const q = (query || "").trim();

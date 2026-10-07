@@ -4,7 +4,7 @@ import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
 import { useSortPins } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
-import { useRememberedPage } from "../lib/usePagination";
+import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import { getCreator, getCreators, getArtistLinks, linkArtists, unlinkArtist, getChannelStatuses, setChannelStatus, artistThumbUrl, scan } from "../lib/api";
 import { CHANNEL_STATUS, markedOn } from "../lib/channelStatus";
 import { describeLink } from "../lib/socials";
@@ -30,8 +30,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   const navigate = useNavigate();
   const artist   = name;              // the router already decoded it; again would choke on "%"
   const [layout, setLayout] = useState(readLayout);
-  const [sort,   setSort]   = useState("upload");
-  const [dir,    setDir]    = useState("desc");
+  const [sort,   setSort]   = useRememberedState(`artist:${name}:sort`, "upload");
+  const [dir,    setDir]    = useRememberedState(`artist:${name}:dir`, "desc");
   const [creator, setCreator] = useState(null);
   const [scanMsg, setScanMsg] = useState(null);   // null = idle
   const [scanning, setScanning] = useState(false);

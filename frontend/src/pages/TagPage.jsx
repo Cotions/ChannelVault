@@ -5,7 +5,7 @@ import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
 import { useSortPins } from "../lib/sortPins";
 import { fmtTime } from "../lib/fmt";
-import { useRememberedPage } from "../lib/usePagination";
+import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -29,8 +29,8 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
   const [videos, setVideos] = useState([]);
   const [error,  setError]  = useState(null);
   const [layout, setLayout] = useState(readLayout);
-  const [sort,   setSort]   = useState("upload");
-  const [dir,    setDir]    = useState("desc");
+  const [sort,   setSort]   = useRememberedState(`tag:${id}:sort`, "upload");
+  const [dir,    setDir]    = useRememberedState(`tag:${id}:dir`, "desc");
   const [queueBusy, setQueueBusy] = useState(false);
   const { playQueue } = usePlayer();
 
