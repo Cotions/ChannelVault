@@ -30,15 +30,22 @@ export function hasAllTags(v, tagIds) {
   return tagIds.every(id => mine.has(id));
 }
 
-// nulls sort last for numeric keys
+// nulls sort last for numeric keys. Compared, not subtracted: two nulls give
+// -Infinity - -Infinity = NaN, which breaks the sort's ordering.
 function num(v) {
   return v == null ? -Infinity : v;
+}
+function byNum(a, b) {
+  const x = num(a), y = num(b);
+  return x === y ? 0 : x > y ? 1 : -1;
 }
 
 // recorded_date comes in mixed formats: yt-dlp "20260426", site fetch "2026-05-26".
 // Strip non-digits so both become "20260426" for correct lexical ordering.
+// A year-only date ("2024") counts as the end of that year.
 function recDate(v) {
-  return (v || "").replace(/\D/g, "");
+  const d = (v || "").replace(/\D/g, "").slice(0, 8);
+  return d.length === 4 ? d + "9999" : d;
 }
 
 // A video we can't refetch (private/deleted/etc, or not on YouTube at all).
@@ -58,10 +65,10 @@ function cmpDesc(key, a, b) {
       if (da !== db) return da ? 1 : -1;
       return (a.stats_updated_at || "").localeCompare(b.stats_updated_at || "");
     }
-    case "duration": return num(b.duration_secs) - num(a.duration_secs);
-    case "views":    return num(b.view_count) - num(a.view_count);
-    case "likes":    return num(b.like_count) - num(a.like_count);
-    case "size":     return num(b.file_size_bytes) - num(a.file_size_bytes);
+    case "duration": return byNum(b.duration_secs, a.duration_secs);
+    case "views":    return byNum(b.view_count, a.view_count);
+    case "likes":    return byNum(b.like_count, a.like_count);
+    case "size":     return byNum(b.file_size_bytes, a.file_size_bytes);
     case "watched":  return (b.watch_count || 0) - (a.watch_count || 0);
     case "title":    return (b.title || b.video_id).localeCompare(a.title || a.video_id, undefined, { sensitivity: "base" });
     default:         return 0;

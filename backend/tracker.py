@@ -8,6 +8,7 @@ import csv
 import time
 import json
 import shutil
+import queue
 import errno
 import contextlib
 import tempfile
@@ -67,6 +68,7 @@ DEFAULT_WATCH   = os.path.join(os.path.expanduser("~"), "Downloads")
 DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "channelvault")
 
 app = Flask(__name__, static_folder=None)
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024   # JSON only; nothing here takes uploads
 
 
 # YouTube ids are exactly 11 URL-safe characters. Refusing anything else at the
@@ -258,10 +260,14 @@ _job_profile = threading.local()
 
 
 def _active_profile(raw):
-    want = getattr(_job_profile, "id", None) or raw.get("active_profile")
+    pinned = getattr(_job_profile, "id", None)
+    want   = pinned or raw.get("active_profile")
     for p in raw["profiles"]:
         if p.get("id") == want:
             return p
+    if pinned:
+        # The job's library was deleted mid-run: stop rather than carry on in another.
+        raise RuntimeError(f"profile {pinned!r} no longer exists")
     return raw["profiles"][0]
 
 
@@ -583,6 +589,15 @@ def init_db():
     if "source" not in cols:
         conn.execute("ALTER TABLE downloaded_videos ADD COLUMN source TEXT DEFAULT 'youtube'")
         conn.execute("UPDATE downloaded_videos SET source='youtube' WHERE source IS NULL")
+
+    # Migrate: a file's embedded chapters are offered once. Without this flag
+    # every scan re-read every file without segments, and a video whose
+    # segments the user deleted got its chapters back.
+    if "chapters_checked" not in cols:
+        conn.execute("ALTER TABLE downloaded_videos ADD COLUMN chapters_checked INTEGER DEFAULT 0")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='segments'").fetchone():
+            conn.execute("UPDATE downloaded_videos SET chapters_checked=1 "
+                         "WHERE video_id IN (SELECT DISTINCT video_id FROM segments)")
 
     # Migrate: absorb wanted_videos table if it still exists
     existing = conn.execute(
@@ -963,10 +978,10 @@ def process_video_file(file_path):
 
         result.update({"status": "tracked", "title": title, "video_id": video_id})
         print(f"[tracker] Tracked: {title} ({video_id})")
-        # Embedded chapters become segments, once. A rescan never touches a video
-        # that already has segments, so the user's edits survive.
+        # Embedded chapters become segments, once per video: a rescan never
+        # brings back segments the user edited or deleted.
         try:
-            chapters = _chapters_to_import(video_id, file_path)
+            chapters = _chapters_once(video_id, file_path)
             if chapters:
                 with _db_lock:
                     conn = get_conn()
@@ -1034,12 +1049,15 @@ _AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".oga", ".flac", ".wav",
 _LIBRARY_EXTS = _VIDEO_EXTS + _AUDIO_EXTS
 
 
-def _wait_until_settled(path, step=2, limit=1800):
+def _wait_until_settled(path, step=2, limit=1800, stop=None):
     """Block until the file's size and mtime stop changing. False if it vanished
-    (renamed/removed while waiting)."""
+    (renamed/removed while waiting) or the watcher was stopped meanwhile."""
     last = None
     for _ in range(int(limit / step)):
-        time.sleep(step)
+        if stop is not None and stop.wait(step):
+            return False
+        if stop is None:
+            time.sleep(step)
         try:
             st = os.stat(path)
         except OSError:
@@ -1051,14 +1069,14 @@ def _wait_until_settled(path, step=2, limit=1800):
     return os.path.isfile(path)
 
 
-def _handle_new_path(path):
+def _handle_new_path(path, stop=None):
     if not path.lower().endswith(_LIBRARY_EXTS):
         return
     if _is_temp_file(path) or _is_ignored(path):
         return
     # A copy or a slow download keeps growing after the event fires; wait for
     # the size to hold still so the tracked size/duration are the finished file's.
-    if not _wait_until_settled(path):
+    if not _wait_until_settled(path, stop=stop):
         return
     # A download that lands straight in the library root gets filed into its
     # artist folder, like "Organize loose files" would. Anything deeper, or a
@@ -1090,33 +1108,60 @@ def _tracked_elsewhere(path):
 
 
 class VideoDownloadHandler(FileSystemEventHandler):
+    """Hands new files to one worker thread, pinned to the profile the watcher
+    was started for. Waiting for a slow copy to settle happens there, so the
+    observer can stop at once on a profile switch, and a file that settles
+    afterwards is never written into the newly active library."""
+
+    def __init__(self, profile_id):
+        super().__init__()
+        self.profile_id = profile_id
+        self.stopped    = threading.Event()
+        self.queue      = queue.Queue()
+        threading.Thread(target=self._work, daemon=True).start()
+
+    def _work(self):
+        while not self.stopped.is_set():
+            try:
+                path = self.queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                with _pinned_profile(self.profile_id):
+                    _handle_new_path(path, self.stopped)
+            except Exception as e:
+                print(f"[watcher] {os.path.basename(path)}: {e}")
+
     def on_created(self, event):
         if not event.is_directory:
-            _handle_new_path(event.src_path)
+            self.queue.put(event.src_path)
 
     # yt-dlp downloads to a .temp/.part file then RENAMES it to the final name.
     # A rename fires on_moved (not on_created), so without this the finished
     # download is never tracked.
     def on_moved(self, event):
         if not event.is_directory:
-            _handle_new_path(event.dest_path)
+            self.queue.put(event.dest_path)
 
 _observer      = None
+_handler       = None
 _observer_lock = threading.Lock()
 _db_lock       = threading.Lock()
 
 def start_observer(directory):
-    global _observer
+    global _observer, _handler
     with _observer_lock:
+        if _handler:
+            _handler.stopped.set()       # its worker drops what's left; a scan picks it up
         if _observer and _observer.is_alive():
             _observer.stop()
             _observer.join()
         if not os.path.isdir(directory):
             print(f"[watcher] Directory not found: {directory}")
             return
-        handler   = VideoDownloadHandler()
+        _handler  = VideoDownloadHandler(load_config()["active_profile"])
         _observer = Observer()
-        _observer.schedule(handler, path=directory, recursive=True)
+        _observer.schedule(_handler, path=directory, recursive=True)
         _observer.start()
         print(f"[watcher] Monitoring {directory}")
 
@@ -1208,6 +1253,9 @@ def set_config():
             return jsonify({"ok": False, "error": "watch_directory is required"}), 400
         if not os.path.isdir(directory):
             return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
+        owner = _watch_dir_owner(_read_raw_config(), directory, exclude=cfg["active_profile"])
+        if owner:
+            return jsonify({"ok": False, "error": f"Profile \"{owner}\" already watches that folder or one overlapping it"}), 400
         cfg["watch_directory"] = directory
         save_config(cfg)
         clear_media_index()
@@ -1295,6 +1343,22 @@ def _data_dir_owner(raw, data_dir, exclude=None):
     return None
 
 
+def _watch_dir_owner(raw, watch_dir, exclude=None):
+    """Name of another profile whose watch folder is, contains, or sits inside
+    watch_dir, else None. Overlapping watch folders would track one file into
+    two libraries."""
+    def norm(p):
+        return os.path.realpath(os.path.expanduser(p)).rstrip(os.sep) + os.sep
+    want = norm(watch_dir)
+    for p in raw["profiles"]:
+        if p.get("id") == exclude:
+            continue
+        have = norm(_profile_defaults(dict(p))["watch_directory"])
+        if want.startswith(have) or have.startswith(want):
+            return p.get("name") or p["id"]
+    return None
+
+
 def _profile_video_count(data_dir):
     db = os.path.join(data_dir, "videos.db")
     if not os.path.exists(db):
@@ -1326,6 +1390,7 @@ def open_active_library():
     cfg = load_config()
     ensure_data_dir(cfg["data_directory"])
     clear_media_index()
+    _picked_paths.clear()              # import picks belong to the library they were made in
     init_db()
     sync_artist_folders()
     start_observer(cfg["watch_directory"])
@@ -1371,6 +1436,9 @@ def create_profile():
     owner = _data_dir_owner(raw, data)
     if owner:
         return jsonify({"ok": False, "error": f"Profile \"{owner}\" already uses that data directory"}), 400
+    owner = _watch_dir_owner(raw, watch)
+    if owner:
+        return jsonify({"ok": False, "error": f"Profile \"{owner}\" already watches that folder or one overlapping it"}), 400
     try:
         ensure_data_dir(data)
     except Exception as e:
@@ -1424,11 +1492,20 @@ def activate_profile(profile_id):
     raw = _read_raw_config()
     if not any(p["id"] == profile_id for p in raw["profiles"]):
         return jsonify({"ok": False, "error": "No such profile"}), 404
+    previous = raw.get("active_profile")
     raw["active_profile"] = profile_id
     _write_raw_config(raw)
     try:
         open_active_library()
     except Exception as e:
+        # Unreachable library (unmounted drive): stay on the one that works.
+        raw = _read_raw_config()
+        raw["active_profile"] = previous
+        _write_raw_config(raw)
+        try:
+            open_active_library()
+        except Exception:
+            pass
         return jsonify({"ok": False, "error": f"Cannot open profile: {_clean_err(e)}"}), 500
     print(f"[profiles] Switched to {load_config()['profile_name']}")
     return jsonify({"ok": True, "active": profile_id})
@@ -1618,7 +1695,16 @@ def list_video_ids():
     ignored    = [r["video_id"] for r in rows if r["status"] == "ignored"]
     return jsonify({"ids": downloaded, "wanted_ids": wanted, "ignored_ids": ignored})
 
+def _text(v, limit=500):
+    """A request value as stored text: strings only (a dict/list from a
+    malformed request is dropped, not crashed on), trimmed and capped."""
+    return v.strip()[:limit] or None if isinstance(v, str) else None
+
+
 def _upsert_mark(video_id, title, channel_name, url, status):
+    title, url = _text(title), _text(url, 2000)
+    if url and not re.match(r"https?://", url, re.I):
+        url = None
     conn = get_conn()
     conn.execute('''
         INSERT INTO downloaded_videos (video_id, title, channel_name, url, status)
@@ -1639,7 +1725,7 @@ def add_wanted():
     video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
         return jsonify({"ok": False, "error": "valid video_id required"}), 400
-    _upsert_mark(video_id, body.get("title"), _clean_name(body.get("channel_name")), body.get("url"), "wanted")
+    _upsert_mark(video_id, body.get("title"), _clean_name(_text(body.get("channel_name"))), body.get("url"), "wanted")
     return jsonify({"ok": True})
 
 @app.post("/do-not-want")
@@ -1648,7 +1734,7 @@ def add_ignored():
     video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
         return jsonify({"ok": False, "error": "valid video_id required"}), 400
-    _upsert_mark(video_id, body.get("title"), _clean_name(body.get("channel_name")), body.get("url"), "ignored")
+    _upsert_mark(video_id, body.get("title"), _clean_name(_text(body.get("channel_name"))), body.get("url"), "ignored")
     return jsonify({"ok": True})
 
 @app.delete("/mark/<vid:video_id>")
@@ -2059,20 +2145,36 @@ MIN_WATCHED_SECS = 30
 
 @app.post("/watch-progress/<vid:video_id>")
 def watch_progress(video_id):
-    body          = request.get_json(silent=True) or {}
-    session_id    = body.get("session_id")
-    watched_secs  = float(body.get("watched_secs") or 0)
-    position_secs = float(body.get("position_secs") or 0)
-    duration_secs = body.get("duration_secs")
-    duration_secs = float(duration_secs) if duration_secs else None
-
-    if duration_secs:
-        completed = 1 if watched_secs >= duration_secs * WATCHED_THRESHOLD else 0
-    else:
-        completed = 1 if watched_secs >= MIN_WATCHED_SECS else 0
+    body = request.get_json(silent=True) or {}
+    try:
+        session_id    = int(body["session_id"]) if body.get("session_id") else None
+        watched_secs  = max(0.0, float(body.get("watched_secs") or 0))
+        position_secs = max(0.0, float(body.get("position_secs") or 0))
+        duration_secs = float(body["duration_secs"]) if body.get("duration_secs") else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "bad numbers"}), 400
 
     with _db_lock:
         conn = get_conn()
+        if session_id:
+            row = conn.execute("SELECT watched_secs, duration_secs FROM watch_sessions WHERE id = ? AND video_id = ?",
+                               (session_id, video_id)).fetchone()
+            # Posts can land out of order (interval + pagehide): never go backwards.
+            if row:
+                watched_secs  = max(watched_secs, row["watched_secs"] or 0)
+                duration_secs = duration_secs or row["duration_secs"]
+        if not duration_secs:
+            # The player didn't know the length yet: the library does. Only with
+            # no length anywhere does a fixed minimum stand in for "most of it".
+            v = conn.execute("SELECT duration_secs FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
+            known = v["duration_secs"] if v else None
+        else:
+            known = duration_secs
+        if known:
+            completed = 1 if watched_secs >= known * WATCHED_THRESHOLD else 0
+        else:
+            completed = 1 if watched_secs >= MIN_WATCHED_SECS else 0
+
         if session_id:
             conn.execute('''
                 UPDATE watch_sessions SET
@@ -2189,6 +2291,9 @@ def add_playlist_video(playlist_id):
     if not conn.execute("SELECT 1 FROM playlists WHERE id = ?", (playlist_id,)).fetchone():
         conn.close()
         return jsonify({"ok": False, "error": "playlist not found"}), 404
+    if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone():
+        conn.close()
+        return jsonify({"ok": False, "error": "video not found"}), 404
     conn.execute(
         "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id) VALUES (?, ?)",
         (playlist_id, video_id)
@@ -2278,9 +2383,9 @@ def serve_userscript():
 @app.post("/videos/manual")
 def add_video_manual():
     body      = request.get_json(silent=True) or {}
-    raw_id    = (body.get("video_id") or "").strip()
-    url       = (body.get("url") or "").strip()
-    file_path = (body.get("file_path") or "").strip()
+    raw_id    = _text(body.get("video_id")) or ""
+    url       = _text(body.get("url"), 2000) or ""
+    file_path = _text(body.get("file_path"), 4096) or ""
 
     if url and not re.match(r"https?://", url, re.I):
         return jsonify({"ok": False, "error": "url must be an http(s) link"}), 400
@@ -2793,11 +2898,19 @@ def _read_meta(file_path):
     return meta or {}
 
 
+_YT_HOST = re.compile(r"^(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be)$")
+
+
 def _video_id_from_url(url):
+    """The YouTube id in a YouTube link, else None. Another site's "?v=123..."
+    is not a YouTube id, and the id must be exactly 11 characters."""
     if not url:
         return None
-    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url) or \
-        re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
+    m = re.match(r"(?:https?://)?([^/?#:]+)", url.strip(), re.I)
+    if not m or not _YT_HOST.match(m.group(1).lower()):
+        return None
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])", url) or \
+        re.search(r"(?:youtu\.be/|/(?:shorts|live|embed|v)/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])", url)
     return m.group(1) if m else None
 
 
@@ -3828,6 +3941,23 @@ def _chapters_to_import(video_id, file_path):
     return [] if has_any else (_read_chapters(file_path) or [])
 
 
+def _chapters_once(video_id, file_path):
+    """_chapters_to_import for the scan: only the first time a video is seen,
+    so deleting a video's segments sticks. Marks the video checked."""
+    conn = get_conn()
+    row = conn.execute("SELECT chapters_checked FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
+    conn.close()
+    if not row or row["chapters_checked"]:
+        return []
+    chapters = _chapters_to_import(video_id, file_path)
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("UPDATE downloaded_videos SET chapters_checked = 1 WHERE video_id = ?", (video_id,))
+        conn.commit()
+        conn.close()
+    return chapters
+
+
 def _import_chapters(conn, video_id, file_path, replace=False, chapters=None):
     """Turn embedded chapters into `source='chapter'` segments. Returns how many
     were added. With replace=False a video that already has segments is left
@@ -4187,6 +4317,7 @@ def update_segment(segment_id):
         title = ((body.get("title") or "").strip() or None) if "title" in body else cur["title"]
         conn.execute("UPDATE segments SET start_secs = ?, end_secs = ?, title = ? WHERE id = ?",
                      (start, end, title, segment_id))
+        _apply_rules(conn, video_ids=[cur["video_id"]])   # a renamed segment can now match a rule
         conn.commit()
         seg = next(s for s in _segments_for(conn, cur["video_id"]) if s["id"] == segment_id)
         conn.close()

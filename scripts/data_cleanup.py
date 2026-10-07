@@ -15,6 +15,8 @@ DB fixes (all on the active profile's videos.db, after a backup copy next to it)
   paths   a file_path that no longer exists but resolves to exactly one file
           (outside _archive-import) is rewritten to that file
   sizes   file_size_bytes follows the file on disk
+  watches a session marked watched with under 70% of a known length watched
+          (an old rule counted any 30s as watched) goes back to unwatched
   credits (only with --credits, reads every file's tags) a collab credit the
           file carries ("A, B") comes back when a metadata fetch cut it to one
           of those names
@@ -101,6 +103,13 @@ def main():
                         and current in tracker._artist_names(tag):
                     credits.append((r["video_id"], current, tag))
 
+    watches = [tuple(r) for r in conn.execute(
+        "SELECT s.id, s.video_id, s.watched_secs, COALESCE(s.duration_secs, v.duration_secs) "
+        "FROM watch_sessions s LEFT JOIN downloaded_videos v ON v.video_id = s.video_id "
+        "WHERE s.completed = 1 AND COALESCE(s.duration_secs, v.duration_secs) > 0 "
+        "AND s.watched_secs < COALESCE(s.duration_secs, v.duration_secs) * ?",
+        (tracker.WATCHED_THRESHOLD,))]
+
     def show(title, items, fmt):
         print(f"\n{title}: {len(items)}")
         for it in items[:8]:
@@ -113,6 +122,8 @@ def main():
     show("stale paths to rewrite", paths, lambda x: f"{x[0]}  {x[1]}\n      -> {x[2]}")
     if args.credits:
         show("collab credits to restore", credits, lambda x: f"{x[0]}  {x[1]!r} -> {x[2]!r}")
+    show("watches to un-mark (under 70% watched)", watches,
+         lambda x: f"session {x[0]}  {x[1]}  {x[2]:.0f}s of {x[3]:.0f}s")
     show("sizes to correct", sizes, lambda x: f"{x[0]}  {x[1]} -> {x[2]}")
     show("paths left alone (missing, or only found in staging)", unresolved,
          lambda x: f"{x[0]}  {x[1]}" + (f"  (staging: {x[2]})" if x[2] else ""))
@@ -150,9 +161,11 @@ def main():
             conn.execute("UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (hit, vid))
         for vid, _, tag in credits:
             conn.execute("UPDATE downloaded_videos SET channel_name=? WHERE video_id=?", (tag, vid))
+        for sid, *_ in watches:
+            conn.execute("UPDATE watch_sessions SET completed = 0 WHERE id = ?", (sid,))
         for vid, _, size in sizes:
             conn.execute("UPDATE downloaded_videos SET file_size_bytes=? WHERE video_id=?", (size, vid))
-    print(f"DB updated: {len(names)} names, {len(dates)} dates, {len(paths)} paths, {len(sizes)} sizes, {len(credits)} credits")
+    print(f"DB updated: {len(names)} names, {len(dates)} dates, {len(paths)} paths, {len(sizes)} sizes, {len(credits)} credits, {len(watches)} watches")
     conn.close()
 
     if args.delete_staging_dupes:
