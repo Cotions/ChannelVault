@@ -1328,50 +1328,76 @@ def set_config():
     body = request.get_json(silent=True) or {}
     cfg  = load_config()
 
+    def bad(msg):
+        return jsonify({"ok": False, "error": msg}), 400
+
+    # Validate every key first: a request that is refused must change nothing.
     if "watch_directory" in body:
         directory = _body_path(body, "watch_directory")
         if not directory:
-            return jsonify({"ok": False, "error": "watch_directory is required"}), 400
+            return bad("watch_directory is required")
         if not os.path.isdir(directory):
-            return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
+            return bad(f"Directory not found: {directory}")
         if _system_dir(directory):
-            return jsonify({"ok": False, "error": f"Not a media folder: {directory}"}), 400
+            return bad(f"Not a media folder: {directory}")
         owner = _watch_dir_owner(_read_raw_config(), directory, exclude=cfg["active_profile"])
         if owner:
-            return jsonify({"ok": False, "error": f"Profile \"{owner}\" already watches that folder or one overlapping it"}), 400
-        cfg["watch_directory"] = directory
-        save_config(cfg)
-        clear_media_index()
-        start_observer(directory)
+            return bad(f"Profile \"{owner}\" already watches that folder or one overlapping it")
 
     if "media_roots" in body:
         roots = body["media_roots"]
         if not isinstance(roots, list):
-            return jsonify({"ok": False, "error": "media_roots must be a list"}), 400
+            return bad("media_roots must be a list")
         # Don't require existence: a Windows root won't exist when running on
         # Linux (and vice-versa). The resolver skips dead roots at read time.
         roots = [str(r).strip() for r in roots if str(r).strip()]
-        bad   = next((r for r in roots if _system_dir(r)), None)
-        if bad:
-            return jsonify({"ok": False, "error": f"Not a media folder: {bad}"}), 400
-        cfg["media_roots"] = roots
-        save_config(cfg)
-        clear_media_index()
+        bad_root = next((r for r in roots if _system_dir(r)), None)
+        if bad_root:
+            return bad(f"Not a media folder: {bad_root}")
 
     # yt-dlp: cookie jar for age-gated videos, JS runtime for the "n" challenge.
     # Both end up on yt-dlp's command line, so only known values get stored.
     if "ytdlp_js_runtime" in body:
         runtime = str(body["ytdlp_js_runtime"] or "").strip()
         if runtime and not _check_js_runtime(runtime):
-            return jsonify({"ok": False, "error":
-                f"JS runtime must be one of {', '.join(_JS_RUNTIMES)}, or name:/path/to/executable"}), 400
-        cfg["ytdlp_js_runtime"] = _check_js_runtime(runtime) or ""
-        save_config(cfg)
+            return bad(f"JS runtime must be one of {', '.join(_JS_RUNTIMES)}, or name:/path/to/executable")
 
     if "ytdlp_cookies_from_browser" in body:
         browser = str(body["ytdlp_cookies_from_browser"] or "").strip()
         if browser and not _COOKIE_BROWSER_RE.fullmatch(browser):
-            return jsonify({"ok": False, "error": f"Unknown browser: {browser}"}), 400
+            return bad(f"Unknown browser: {browser}")
+
+    if "data_directory" in body:
+        data_dir = _body_path(body, "data_directory")
+        if not data_dir:
+            return bad("data_directory is required")
+        if _system_dir(data_dir):
+            return bad(f"Not a data directory: {data_dir}")
+        owner = _data_dir_owner(_read_raw_config(), data_dir, exclude=cfg["active_profile"])
+        if owner:
+            return bad(f"Profile \"{owner}\" already uses that data directory")
+        try:
+            ensure_data_dir(data_dir)
+        except Exception as e:
+            return bad(f"Cannot create directory: {_clean_err(e)}")
+
+    # Apply.
+    if "watch_directory" in body:
+        cfg["watch_directory"] = directory
+        save_config(cfg)
+        clear_media_index()
+        start_observer(directory)
+
+    if "media_roots" in body:
+        cfg["media_roots"] = roots
+        save_config(cfg)
+        clear_media_index()
+
+    if "ytdlp_js_runtime" in body:
+        cfg["ytdlp_js_runtime"] = _check_js_runtime(runtime) or ""
+        save_config(cfg)
+
+    if "ytdlp_cookies_from_browser" in body:
         changed = browser != (cfg.get("ytdlp_cookies_from_browser") or "")
         cfg["ytdlp_cookies_from_browser"] = browser
         save_config(cfg)
@@ -1385,18 +1411,6 @@ def set_config():
                 conn.close()
 
     if "data_directory" in body:
-        data_dir = _body_path(body, "data_directory")
-        if not data_dir:
-            return jsonify({"ok": False, "error": "data_directory is required"}), 400
-        if _system_dir(data_dir):
-            return jsonify({"ok": False, "error": f"Not a data directory: {data_dir}"}), 400
-        owner = _data_dir_owner(_read_raw_config(), data_dir, exclude=cfg["active_profile"])
-        if owner:
-            return jsonify({"ok": False, "error": f"Profile \"{owner}\" already uses that data directory"}), 400
-        try:
-            ensure_data_dir(data_dir)
-        except Exception as e:
-            return jsonify({"ok": False, "error": f"Cannot create directory: {_clean_err(e)}"}), 400
         old_db = os.path.join(cfg["data_directory"], "videos.db")
         new_db = os.path.join(data_dir, "videos.db")
         if os.path.exists(old_db) and not os.path.exists(new_db):

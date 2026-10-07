@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.6.2
+// @version      1.6.3
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -711,14 +711,40 @@ GM_addStyle(`
   .cv-save-creator.cv-saved { background: #1b5e20; }
 `);
 
+// Count multipliers as YouTube abbreviates them across UI languages.
+const COUNT_MULTIPLIERS = {
+  k: 1e3, tsd: 1e3, mil: 1e3, tys: 1e3, "тыс": 1e3, "千": 1e3, "万": 1e4, "億": 1e8,
+  m: 1e6, mio: 1e6, mln: 1e6, mn: 1e6, mi: 1e6, "млн": 1e6,
+  b: 1e9, md: 1e9, mrd: 1e9, mld: 1e9, "млрд": 1e9,
+};
+
+// Locale-aware: "1.2K", "1,2 k", "1.234", "12 345 678", "1,2 Mio." all parse.
+// Returns null when the number is ambiguous so a stored value isn't replaced
+// with a wrong one.
 function parseAbbrevCount(text) {
   if (!text) return null;
-  const m = text.replace(/,/g, "").match(/([\d.]+)\s*([KMB])?/i);
+  const m = text.match(/\d+(?:[.,'\u00a0\u202f\u2009 ]\d+)*/);
   if (!m) return null;
-  const n = parseFloat(m[1]);
-  if (isNaN(n)) return null;
-  const suf = (m[2] || "").toUpperCase();
-  const mult = suf === "K" ? 1e3 : suf === "M" ? 1e6 : suf === "B" ? 1e9 : 1;
+  const word = (text.slice(m.index + m[0].length).trim().match(/^[^\s\d.,]+/) || [""])[0];
+  const mult = COUNT_MULTIPLIERS[word.replace(/\.$/, "").toLowerCase()] || 1;
+
+  let num = m[0].replace(/['\u00a0\u202f\u2009 ]/g, "");
+  const seps = num.match(/[.,]/g) || [];
+  if (seps.length) {
+    const last = num.lastIndexOf(seps[seps.length - 1]);
+    const tail = num.slice(last + 1);
+    const mixed = new Set(seps).size > 1;
+    // One kind repeated, or a lone separator before 3 digits with no
+    // multiplier, groups thousands; otherwise the last one is the decimal point.
+    const grouping = !mixed && (seps.length > 1 || (mult === 1 && tail.length === 3));
+    num = grouping
+      ? num.replace(/[.,]/g, "")
+      : num.slice(0, last).replace(/[.,]/g, "") + "." + tail;
+  }
+  const n = parseFloat(num);
+  if (!Number.isFinite(n)) return null;
+  // A fraction without a known multiplier means an unknown abbreviation.
+  if (mult === 1 && !Number.isInteger(n)) return null;
   return Math.round(n * mult);
 }
 
