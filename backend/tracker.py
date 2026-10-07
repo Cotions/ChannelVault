@@ -3792,11 +3792,27 @@ def serve_artist_thumb(name):
     if artist_dir == artist_thumbs_dir or \
             os.path.commonpath([artist_dir, artist_thumbs_dir]) != artist_thumbs_dir:
         return ("", 404)
-    if os.path.isdir(artist_dir):
-        for fname in os.listdir(artist_dir):
-            if fname.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
-                return send_from_directory(artist_dir, fname)
-    return ("", 404)
+    if not os.path.isdir(artist_dir):
+        return ("", 404)
+    images = sorted(f for f in os.listdir(artist_dir)
+                    if f.lower().endswith((".jpg", ".jpeg", ".webp", ".png")))
+    if not images:
+        return ("", 404)
+    # The folder holds one thumbnail per video, plus leftovers of videos since
+    # removed. Show the newest video still in the library; directory order is
+    # arbitrary and could pick a removed one.
+    by_id = {}
+    for f in images:
+        by_id.setdefault(os.path.splitext(f)[0], f)
+    ids   = list(by_id)[:900]
+    marks = ",".join("?" * len(ids))
+    conn  = get_conn()
+    row   = conn.execute(
+        f"SELECT video_id FROM downloaded_videos WHERE status = 'downloaded' AND video_id IN ({marks}) "
+        "ORDER BY COALESCE(recorded_date, '') DESC, downloaded_at DESC LIMIT 1", ids
+    ).fetchone()
+    conn.close()
+    return _send_thumb(artist_dir, by_id[row["video_id"]] if row else images[0])
 
 
 # 4:3 fallbacks (sddefault/hqdefault) are a 16:9 frame with black bars baked
