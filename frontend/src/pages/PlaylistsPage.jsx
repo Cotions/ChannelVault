@@ -52,7 +52,10 @@ export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDe
               <button
                 className="del-btn del-btn-danger"
                 title="Delete playlist"
-                onClick={e => { e.stopPropagation(); onDeletePlaylist(pl.id); }}
+                onClick={e => {
+                  e.stopPropagation();
+                  if (window.confirm(`Delete playlist "${pl.name}"? The videos stay in the library.`)) onDeletePlaylist(pl.id);
+                }}
               >
                 <Icon name="trash" />
               </button>
