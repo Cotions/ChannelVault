@@ -15,7 +15,14 @@ import { usePlayer } from "../player/playerContext";
 
 /* The home of one tag: every video carrying it, and under each card the exact
    segments, as links that open the video at that second. */
-export default function TagPage({ libraryVersion, query, onEdit, onFetchMeta, playlists, onAddToPlaylist, onDelete }) {
+// Remount per id: the previous one's data, errors and in-flight requests
+// must never show on the next.
+export default function TagPage(props) {
+  const { id } = useParams();
+  return <TagPageBody key={id} {...props} />;
+}
+
+function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, onAddToPlaylist, onDelete }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [tag,    setTag]    = useState(null);
@@ -45,6 +52,7 @@ export default function TagPage({ libraryVersion, query, onEdit, onFetchMeta, pl
       if (!r.ok) throw new Error(r.error || "not found");
       setTag(r.tag);
       setVideos(r.videos);
+      setError(null);
     } catch (e) {
       setError(e.message);
     }

@@ -163,7 +163,9 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     setThumbBusy(true);
     try {
       const r = await fetchThumbnail(id, true);
-      if (r.added) {
+      if (r.availability) setThumbMsg("Unavailable on YouTube");
+      else if (!r.ok)     setThumbMsg("Fetch failed");
+      else if (r.added) {
         const list = await loadThumbs();
         setThumbIdx(Math.max(0, list.length - 1));
         setThumbMsg("New thumbnail saved");

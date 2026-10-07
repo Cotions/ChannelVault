@@ -18,7 +18,14 @@ import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
 
-export default function ArtistPage({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
+// Remount per name: the previous one's data, errors and in-flight requests
+// must never show on the next.
+export default function ArtistPage(props) {
+  const { name } = useParams();
+  return <ArtistPageBody key={name} {...props} />;
+}
+
+function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const artist   = name;              // the router already decoded it; again would choke on "%"
@@ -45,7 +52,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
 
   useEffect(() => {
     let alive = true;
-    getCreator(artist).then(c => { if (alive) setCreator(c); });
+    getCreator(artist).then(c => { if (alive) setCreator(c); }).catch(() => {});
     getArtistLinks(artist).then(l => { if (alive) setLinked(l || []); }).catch(() => {});
     getChannelStatuses().then(m => { if (alive) setChannelMark(m?.[artist] || null); }).catch(() => {});
     return () => { alive = false; };
