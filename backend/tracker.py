@@ -3019,6 +3019,35 @@ def delete_video(video_id):
         conn.close()
     return jsonify({"ok": True})
 
+# Link id per file version, so revisiting the duplicates check doesn't re-parse
+# (and ffprobe) the whole library: an unchanged file costs one stat.
+_link_id_cache = {}
+
+def _file_link_id(fpath):
+    try:
+        st = os.stat(fpath)
+    except OSError:
+        return None
+    key = (fpath, st.st_size, st.st_mtime_ns)
+    if key in _link_id_cache:
+        return _link_id_cache[key]
+    vid = None
+    try:
+        try:
+            meta = _meta_from_tinytag(fpath)
+        except Exception:
+            meta = None
+        if not meta or not meta.get("url"):
+            meta = _meta_from_ffprobe(fpath)
+        vid = _entry_id(meta.get("url"))[0]
+    except Exception:
+        pass
+    if len(_link_id_cache) > 50000:
+        _link_id_cache.clear()
+    _link_id_cache[key] = vid
+    return vid
+
+
 @app.get("/data-quality/duplicates")
 def data_quality_duplicates():
     cfg = load_config()
@@ -3037,18 +3066,9 @@ def data_quality_duplicates():
             fpath = os.path.join(root, fname)
             if os.path.realpath(fpath) in tracks:
                 continue
-            try:
-                try:
-                    meta = _meta_from_tinytag(fpath)
-                except Exception:
-                    meta = None
-                if not meta or not meta.get("url"):
-                    meta = _meta_from_ffprobe(fpath)
-                vid, _src = _entry_id(meta.get("url"))
-                if vid:
-                    groups[vid].append(fpath)
-            except Exception:
-                pass
+            vid = _file_link_id(fpath)
+            if vid:
+                groups[vid].append(fpath)
     duplicates = [
         {"video_id": vid, "title": None, "files": paths}
         for vid, paths in groups.items()
