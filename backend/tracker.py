@@ -2535,6 +2535,16 @@ def add_video_manual():
         re.search(r"/(?:shorts|embed|v)/([A-Za-z0-9_-]{11})", raw_id)
     video_id = _valid_video_id(m.group(1) if m else raw_id)
     source   = None
+    # The edit dialog only ever updates the entry it was opened on.
+    editing  = bool(body.get("edit"))
+    if editing:
+        if not video_id:
+            return jsonify({"ok": False, "error": "video_id is required"}), 400
+        conn = get_conn()
+        exists = conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+        conn.close()
+        if not exists:
+            return jsonify({"ok": False, "error": "Video not found"}), 404
     if video_id:
         conn = get_conn()
         row  = conn.execute("SELECT source FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
@@ -2578,15 +2588,20 @@ def add_video_manual():
             INSERT INTO downloaded_videos
                 (video_id, title, channel_name, url, file_path,
                  genre, description, recorded_date, duration_secs, file_size_bytes, source, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'youtube'), 'downloaded')
+            VALUES (:id, :title, :channel, :url, :path, :genre, :desc, :date, :dur, :size,
+                    COALESCE(:source, 'youtube'), 'downloaded')
             ON CONFLICT(video_id) DO UPDATE SET
                 title            = COALESCE(excluded.title, downloaded_videos.title),
                 channel_name     = COALESCE(excluded.channel_name, downloaded_videos.channel_name),
                 url              = COALESCE(excluded.url, downloaded_videos.url),
                 file_path        = COALESCE(excluded.file_path, downloaded_videos.file_path),
-                genre            = COALESCE(excluded.genre, downloaded_videos.genre),
-                description      = COALESCE(excluded.description, downloaded_videos.description),
-                recorded_date    = COALESCE(excluded.recorded_date, downloaded_videos.recorded_date),
+                -- An edit can empty these; adding a file again only fills gaps.
+                genre            = CASE WHEN :edit THEN excluded.genre
+                                        ELSE COALESCE(excluded.genre, downloaded_videos.genre) END,
+                description      = CASE WHEN :edit THEN excluded.description
+                                        ELSE COALESCE(excluded.description, downloaded_videos.description) END,
+                recorded_date    = CASE WHEN :edit THEN excluded.recorded_date
+                                        ELSE COALESCE(excluded.recorded_date, downloaded_videos.recorded_date) END,
                 duration_secs    = COALESCE(excluded.duration_secs, downloaded_videos.duration_secs),
                 file_size_bytes  = COALESCE(excluded.file_size_bytes, downloaded_videos.file_size_bytes),
                 -- An edit keeps the original download date and a hidden (attached)
@@ -2595,19 +2610,20 @@ def add_video_manual():
                                         THEN downloaded_videos.downloaded_at ELSE CURRENT_TIMESTAMP END,
                 status           = CASE WHEN downloaded_videos.status = 'attached'
                                         THEN 'attached' ELSE 'downloaded' END
-        ''', (
-            video_id,
-            body.get("title") or None,
-            _clean_name(body.get("channel_name")),
-            url or None,
-            file_path or None,
-            body.get("genre") or None,
-            body.get("description") or None,
-            body.get("recorded_date") or None,
-            body.get("duration_secs") or None,
-            body.get("file_size_bytes") or None,
-            source,
-        ))
+        ''', {
+            "id":      video_id,
+            "title":   body.get("title") or None,
+            "channel": _clean_name(body.get("channel_name")),
+            "url":     url or None,
+            "path":    file_path or None,
+            "genre":   body.get("genre") or None,
+            "desc":    body.get("description") or None,
+            "date":    body.get("recorded_date") or None,
+            "dur":     body.get("duration_secs") or None,
+            "size":    body.get("file_size_bytes") or None,
+            "source":  source,
+            "edit":    editing,
+        })
         conn.commit()
         conn.close()
 
