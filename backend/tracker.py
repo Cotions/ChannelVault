@@ -1900,10 +1900,8 @@ def check_video(video_id):
 @app.post("/update-stats/<vid:video_id>")
 def update_stats(video_id):
     body       = request.get_json(silent=True) or {}
-    def count(v):
-        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None
-    view_count = count(body.get("view_count"))
-    like_count = count(body.get("like_count"))
+    view_count = _count(body.get("view_count"))
+    like_count = _count(body.get("like_count"))
     if view_count is None and like_count is None:
         return jsonify({"ok": False, "error": "no counts"}), 400
     conn = get_conn()
@@ -1932,6 +1930,19 @@ def _body_str(body, key, limit=500):
     (a number or list from a malformed request must not crash the handler)."""
     v = body.get(key)
     return v.strip()[:limit] if isinstance(v, str) else ""
+
+
+def _count(v):
+    """A scraped count as a non-negative integer, else None. A string or float
+    from a bad parse must not land in an integer column and break sorting;
+    inf or a value past 2**63 must not crash int() or SQLite."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return n if 0 <= n < 2**63 else None
 
 
 def _positive_num(v, kind=float):
@@ -4118,7 +4129,9 @@ def _unwrap_yt_redirect(url):
 def _safe_link(url):
     """Only keep web URLs. Scraped About-panel links are attacker-controlled and
     a javascript: href would execute in the dashboard when clicked."""
-    u = _unwrap_yt_redirect((url or "").strip())
+    if not isinstance(url, str):
+        return None
+    u = _unwrap_yt_redirect(url.strip()[:2000])
     return u if u.lower().startswith(_SAFE_LINK_SCHEMES) else None
 
 
@@ -4156,15 +4169,6 @@ def upsert_creator():
     if not channel_name:
         return jsonify({"ok": False, "error": "channel_name required"}), 400
 
-    def count(v):
-        # Scraped numbers: a string or float from a bad parse must not land in
-        # an integer column and break sorting.
-        try:
-            n = int(v) if v is not None and not isinstance(v, bool) else None
-        except (TypeError, ValueError):
-            return None
-        return n if n is not None and n >= 0 else None
-
     links      = _safe_links(body.get("links"))
     links_json = json.dumps(links) if links else None
     vals = {
@@ -4174,10 +4178,10 @@ def upsert_creator():
         "description":      _text(body.get("description"), 10000),
         "country":          _text(body.get("country"), 100),
         "joined_date":      _text(body.get("joined_date"), 100),
-        "subscriber_count": count(body.get("subscriber_count")),
+        "subscriber_count": _count(body.get("subscriber_count")),
         "subscribers_text": _text(body.get("subscribers_text"), 100),
-        "video_count":      count(body.get("video_count")),
-        "total_views":      count(body.get("total_views")),
+        "video_count":      _count(body.get("video_count")),
+        "total_views":      _count(body.get("total_views")),
         "links":            links_json,
         "email":            _text(body.get("email"), 320),
     }
