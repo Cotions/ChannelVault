@@ -176,7 +176,7 @@ def main():
             conn.execute("UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (hit, vid))
             # A soundtrack's file is named twice (its hidden entry and its track
             # row); both must move together or the track stops being recognised.
-            conn.execute("UPDATE audio_tracks SET file_path=? WHERE file_path=?", (hit, old))
+            conn.execute("UPDATE OR IGNORE audio_tracks SET file_path=? WHERE file_path=?", (hit, old))
         for vid, _, tag in credits:
             conn.execute("UPDATE downloaded_videos SET channel_name=? WHERE video_id=?", (tag, vid))
         for sid, *_ in watches:
