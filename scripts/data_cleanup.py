@@ -187,8 +187,23 @@ def main():
     conn.close()
 
     if args.delete_staging_dupes:
+        # A staging file an entry or a soundtrack still points at is in use,
+        # whatever else matches it. Read after the DB fixes above were written.
+        conn = tracker.get_conn()
+        in_use = set()
+        for (fp,) in conn.execute("SELECT file_path FROM downloaded_videos WHERE file_path IS NOT NULL "
+                                  "UNION SELECT file_path FROM audio_tracks"):
+            for cand in (fp, tracker.resolve_media_path(fp)):
+                if cand and os.path.exists(cand):
+                    in_use.add(os.path.realpath(cand))
+        conn.close()
         freed = deleted = 0
         for p, size, twins in dupes:
+            if os.path.realpath(p) in in_use:
+                print(f"  kept {p} (the library uses this copy)")
+                continue
+            # Never let a file count as its own twin (same file via another path or mount).
+            twins = [t for t in twins if os.path.exists(t) and not os.path.samefile(p, t)]
             if any(filecmp.cmp(p, t, shallow=False) for t in twins):
                 os.remove(p)
                 freed += size
