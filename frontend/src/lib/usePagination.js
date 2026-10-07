@@ -33,3 +33,16 @@ export function useRememberedPage(key, resetDeps = []) {
 
   return [page, setPage];
 }
+
+// Sort/direction memory per list key, alongside the page: a remembered page
+// only means something in the order it was counted in.
+const sortMem = new Map();
+
+export function useRememberedState(key, initial) {
+  const [value, setRaw] = useState(() => (sortMem.has(key) ? sortMem.get(key) : initial));
+  const set = useCallback((v) => {
+    sortMem.set(key, v);
+    setRaw(v);
+  }, [key]);
+  return [value, set];
+}
