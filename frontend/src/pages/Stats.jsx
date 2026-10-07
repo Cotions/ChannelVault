@@ -3,6 +3,7 @@ import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 import { artistsOf } from "../lib/artists";
 import Icon from "../components/Icon";
+import { isYouTube } from "../lib/source";
 
 function fmtHours(secs) {
   if (!secs) return "—";
@@ -70,33 +71,57 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   // What is left of the channel on YouTube, as of each video's last fetch.
   // Geo-blocked and age-gated videos are still up for the public, just gated.
   // Unfetched videos (no availability yet) count toward none of these.
-  const availCount = (...states) => scopeVideos.filter(v => states.includes(v.availability)).length;
+  // Only YouTube entries can be up or down there; Twitch VODs and local files sit out.
+  const ytVideos   = scopeVideos.filter(isYouTube);
+  const availCount = (...states) => ytVideos.filter(v => states.includes(v.availability)).length;
   const publicCount    = availCount("available", "geo", "age");
   const deletedCount   = availCount("deleted", "unavailable");
   const privateCount   = availCount("private");
   const membersCount   = availCount("members");
-  const uncheckedCount = scopeVideos.filter(v => !v.availability).length;
-  const youtubeStats = artist ? [
-    { num: fmt(publicCount),  label: uncheckedCount ? `still public · ${uncheckedCount} unchecked` : "still public" },
-    { num: fmt(deletedCount), label: "deleted", color: "#ef9a9a" },
-    { num: fmt(privateCount), label: "private", color: "#ffd591" },
-    // Most channels have none; an always-zero tile would just push the grid to a third row.
-    ...(membersCount ? [{ num: fmt(membersCount), label: "members only", color: "#90caf9" }] : []),
-  ] : [];
+  const uncheckedCount = ytVideos.filter(v => !v.availability).length;
+  const checkedCount = publicCount + deletedCount + privateCount + membersCount;
+  const pct = n => (checkedCount ? `${Math.round((n / checkedCount) * 100)}% of checked` : null);
+  const availSegments = [
+    { key: "public",    n: publicCount,    label: "still public", color: "var(--glow)" },
+    { key: "deleted",   n: deletedCount,   label: "deleted",      color: "#ef9a9a" },
+    { key: "private",   n: privateCount,   label: "private",      color: "#ffd591" },
+    { key: "members",   n: membersCount,   label: "members only", color: "#90caf9" },
+  ];
 
-  const heroStats = [
-    // Row 1: count, breadth, coverage, queue
+  // Grouped by what the numbers are about rather than one flat grid, so a
+  // reader finds "how big is the vault" and "what is left on YouTube" at a glance.
+  const libraryStats = [
     { num: fmt(scopeVideos.length),                              label: "videos vaulted" },
     ...(artist ? [] : [{ num: fmt(channels.length),              label: "channels" }]),
-    { num: fmt(scopeVideos.filter(v => v.view_count != null).length), label: "with stats" },
-    ...(artist ? [] : [{ num: fmt(wanted.length),                label: "wanted", color: "#90caf9" }]),
-    // Row 2: engagement, data, time, state (ignored last)
-    { num: fmt(totalWatches),                                    label: "total watches" },
-    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: withSize.length < scopeVideos.length ? `on disk · ${withSize.length}/${scopeVideos.length} known` : "on disk" },
+    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: "on disk", sub: withSize.length < scopeVideos.length ? `${withSize.length}/${scopeVideos.length} sizes known` : null },
     { num: fmtHours(totalSecs),                                  label: "of footage" },
-    ...(artist ? [] : [{ num: fmt(ignored.length),               label: "ignored", color: "#ef9a9a" }]),
-    ...youtubeStats,
   ];
+  const activityStats = [
+    { num: fmt(totalWatches),                                    label: "total watches" },
+    { num: fmt(scopeVideos.filter(v => v.view_count != null).length), label: "with stats" },
+    ...(artist ? [] : [
+      { num: fmt(wanted.length),                                 label: "wanted",  color: "#90caf9" },
+      { num: fmt(ignored.length),                                label: "ignored", color: "#ef9a9a" },
+    ]),
+  ];
+  const youtubeStats = availSegments
+    .map(s => ({ num: fmt(s.n), label: s.label, sub: pct(s.n), color: s.key === "public" ? undefined : s.color }));
+  const youtubeGroup = {
+    key: "youtube", title: "On YouTube", stats: youtubeStats, bar: true,
+    aside: uncheckedCount ? `${fmt(uncheckedCount)} unchecked` : null,
+  };
+
+  // An artist has no wanted/ignored tiles, so its two activity numbers join the
+  // library row and YouTube takes the full width instead of leaving a lopsided pair.
+  const groups = artist ? [
+    { key: "library",  title: "Library",  stats: [...libraryStats, ...activityStats], wide: true },
+    { ...youtubeGroup, wide: true },
+  ] : [
+    { key: "library",  title: "Library",  stats: libraryStats, wide: true },
+    { key: "activity", title: "Activity", stats: activityStats },
+    youtubeGroup,
+  ];
+  let cellIndex = 0;
 
   const title    = artist ? `${artist} · Stats` : "Stats";
 
@@ -119,12 +144,33 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
         <div className="card"><div className="empty">No data yet.</div></div>
       ) : (
         <>
-          <div className="stats-hero">
-            {heroStats.map((s, i) => (
-              <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${i * 90}ms` }}>
-                <span className="stats-hero-num" style={s.color ? { color: s.color } : undefined}>{s.num}</span>
-                <span className="stats-hero-label">{s.label}</span>
-              </div>
+          <div className="stats-groups">
+            {groups.map(g => (
+              <section key={g.key} className={`stats-group${g.wide ? " is-wide" : ""}`}>
+                <div className="stats-group-head">
+                  <span className="stats-group-title">{g.title}</span>
+                  {g.aside && <span className="stats-group-aside">{g.aside}</span>}
+                </div>
+                {g.bar && checkedCount > 0 && (
+                  <div className="avail-bar" title={availSegments.map(s => `${s.label}: ${s.n}`).join(" · ")}>
+                    {availSegments.filter(s => s.n > 0).map(s => (
+                      <span key={s.key} className="avail-bar-seg" style={{ flexGrow: s.n, background: s.color }} />
+                    ))}
+                  </div>
+                )}
+                <div
+                  className={`stats-hero${g.wide ? "" : " is-compact"}`}
+                  style={{ gridTemplateColumns: `repeat(${g.wide ? g.stats.length : 2}, 1fr)` }}
+                >
+                  {g.stats.map(s => (
+                    <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${cellIndex++ * 60}ms` }}>
+                      <span className="stats-hero-num" style={s.color ? { color: s.color } : undefined}>{s.num}</span>
+                      <span className="stats-hero-label">{s.label}</span>
+                      {s.sub && <span className="stats-hero-sub">{s.sub}</span>}
+                    </div>
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
 

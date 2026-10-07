@@ -45,6 +45,11 @@ export function saveDataDir(dir)     { return post("/config", { data_directory: 
 export function saveMediaRoots(roots) { return post("/config", { media_roots: roots }); }
 export function saveYtdlp(opts)      { return post("/config", opts); }
 export function getYtdlpStatus()     { return get("/ytdlp/status"); }
+export function getProfiles()        { return get("/profiles"); }
+export function createProfile(p)     { return post("/profiles", p); }
+export function renameProfile(id, name) { return patch(`/profiles/${encodeURIComponent(id)}`, { name }); }
+export function deleteProfile(id)    { return del(`/profiles/${encodeURIComponent(id)}`); }
+export function activateProfile(id)  { return post(`/profiles/${encodeURIComponent(id)}/activate`, {}); }
 export function browse()             { return get("/browse"); }
 export function browseData()         { return get("/browse?title=Select+data+directory"); }
 export function browseFile()         { return get("/browse-file"); }
@@ -58,6 +63,7 @@ export function fetchMetadata(id)    { return post(`/fetch-metadata/${id}`, {});
 export function removeMark(id)     { return del(`/mark/${id}`); }
 export function getDuplicates()    { return get("/data-quality/duplicates"); }
 export function getMissing()       { return get("/data-quality/missing"); }
+export function getQualityChecks() { return get("/data-quality/checks"); }
 export function organizePreview(source) {
   return get(`/organize/preview${source ? `?source=${encodeURIComponent(source)}` : ""}`);
 }
@@ -103,6 +109,11 @@ export async function getCreator(name) {
   try { return await get(`/creator/${encodeURIComponent(name)}`); }
   catch { return null; }
 }
+export function getArtistLinks(name) { return get(`/artist-links/${encodeURIComponent(name)}`); }
+export function linkArtists(a, b)    { return post("/artist-links", { a, b }); }
+export function unlinkArtist(name)   { return del(`/artist-links/${encodeURIComponent(name)}`); }
+export function getChannelStatuses()  { return get("/channel-status"); }
+export function setChannelStatus(name, status) { return post("/channel-status", { channel_name: name, status }); }
 
 // Tags and segments
 export function getTags()                    { return get("/tags"); }

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink, useLocation } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, shutdownApp } from "./lib/api";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, getProfiles, shutdownApp } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
 import PlayerProvider  from "./player/PlayerProvider";
 import SettingsModal   from "./components/SettingsModal";
+import ProfileSwitch   from "./components/ProfileSwitch";
 import TagSelect       from "./components/TagSelect";
 import AddVideoModal   from "./components/AddVideoModal";
 import Overview        from "./pages/Overview";
@@ -31,6 +32,7 @@ export default function App() {
   const [ignored, setIgnored] = useState([]);
   const [playlists, setPlaylists] = useState([]);
   const [tags,      setTags]      = useState([]);
+  const [profiles,  setProfiles]  = useState([]);
   // The tag filter belongs to the library grid but its control sits in the
   // header next to search, so the selection lives up here.
   const [tagIds,    setTagIds]    = useState([]);
@@ -82,7 +84,11 @@ export default function App() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  async function loadProfiles() {
+    try { setProfiles((await getProfiles()).profiles || []); } catch { /* offline: load() reports it */ }
+  }
+
+  useEffect(() => { load(); loadProfiles(); }, []);
 
   async function handleDelete(id) {
     await deleteVideo(id);
@@ -189,6 +195,7 @@ export default function App() {
         )}
         </div>
         <div className="header-right">
+          <ProfileSwitch profiles={profiles} onManage={() => setShowWatchFolder("profiles")} />
           <span className="header-count" title="Videos in vault">{videos.length.toLocaleString()}</span>
           <span
             className={`status-dot ${online ? "online" : ""}`}
@@ -204,6 +211,8 @@ export default function App() {
           initialDataDir={cfg.data_directory}
           initialRoots={cfg.media_roots}
           onScanDone={load}
+          onProfilesChanged={loadProfiles}
+          initialTab={showWatchFolder === "profiles" ? "profiles" : "library"}
         />
       )}
       {showAddVideo && (

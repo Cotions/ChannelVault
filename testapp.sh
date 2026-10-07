@@ -38,35 +38,56 @@ for arg in "$@"; do
 done
 SANDBOX="${SANDBOX:-yes}"
 
+# Without bwrap nothing stops the test instance writing to real files, so that
+# takes an explicit --no-sandbox rather than a warning.
+if [ "$MODE" != status ] && [ "$SANDBOX" = yes ] && ! command -v bwrap &>/dev/null; then
+  die "bwrap not found. Install bubblewrap, or pass --no-sandbox to run without the read-only protection."
+fi
+
 [ -f "$LIVE_CONFIG" ] || die "No live config at $LIVE_CONFIG. Start the real app once first."
 
-# --- read the live config; the test copy sits beside it with a -test suffix ---
-read -r LIVE_DATA LIVE_WATCH < <(
-  python3 - "$LIVE_CONFIG" <<'PY'
+# --- read the live config; each profile's test copy sits beside it with a -test suffix ---
+# Old configs are flat; newer ones hold a list of profiles, each its own library.
+PROFILES_PY='
 import json, sys
 c = json.load(open(sys.argv[1]))
-print(c["data_directory"], c.get("watch_directory", ""))
-PY
+profiles = c.get("profiles") or [{"id": "default", **{k: c[k] for k in ("watch_directory", "data_directory", "media_roots") if k in c}}]
+active = next((p for p in profiles if p.get("id") == c.get("active_profile")), profiles[0])
+'
+
+read -r LIVE_DATA LIVE_WATCH < <(
+  python3 -c "$PROFILES_PY
+print(active[\"data_directory\"], active.get(\"watch_directory\", \"\"))" "$LIVE_CONFIG"
 )
 TEST_DATA="${CHANNELVAULT_TEST_DATA:-${LIVE_DATA%/}-test}"
 
 [ "$TEST_DATA" != "$LIVE_DATA" ] || die "Test data dir must differ from the live one ($LIVE_DATA)."
 
-# Every folder the app may read media from, so the sandbox can seal them.
+# The other profiles' databases, copied the same way: "<live> <test>" per line.
+mapfile -t OTHER_DATA < <(
+  python3 -c "$PROFILES_PY
+for p in profiles:
+    if p is not active and p.get(\"data_directory\"):
+        d = p[\"data_directory\"].rstrip(\"/\")
+        print(d + \"\\t\" + d + \"-test\")" "$LIVE_CONFIG"
+)
+
+# Every folder the app may read media from, across all profiles, so the
+# sandbox can seal them.
 mapfile -t MEDIA_ROOTS < <(
-  python3 - "$LIVE_CONFIG" <<'PY'
-import json, os, sys
-c = json.load(open(sys.argv[1]))
-roots = list(c.get("media_roots") or [])
-if c.get("watch_directory"):
-    roots.append(c["watch_directory"])
+  python3 -c "$PROFILES_PY
+import os
+roots = []
+for p in profiles:
+    roots += list(p.get(\"media_roots\") or [])
+    if p.get(\"watch_directory\"):
+        roots.append(p[\"watch_directory\"])
 seen = set()
 for r in roots:
     r = str(r).strip()
     if r and r not in seen and os.path.isdir(r):
         seen.add(r)
-        print(r)
-PY
+        print(r)" "$LIVE_CONFIG"
 )
 
 if [ "$MODE" = status ]; then
@@ -80,9 +101,15 @@ if [ "$MODE" = status ]; then
   exit 0
 fi
 
-if [ "$MODE" = reset ] && [ -d "$TEST_DATA" ]; then
-  say "Removing the old copy at $TEST_DATA"
-  rm -rf "$TEST_DATA"
+if [ "$MODE" = reset ]; then
+  if [ -d "$TEST_DATA" ]; then
+    say "Removing the old copy at $TEST_DATA"
+    rm -rf "$TEST_DATA"
+  fi
+  for pair in "${OTHER_DATA[@]}"; do
+    IFS=$'\t' read -r _live test <<< "$pair"
+    [ -d "$test" ] && { say "Removing the old copy at $test"; rm -rf "$test"; }
+  done
 fi
 
 # --- take the copy ---------------------------------------------------------
@@ -94,13 +121,29 @@ if [ ! -f "$TEST_DATA/videos.db" ]; then
   cp -a --reflink=auto "$LIVE_DATA/." "$TEST_DATA/"
   say "Copied. The live database was not modified."
 fi
+for pair in "${OTHER_DATA[@]}"; do
+  IFS=$'\t' read -r live test <<< "$pair"
+  if [ -f "$live/videos.db" ] && [ ! -f "$test/videos.db" ]; then
+    say "Copying profile data $live to $test"
+    mkdir -p "$test"
+    cp -a --reflink=auto "$live/." "$test/"
+  fi
+done
 
 # --- write the test config (never config.json, so the live app can't see it) --
 python3 - "$TEST_CONFIG" "$LIVE_CONFIG" "$TEST_DATA" <<'PY'
 import json, sys
 out, live, data = sys.argv[1], sys.argv[2], sys.argv[3]
 c = json.load(open(live))
-c["data_directory"] = data          # the only difference: its own database
+if c.get("profiles"):
+    # Every profile gets its own copy; the active one may be overridden.
+    for p in c["profiles"]:
+        if p.get("id") == c.get("active_profile") or len(c["profiles"]) == 1:
+            p["data_directory"] = data
+        elif p.get("data_directory"):
+            p["data_directory"] = p["data_directory"].rstrip("/") + "-test"
+else:
+    c["data_directory"] = data      # the only difference: its own database
 json.dump(c, open(out, "w"), indent=2)
 PY
 say "Test config at $TEST_CONFIG (data_directory → $TEST_DATA)"
@@ -117,19 +160,22 @@ fi
 CMD=(env "CHANNELVAULT_CONFIG=$TEST_CONFIG" "CHANNELVAULT_PORT=$PORT" "CHANNELVAULT_NO_BROWSER=1"
      "$VENV/bin/python" "$ROOT/backend/tracker.py")
 
-if [ "$SANDBOX" = yes ] && command -v bwrap &>/dev/null; then
+if [ "$SANDBOX" = yes ]; then
   # Bind everything as normal, then re-bind the folders we must not damage as
   # read-only. Later binds win, so those paths become unwritable for this
   # process only — reading and streaming still work.
   RO=()
   for r in "${MEDIA_ROOTS[@]}"; do RO+=(--ro-bind "$r" "$r"); done
   [ -d "$LIVE_DATA" ] && RO+=(--ro-bind "$LIVE_DATA" "$LIVE_DATA")
+  for pair in "${OTHER_DATA[@]}"; do
+    IFS=$'\t' read -r live _test <<< "$pair"
+    [ -d "$live" ] && RO+=(--ro-bind "$live" "$live")
+  done
   RO+=(--ro-bind "$LIVE_CONFIG" "$LIVE_CONFIG")
   say "Sandbox on: media and the live database are read-only for this instance"
   CMD=(bwrap --dev-bind / / "${RO[@]}" --die-with-parent "${CMD[@]}")
 else
-  [ "$SANDBOX" = yes ] && warn "bwrap not found — running without the read-only protection"
-  [ "$SANDBOX" = no ]  && warn "Sandbox disabled: this instance CAN write to your real files"
+  warn "Sandbox disabled: this instance CAN write to your real files"
 fi
 
 say "Test instance → http://localhost:$PORT   (live app stays on 3360)"

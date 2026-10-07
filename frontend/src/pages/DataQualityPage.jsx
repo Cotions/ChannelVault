@@ -1,21 +1,24 @@
 import { useState } from "react";
-import { getDuplicates, getMissing, organizePreview, organizeApply, browse } from "../lib/api";
+import { getDuplicates, getMissing, getQualityChecks, organizePreview, organizeApply, browse } from "../lib/api";
 import ImportItem from "../components/ImportItem";
 
 export default function DataQualityPage() {
   const [status,     setStatus]     = useState("idle"); // idle | scanning | done | error
   const [duplicates, setDuplicates] = useState([]);
   const [missing,    setMissing]    = useState([]);
+  const [checks,     setChecks]     = useState([]);
   const [expanded,   setExpanded]   = useState({ dupes: false, missing: false });
 
   async function runScan() {
     setStatus("scanning");
     setDuplicates([]);
     setMissing([]);
+    setChecks([]);
     try {
-      const [d, m] = await Promise.all([getDuplicates(), getMissing()]);
+      const [d, m, c] = await Promise.all([getDuplicates(), getMissing(), getQualityChecks()]);
       setDuplicates(d.duplicates || []);
       setMissing(m.missing || []);
+      setChecks(c.checks || []);
       setStatus("done");
     } catch {
       setStatus("error");
@@ -77,7 +80,7 @@ export default function DataQualityPage() {
   function setCheck(file, val) { setSelected(s => ({ ...s, [file]: val })); }
   function selectAll() {
     const sel = {};
-    loose.forEach(it => { if (it.status !== "no-artist") sel[it.file] = true; });
+    loose.forEach(it => { if (it.status !== "no-artist" && it.status !== "no-link") sel[it.file] = true; });
     setSelected(sel);
   }
   function unselectAll() { setSelected({}); }
@@ -90,7 +93,8 @@ export default function DataQualityPage() {
     setLoose(prev => prev.map(it => {
       if (it.file !== file) return it;
       const artist = meta.artist || null;
-      const status = !artist ? "no-artist" : (it.status === "no-artist" ? "ready" : it.status);
+      const status = !artist ? "no-artist" : !meta.video_id ? "no-link"
+        : (it.status === "no-artist" || it.status === "no-link" ? "ready" : it.status);
       return { ...it, artist, video_id: meta.video_id, status };
     }));
   }
@@ -235,7 +239,7 @@ export default function DataQualityPage() {
       </div>
 
       {status === "idle" && (
-        <div className="empty" style={{ padding: "20px" }}>Click Run Scan to check for duplicates and missing files.</div>
+        <div className="empty" style={{ padding: "20px" }}>Click Run Scan to check for duplicates, missing files, and other library problems.</div>
       )}
       {status === "error" && (
         <div className="msg show err">Scan failed — is the backend running?</div>
@@ -299,6 +303,34 @@ export default function DataQualityPage() {
                 {m.channel_name && <span style={{ color: "var(--muted)", fontWeight: 400 }}> — {m.channel_name}</span>}
               </div>
               <div style={{ color: "var(--muted)", wordBreak: "break-all" }}>{m.file_path}</div>
+            </div>
+          ))}
+
+          {checks.map(ch => (
+            <div key={ch.key} style={{ display: "contents" }}>
+              <div
+                style={{ cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}
+                onClick={() => ch.items.length && toggle(ch.key)}
+              >
+                <span style={{
+                  display: "inline-block", minWidth: 24, textAlign: "center", fontWeight: 700,
+                  color: ch.items.length ? "#ffb74d" : "#81c784", fontSize: 15
+                }}>
+                  {ch.items.length}
+                </span>
+                <span style={{ fontSize: 13 }}>{ch.label}</span>
+                {ch.items.length > 0 && (
+                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+                    {expanded[ch.key] ? "▲ hide" : "▼ show"}
+                  </span>
+                )}
+              </div>
+              {expanded[ch.key] && ch.items.map((it, i) => (
+                <div key={(it.video_id || it.title) + i} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 12 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>{it.title}</div>
+                  <div style={{ color: "var(--muted)", wordBreak: "break-all" }}>{it.detail}</div>
+                </div>
+              ))}
             </div>
           ))}
 
