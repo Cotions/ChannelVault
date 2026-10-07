@@ -92,7 +92,9 @@ app.url_map.converters["vid"] = _VideoIdConverter
 
 def _valid_video_id(value):
     """The id itself when well-formed, else None."""
-    v = (value or "").strip()
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
     return v if _VIDEO_ID_RE.fullmatch(v) else None
 
 
@@ -223,6 +225,11 @@ def _origin_guard():
         return None
     if not request.headers.get(CSRF_HEADER):
         return jsonify({"ok": False, "error": f"missing {CSRF_HEADER} header"}), 403
+    # Every route reads its body as an object; an array or bare value would
+    # crash the first body.get() with a 500.
+    body = request.get_json(silent=True)
+    if body is not None and not isinstance(body, dict):
+        return jsonify({"ok": False, "error": "body must be a JSON object"}), 400
     return None
 
 # ---------------------------------------------------------------------------
