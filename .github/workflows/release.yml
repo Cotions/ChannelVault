@@ -73,8 +73,8 @@ jobs:
           sha256sum channelvault-linux-x86_64 "${NAME}.tar.gz" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Verify the built binary
-        run: ./dist/channelvault --version
+      - name: Smoke test the built binary
+        run: ./scripts/smoke_test.sh ./dist/channelvault
 
       # Signed statement that these exact bytes came out of this workflow run.
       # Anyone can check it with:  gh attestation verify <file> --repo <owner/repo>
