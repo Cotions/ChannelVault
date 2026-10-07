@@ -762,6 +762,11 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Migrate: where a chapter segment started in the file. It survives the user
+    # moving or retitling it, so a chapter re-import knows it's already there.
+    if "chapter_start" not in [r[1] for r in conn.execute("PRAGMA table_info(segments)")]:
+        conn.execute("ALTER TABLE segments ADD COLUMN chapter_start REAL")
+        conn.execute("UPDATE segments SET chapter_start = start_secs WHERE source = 'chapter'")
     conn.execute('''
         CREATE TABLE IF NOT EXISTS segment_tags (
             segment_id INTEGER NOT NULL,
@@ -4191,13 +4196,15 @@ def _import_chapters(conn, video_id, file_path, replace=False, chapters=None):
         conn.execute("DELETE FROM segments WHERE video_id = ? AND source = 'chapter'", (video_id,))
         # A chapter the user edited or tagged stays (as 'manual'); don't add
         # the original back next to it.
-        kept = [r[0] for r in conn.execute("SELECT start_secs FROM segments WHERE video_id = ?", (video_id,))]
+        kept = [r[0] for r in conn.execute("SELECT COALESCE(chapter_start, start_secs) FROM segments "
+                                           "WHERE video_id = ?", (video_id,))]
         chapters = [c for c in chapters if not any(abs(c["start"] - k) < 0.5 for k in kept)]
         if not chapters:
             return 0
     conn.executemany(
-        "INSERT INTO segments (video_id, start_secs, end_secs, title, source) VALUES (?, ?, ?, ?, 'chapter')",
-        [(video_id, c["start"], c["end"], c["title"]) for c in chapters],
+        "INSERT INTO segments (video_id, start_secs, end_secs, title, source, chapter_start) "
+        "VALUES (?, ?, ?, ?, 'chapter', ?)",
+        [(video_id, c["start"], c["end"], c["title"], c["start"]) for c in chapters],
     )
     return len(chapters)
 
