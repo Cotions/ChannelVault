@@ -23,6 +23,7 @@ import threading
 import unicodedata
 import uuid
 import difflib
+import math
 import glob
 from tinytag import TinyTag
 from watchdog.observers import Observer
@@ -4188,6 +4189,12 @@ def _import_chapters(conn, video_id, file_path, replace=False, chapters=None):
         conn.execute('''DELETE FROM segment_tags WHERE segment_id IN
                         (SELECT id FROM segments WHERE video_id = ? AND source = 'chapter')''', (video_id,))
         conn.execute("DELETE FROM segments WHERE video_id = ? AND source = 'chapter'", (video_id,))
+        # A chapter the user edited or tagged stays (as 'manual'); don't add
+        # the original back next to it.
+        kept = [r[0] for r in conn.execute("SELECT start_secs FROM segments WHERE video_id = ?", (video_id,))]
+        chapters = [c for c in chapters if not any(abs(c["start"] - k) < 0.5 for k in kept)]
+        if not chapters:
+            return 0
     conn.executemany(
         "INSERT INTO segments (video_id, start_secs, end_secs, title, source) VALUES (?, ?, ?, ?, 'chapter')",
         [(video_id, c["start"], c["end"], c["title"]) for c in chapters],
@@ -4195,14 +4202,28 @@ def _import_chapters(conn, video_id, file_path, replace=False, chapters=None):
     return len(chapters)
 
 
-def _apply_rules(conn, video_ids=None):
+def _fold(text):
+    """Case and accents ignored: "CAFE" matches "Café"."""
+    text = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in text if not unicodedata.combining(c)).casefold()
+
+
+def _apply_rules(conn, video_ids=None, segment_ids=None):
     """Attach tags by keyword: any segment title or video title containing a
-    rule's keyword (case-insensitive) gets that rule's tag with source='rule'.
-    Idempotent; only adds. Returns {"segments": n, "videos": n} newly tagged."""
+    rule's keyword (case- and accent-insensitive) gets that rule's tag with
+    source='rule'. Idempotent; only adds. Returns {"segments": n, "videos": n}
+    newly tagged.
+
+    segment_ids limits it to those segments and leaves video titles alone, so
+    editing one segment can't bring back a tag the user took off the video."""
     rules = conn.execute("SELECT tag_id, keyword FROM tag_rules").fetchall()
     if not rules:
         return {"segments": 0, "videos": 0}
-    if video_ids:
+    if segment_ids is not None:
+        marks = ",".join("?" * len(segment_ids)) or "NULL"
+        segs  = conn.execute(f"SELECT id, title FROM segments WHERE id IN ({marks})", list(segment_ids)).fetchall()
+        vids  = []
+    elif video_ids:
         marks  = ",".join("?" * len(video_ids))
         params = list(video_ids)
         segs = conn.execute(f"SELECT id, title FROM segments WHERE video_id IN ({marks})", params).fetchall()
@@ -4212,16 +4233,16 @@ def _apply_rules(conn, video_ids=None):
         vids = conn.execute("SELECT video_id, title FROM downloaded_videos WHERE status = 'downloaded'").fetchall()
     added = {"segments": 0, "videos": 0}
     for rule in rules:
-        kw = (rule["keyword"] or "").strip().lower()
+        kw = _fold((rule["keyword"] or "").strip())
         if not kw:
             continue
         for s in segs:
-            if kw in (s["title"] or "").lower():
+            if kw in _fold(s["title"]):
                 cur = conn.execute("INSERT OR IGNORE INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'rule')",
                                    (s["id"], rule["tag_id"]))
                 added["segments"] += max(cur.rowcount, 0)
         for v in vids:
-            if kw in (v["title"] or "").lower():
+            if kw in _fold(v["title"]):
                 cur = conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id, source) VALUES (?, ?, 'rule')",
                                    (v["video_id"], rule["tag_id"]))
                 added["videos"] += max(cur.rowcount, 0)
@@ -4233,7 +4254,7 @@ def _parse_secs(value):
         v = float(value)
     except (TypeError, ValueError):
         return None
-    return v if v >= 0 else None
+    return v if math.isfinite(v) and v >= 0 else None   # "inf"/"nan" parse as floats too
 
 
 # ---- tags ------------------------------------------------------------------
@@ -4432,8 +4453,8 @@ def add_tag_rule(tag_id):
         if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone():
             conn.close()
             return jsonify({"ok": False, "error": "not found"}), 404
-        dup = conn.execute("SELECT id FROM tag_rules WHERE tag_id = ? AND keyword = ? COLLATE NOCASE",
-                           (tag_id, keyword)).fetchone()
+        dup = next((r for r in conn.execute("SELECT id, keyword FROM tag_rules WHERE tag_id = ?", (tag_id,))
+                    if _fold(r["keyword"]) == _fold(keyword)), None)   # NOCASE is ASCII-only
         if dup:
             conn.close()
             return jsonify({"ok": True, "id": dup["id"], "keyword": keyword, "duplicate": True})
@@ -4512,7 +4533,7 @@ def create_segment(video_id):
             tag = _ensure_tag(conn, n)
             conn.execute("INSERT OR IGNORE INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'manual')",
                          (seg_id, tag["id"]))
-        _apply_rules(conn, video_ids=[video_id])
+        _apply_rules(conn, segment_ids=[seg_id])
         conn.commit()
         seg = next(s for s in _segments_for(conn, video_id) if s["id"] == seg_id)
         conn.close()
@@ -4533,10 +4554,20 @@ def update_segment(segment_id):
         if start is None or end is None or end <= start:
             conn.close()
             return jsonify({"ok": False, "error": "need 0 <= start_secs < end_secs"}), 400
+        dur = conn.execute("SELECT duration_secs FROM downloaded_videos WHERE video_id = ?",
+                           (cur["video_id"],)).fetchone()
+        if dur and dur["duration_secs"] and end > dur["duration_secs"] + 1:
+            end = float(dur["duration_secs"])            # same clamp as creating one
+            if end <= start:
+                conn.close()
+                return jsonify({"ok": False, "error": "start is past the end of the video"}), 400
         title = ((body.get("title") or "").strip() or None) if "title" in body else cur["title"]
-        conn.execute("UPDATE segments SET start_secs = ?, end_secs = ?, title = ? WHERE id = ?",
-                     (start, end, title, segment_id))
-        _apply_rules(conn, video_ids=[cur["video_id"]])   # a renamed segment can now match a rule
+        # An edited chapter is the user's now: re-importing chapters must not replace it.
+        changed = (start, end, title) != (cur["start_secs"], cur["end_secs"], cur["title"])
+        source  = "manual" if changed else cur["source"]
+        conn.execute("UPDATE segments SET start_secs = ?, end_secs = ?, title = ?, source = ? WHERE id = ?",
+                     (start, end, title, source, segment_id))
+        _apply_rules(conn, segment_ids=[segment_id])   # a renamed segment can now match a rule
         conn.commit()
         seg = next(s for s in _segments_for(conn, cur["video_id"]) if s["id"] == segment_id)
         conn.close()
@@ -4566,8 +4597,11 @@ def add_segment_tag(segment_id):
             conn.close()
             return jsonify({"ok": False, "error": "not found"}), 404
         tag = _ensure_tag(conn, name)
-        conn.execute("INSERT OR IGNORE INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'manual')",
-                     (segment_id, tag["id"]))
+        # Picked by hand: it's manual now, even if a rule got there first.
+        conn.execute("INSERT INTO segment_tags (segment_id, tag_id, source) VALUES (?, ?, 'manual') "
+                     "ON CONFLICT(segment_id, tag_id) DO UPDATE SET source = 'manual'", (segment_id, tag["id"]))
+        # A chapter the user tags is theirs; re-importing chapters keeps it.
+        conn.execute("UPDATE segments SET source = 'manual' WHERE id = ? AND source = 'chapter'", (segment_id,))
         conn.commit()
         conn.close()
     return jsonify({"ok": True, "tag": tag})
@@ -4595,8 +4629,8 @@ def add_video_tag(video_id):
             conn.close()
             return jsonify({"ok": False, "error": "video not found"}), 404
         tag = _ensure_tag(conn, name)
-        conn.execute("INSERT OR IGNORE INTO video_tags (video_id, tag_id, source) VALUES (?, ?, 'manual')",
-                     (video_id, tag["id"]))
+        conn.execute("INSERT INTO video_tags (video_id, tag_id, source) VALUES (?, ?, 'manual') "
+                     "ON CONFLICT(video_id, tag_id) DO UPDATE SET source = 'manual'", (video_id, tag["id"]))
         conn.commit()
         conn.close()
     return jsonify({"ok": True, "tag": tag})
@@ -4626,7 +4660,8 @@ def import_chapters(video_id):
         conn = get_conn()
         added = _import_chapters(conn, video_id, path, replace=True)
         if added:
-            _apply_rules(conn, video_ids=[video_id])
+            _apply_rules(conn, segment_ids=[r[0] for r in conn.execute(
+                "SELECT id FROM segments WHERE video_id = ? AND source = 'chapter'", (video_id,))])
         conn.commit()
         segs = _segments_for(conn, video_id)
         conn.close()
@@ -4664,7 +4699,8 @@ def backfill_segments():
                             conn = get_conn()
                             n = _import_chapters(conn, vid, path, replace=False, chapters=chapters)
                             if n:
-                                _apply_rules(conn, video_ids=[vid])
+                                _apply_rules(conn, segment_ids=[r[0] for r in conn.execute(
+                                    "SELECT id FROM segments WHERE video_id = ?", (vid,))])
                             conn.commit()
                             conn.close()
                     if n:
