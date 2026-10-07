@@ -36,6 +36,7 @@ export default function DataQualityPage({ onLibraryChanged }) {
   const [results,    setResults]    = useState([]);
   const [source,     setSource]     = useState("");     // empty = loose files in library root
   const [mode,       setMode]       = useState("move"); // move | copy (import only)
+  const [orgError,   setOrgError]   = useState(null);   // the backend's reason, if it refused
 
   async function pickSource() {
     try {
@@ -59,7 +60,8 @@ export default function DataQualityPage({ onLibraryChanged }) {
       });
       setSelected(sel);
       setOrgStatus("ready");
-    } catch {
+    } catch (e) {
+      setOrgError(e.detail || null);
       setOrgStatus("error");
     }
   }
@@ -70,10 +72,16 @@ export default function DataQualityPage({ onLibraryChanged }) {
     setOrgStatus("applying");
     try {
       const d = await organizeApply({ files, source: source.trim() || undefined, mode });
+      if (!d.ok) {
+        setOrgError(d.error || null);
+        setOrgStatus("error");
+        return;
+      }
       setResults(d.results || []);
       setOrgStatus("done");
       if ((d.results || []).some(r => r.added)) onLibraryChanged?.();   // header, Home, Stats follow
     } catch {
+      setOrgError(null);
       setOrgStatus("error");
     }
   }
@@ -148,7 +156,7 @@ export default function DataQualityPage({ onLibraryChanged }) {
         </div>
       )}
       {orgStatus === "error" && (
-        <div className="msg show err">Request failed — is the backend running?</div>
+        <div className="msg show err">{orgError || "Request failed — is the backend running?"}</div>
       )}
 
       {(orgStatus === "ready" || orgStatus === "applying") && (

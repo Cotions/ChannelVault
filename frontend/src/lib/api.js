@@ -29,6 +29,7 @@ async function get(path) {
   if (!r.ok) {
     const e = new Error(`GET ${path} → ${r.status}`);
     e.status = r.status;              // pages tell "gone" (404) from "failed"
+    e.detail = (await r.json().catch(() => null))?.error;   // the backend's reason, when it gave one
     throw e;
   }
   return r.json();
