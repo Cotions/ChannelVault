@@ -53,6 +53,9 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   const channels = Object.entries(channelCounts).sort((a, b) => b[1] - a[1]);
   const maxCount = channels.length > 0 ? channels[0][1] : 1;
   const TOP = 15;
+  // A collab counts once, even when several of its channels are in the tail.
+  const tail = new Set(channels.slice(TOP).map(([n]) => n));
+  const tailVideos = scopeVideos.filter(v => artistsOf(v).some(ch => tail.has(ch))).length;
 
   const longest = scopeVideos
     .filter(v => v.duration_secs != null)
@@ -218,7 +221,7 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
               </div>
               {channels.length > TOP && (
                 <div className="channel-bars-more">
-                  + {channels.length - TOP} more channel{channels.length - TOP !== 1 ? "s" : ""} · {channels.slice(TOP).reduce((s, [, c]) => s + c, 0)} videos
+                  + {channels.length - TOP} more channel{channels.length - TOP !== 1 ? "s" : ""} · {tailVideos} videos
                 </div>
               )}
             </div>
