@@ -21,6 +21,7 @@ Tracks locally downloaded YouTube videos. Shows a green badge on YouTube pages f
 - Python 3.10+ (only needed to build; the bundled binary carries its own)
 - [bun](https://bun.sh/) or npm (to build the UI)
 - `zenity` (folder picker dialogs)
+- [ffmpeg](https://ffmpeg.org/) (`ffprobe` reads webm/mkv tags; `ffmpeg` does chapters, frame grabs and tag writing)
 - [Tampermonkey](https://www.tampermonkey.net/) (Chrome/Firefox/Edge)
 - Videos downloaded with [yt-dlp](https://github.com/yt-dlp/yt-dlp) (embeds YouTube URL in file metadata)
 
@@ -28,7 +29,7 @@ Tracks locally downloaded YouTube videos. Shows a green badge on YouTube pages f
 
 ## 1 — Start it
 
-### Download a release (no build, nothing to install)
+### Download a release (no build; needs ffmpeg)
 
 Linux x86_64:
 

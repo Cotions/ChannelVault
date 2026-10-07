@@ -1277,6 +1277,14 @@ def spa_icon():
 def get_config():
     return jsonify(load_config())
 
+def _ffmpeg_missing():
+    """Which of ffmpeg/ffprobe aren't on PATH. Without ffprobe webm/mkv files
+    read as untagged and stay loose; without ffmpeg there are no chapters,
+    frame grabs or tag writing. Every one of those fails quietly, so this is
+    where it gets said."""
+    return [t for t in ("ffprobe", "ffmpeg") if not shutil.which(t)]
+
+
 @app.get("/ytdlp/status")
 def ytdlp_status():
     """What yt-dlp we have and whether it can get past age gates and the n challenge."""
@@ -1291,6 +1299,7 @@ def ytdlp_status():
     runtimes = {name: shutil.which(name) for name in _JS_RUNTIMES}
     return jsonify({
         "ok":            True,
+        "ffmpeg_missing": _ffmpeg_missing(),
         "installed":     bool(version),
         "version":       version,
         "cookies_from":  cfg.get("ytdlp_cookies_from_browser") or None,
@@ -4793,12 +4802,16 @@ def shutdown_app():
     daemon thread, so there is nothing to unwind: exit the process. The timer
     exists only so Flask can flush this response before the interpreter dies.
     os._exit skips atexit handlers, which is safe here because every request
-    commits its own SQLite transaction.
+    commits its own SQLite transaction. A move or rename is a file operation
+    plus a commit, so the locks around those are taken first: exiting waits
+    for one in progress (up to a limit) and no new one can start.
     """
     def quit_now():
         with _observer_lock:
             if _observer:
                 _observer.stop()
+        for lock in (_filing_lock, _config_write_lock, _db_lock):
+            lock.acquire(timeout=15)
         os._exit(0)
 
     threading.Timer(0.4, quit_now).start()
@@ -4810,6 +4823,31 @@ def shutdown_app():
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _single_instance_lock():
+    """Hold a lock next to the config for the life of the process.
+
+    The port only binds at app.run, after the database and watcher are up, so
+    two quick launches could both pass the port check. The lock can't race.
+    Returns the open file (keep it), None if another instance holds it, or
+    False when no lock could be made at all (then the port check is all
+    there is).
+    """
+    try:
+        f = open(CONFIG_PATH + ".lock", "a+")
+    except OSError:
+        return False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
 def _port_busy(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         return sock.connect_ex(("127.0.0.1", port)) == 0
@@ -4820,8 +4858,11 @@ if __name__ == "__main__":
         sys.exit(0)
     url = f"http://localhost:{PORT}"
     # Before touching the database: a second launch must leave the running one's alone.
-    if _port_busy(PORT):
-        print(f"[api] Port {PORT} already in use — ChannelVault may already be running.")
+    os.makedirs(os.path.dirname(CONFIG_PATH) or ".", exist_ok=True)
+    _instance_lock = _single_instance_lock()
+    if _port_busy(PORT) or _instance_lock is None:
+        print(f"[api] Port {PORT} already in use — ChannelVault may already be running."
+              if _instance_lock is not None else "[api] ChannelVault is already running with this config.")
         print(f"[api] Opening {url}")
         webbrowser.open(url)
         sys.exit(1)
@@ -4835,6 +4876,10 @@ if __name__ == "__main__":
         print(f"[init] Migrated DB to {new_db}")
     init_db()
     sync_artist_folders()
+    if _ffmpeg_missing():
+        print(f"[init] WARNING: {' and '.join(_ffmpeg_missing())} not found on PATH. "
+              "Install ffmpeg: webm/mkv files can't be read and chapters, frame grabs "
+              "and tag writing won't work.")
     watcher_thread = threading.Thread(
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )

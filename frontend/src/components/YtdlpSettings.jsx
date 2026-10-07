@@ -81,6 +81,12 @@ export default function YtdlpSettings() {
           {" · js: "}{hasJs ? (runtime.trim() || detected.join(", ")) : "none"}
         </div>
       )}
+      {status?.ffmpeg_missing?.length > 0 && (
+        <div className="msg show err" style={{ marginTop: "8px" }}>
+          {status.ffmpeg_missing.join(" and ")} not found. Install ffmpeg: without it webm/mkv
+          files can't be read, and chapters, frame grabs and writing tags don't work.
+        </div>
+      )}
 
       {msg && <div className={`msg show ${msg.type}`}>{msg.text}</div>}
     </>
