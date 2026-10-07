@@ -6,6 +6,7 @@ import webbrowser
 import re
 import csv
 import time
+import copy
 import json
 import shutil
 import functools
@@ -218,11 +219,26 @@ def _origin_guard():
 PROFILE_KEYS = ("watch_directory", "data_directory", "media_roots")
 
 
+# The config is read on every DB connection; parse it again only when the file
+# changed. Writes go through os.replace, so a new version is a new inode.
+_raw_config_cache = (None, None)   # (file key, parsed), swapped as one tuple
+
 def _read_raw_config():
+    global _raw_config_cache
     raw = {}
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH) as f:
-            raw = json.load(f)
+    try:
+        st  = os.stat(CONFIG_PATH)
+        key = (st.st_ino, st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None
+    if key is not None:
+        cached_key, cached = _raw_config_cache
+        if cached_key == key:
+            raw = copy.deepcopy(cached)
+        else:
+            with open(CONFIG_PATH) as f:
+                raw = json.load(f)
+            _raw_config_cache = (key, copy.deepcopy(raw))
     if not raw.get("profiles"):
         # Pre-profiles config: its library becomes the "Default" profile.
         default = {"id": "default", "name": "Default"}
@@ -813,6 +829,8 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_file_path ON downloaded_videos(file_path)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segment_tags_tag ON segment_tags(tag_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_status ON downloaded_videos(status, downloaded_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watch_sessions_video ON watch_sessions(video_id)")
 
     conn.commit()
     conn.close()
@@ -959,8 +977,13 @@ def _is_attached_track(file_path, conn=None):
     rows = conn.execute("SELECT file_path FROM audio_tracks").fetchall()
     if own:
         conn.close()
-    return any(os.path.realpath(resolve_media_path(r["file_path"]) or r["file_path"]) == real
-               for r in rows)
+    paths = [r["file_path"] for r in rows]
+    # Stored paths first; the media-root search only for ones that went stale
+    # (it costs several stats per path, and this runs per audio file in a scan).
+    if any(os.path.realpath(p) == real for p in paths):
+        return True
+    return any(os.path.realpath(resolve_media_path(p) or p) == real
+               for p in paths if not os.path.exists(p))
 
 
 def _entries_for_file(conn, path, status):
@@ -1753,13 +1776,42 @@ def scan():
 
     BATCH = 10
 
+    # A tracked file at the same path with the same size has nothing new to
+    # give: skip the tag parse (and ffprobe) for it. Unless a thumbnail went
+    # missing that its sidecar image could restore.
+    conn  = get_conn()
+    known = {r["file_path"]: (r["file_size_bytes"], r["video_id"], r["channel_name"])
+             for r in conn.execute(
+                 "SELECT file_path, file_size_bytes, video_id, channel_name FROM downloaded_videos "
+                 "WHERE status = 'downloaded' AND file_path IS NOT NULL AND file_size_bytes IS NOT NULL")}
+    conn.close()
+    thumbs_dir = get_artist_thumbs_dir()
+
+    def unchanged(fp):
+        k = known.get(fp)
+        if not k:
+            return None
+        size, video_id, channel = k
+        try:
+            if os.path.getsize(fp) != size:
+                return None
+        except OSError:
+            return None
+        for name in _artist_names(channel):
+            base = os.path.join(thumbs_dir, _safe_dirname(name), video_id)
+            if not any(os.path.exists(base + e) for e in (".jpg", ".jpeg", ".webp", ".png")):
+                if _sidecar_thumb(fp):
+                    return None
+                break
+        return {"file": fp, "status": "tracked", "title": None, "video_id": video_id}
+
     def generate():
         total   = len(files)
         tracked = skipped = errors = 0
         yield f"data: {json.dumps({'type': 'start', 'total': total})}\n\n"
 
         for i, fp in enumerate(files):
-            r = process_video_file(fp)
+            r = unchanged(fp) or process_video_file(fp)
             if r["status"] == "tracked":
                 tracked += 1
             elif r["status"] == "skipped":
