@@ -1934,6 +1934,17 @@ def _body_str(body, key, limit=500):
     return v.strip()[:limit] if isinstance(v, str) else ""
 
 
+def _positive_num(v, kind=float):
+    """A request value as a finite number above zero, else None: a string,
+    list, bool or inf from a malformed request is dropped, not stored."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    # Past 2**63 SQLite can't bind it at all.
+    if not math.isfinite(v) or v <= 0 or v >= 2**63:
+        return None
+    return kind(v)
+
+
 def _text(v, limit=500):
     """A request value as stored text: strings only (a dict/list from a
     malformed request is dropped, not crashed on), trimmed and capped."""
@@ -2394,7 +2405,7 @@ MIN_WATCHED_SECS = 30
 def watch_progress(video_id):
     body = request.get_json(silent=True) or {}
     try:
-        session_id    = int(body["session_id"]) if body.get("session_id") else None
+        session_id    = _positive_num(body.get("session_id"), int)
         watched_secs  = max(0.0, float(body.get("watched_secs") or 0))
         position_secs = max(0.0, float(body.get("position_secs") or 0))
         duration_secs = float(body["duration_secs"]) if body.get("duration_secs") else None
@@ -2741,15 +2752,15 @@ def add_video_manual():
                                         THEN 'attached' ELSE 'downloaded' END
         ''', {
             "id":      video_id,
-            "title":   body.get("title") or None,
-            "channel": _clean_name(body.get("channel_name")),
+            "title":   _text(body.get("title")),
+            "channel": _clean_name(_text(body.get("channel_name"))),
             "url":     url or None,
             "path":    file_path or None,
-            "genre":   body.get("genre") or None,
-            "desc":    body.get("description") or None,
-            "date":    body.get("recorded_date") or None,
-            "dur":     body.get("duration_secs") or None,
-            "size":    body.get("file_size_bytes") or None,
+            "genre":   _text(body.get("genre")),
+            "desc":    _text(body.get("description"), 20000),
+            "date":    _text(body.get("recorded_date"), 32),
+            "dur":     _positive_num(body.get("duration_secs")),
+            "size":    _positive_num(body.get("file_size_bytes"), int),
             "source":  source,
             "edit":    editing,
         })
@@ -3984,7 +3995,10 @@ def fetch_thumbnail(video_id):
         data, ext = _fetch_youtube_thumb(video_id)
     except Exception:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        res = _ytdlp("--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url, timeout=60)
+        try:
+            res = _ytdlp("--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url, timeout=60)
+        except Exception as e:                  # yt-dlp missing or hung
+            return jsonify({"ok": False, "error": _clean_err(e)}), 502
         if res.returncode != 0:
             avail = _classify_unavailable(res.stderr)
             if avail:
@@ -4783,7 +4797,8 @@ def create_segment(video_id):
     if start is None or end is None or end <= start:
         return jsonify({"ok": False, "error": "need 0 <= start_secs < end_secs"}), 400
     title = _body_str(body, "title") or None
-    names = [n for n in (body.get("tags") or []) if isinstance(n, str) and n.strip()]
+    tags  = body.get("tags")
+    names = [n for n in (tags if isinstance(tags, list) else []) if isinstance(n, str) and n.strip()]
     with _db_lock:
         conn = get_conn()
         row = conn.execute("SELECT duration_secs FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
