@@ -80,7 +80,7 @@ export default function DataQualityPage() {
   function setCheck(file, val) { setSelected(s => ({ ...s, [file]: val })); }
   function selectAll() {
     const sel = {};
-    loose.forEach(it => { if (it.status !== "no-artist" && it.status !== "no-link") sel[it.file] = true; });
+    loose.forEach(it => { if (it.status === "ready" || it.status === "in-place") sel[it.file] = true; });
     setSelected(sel);
   }
   function unselectAll() { setSelected({}); }
