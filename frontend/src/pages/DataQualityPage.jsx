@@ -87,6 +87,7 @@ export default function DataQualityPage({ onLibraryChanged }) {
   function unselectAll() { setSelected({}); }
 
   function onTransferred(file) {
+    onLibraryChanged?.();                 // header, Home, Stats follow a single-file add too
     setLoose(prev => prev.filter(it => it.file !== file));
     setSelected(s => { const n = { ...s }; delete n[file]; return n; });
   }
