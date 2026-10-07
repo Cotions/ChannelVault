@@ -27,6 +27,7 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
   const [adding,   setAdding]   = useState(null);   // file_path being attached
   const [confirmId, setConfirmId] = useState(null);
   const saveRef   = useRef(null);
+  const pendingRef = useRef(null);   // { id, offset } waiting for the debounce
   const btnRef    = useRef(null);
   const panelRef  = useRef(null);
   // Where to hang the panel. It is portalled to <body> because the player shell
@@ -131,9 +132,12 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
   async function detach(track) {
     setConfirmId(null);
     if (audioTrack?.id === track.id) selectAudioTrack(null);
-    const r = await deleteAudioTrack(track.id);
-    if (r?.restored?.length) onLibraryChanged?.();
-    await load();
+    try {
+      const r = await deleteAudioTrack(track.id);
+      if (r && r.ok === false) flash(r.error || "Could not detach", true);
+      if (r?.restored?.length) onLibraryChanged?.();
+      await load();
+    } catch { flash("Could not detach — the backend did not answer", true); }
     setSuggest(null);
   }
 
@@ -147,19 +151,43 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
     const next = { ...audioTrack, offset_secs: offsetRef.current };
     selectAudioTrack(next);
     setTracks(ts => ts.map(t => (t.id === next.id ? { ...t, offset_secs: next.offset_secs } : t)));
+    if (pendingRef.current && pendingRef.current.id !== next.id) flushOffset();
+    pendingRef.current = { id: next.id, offset: next.offset_secs };
     clearTimeout(saveRef.current);
-    saveRef.current = setTimeout(() => { updateAudioTrack(next.id, { offset_secs: next.offset_secs }); }, 500);
+    saveRef.current = setTimeout(flushOffset, 500);
+  }
+
+  // Write the waiting offset now. Leaving the page or nudging another track
+  // must save it, not drop it.
+  function flushOffset() {
+    clearTimeout(saveRef.current);
+    const p = pendingRef.current;
+    pendingRef.current = null;
+    if (!p) return;
+    updateAudioTrack(p.id, { offset_secs: p.offset })
+      .then(r => { if (r && r.ok === false) flash(r.error || "Could not save the offset", true); })
+      .catch(() => flash("Could not save the offset — the backend did not answer", true));
   }
 
   async function rename(track, label) {
     const clean = label.trim();
     if (!clean || clean === track.label) return;
-    setTracks(ts => ts.map(t => (t.id === track.id ? { ...t, label: clean } : t)));
-    if (audioTrack?.id === track.id) selectAudioTrack({ ...audioTrack, label: clean });
-    await updateAudioTrack(track.id, { label: clean });
+    const apply = label => {
+      setTracks(ts => ts.map(t => (t.id === track.id ? { ...t, label } : t)));
+      if (audioTrack?.id === track.id) selectAudioTrack({ ...audioTrack, label });
+    };
+    apply(clean);
+    try {
+      const r = await updateAudioTrack(track.id, { label: clean });
+      if (r && r.ok === false) { apply(track.label); flash(r.error || "Rename failed", true); }
+    } catch {
+      apply(track.label);
+      flash("Rename failed — the backend did not answer", true);
+    }
   }
 
-  useEffect(() => () => clearTimeout(saveRef.current), []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => flushOffset, []);
 
   const offset = audioTrack?.offset_secs || 0;
   // A file minutes away from the video length is a different recording, not a
