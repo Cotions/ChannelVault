@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { latestThumbUrl } from "../lib/api";
 import { pinSortSlot, releaseSortSlot, PIN_MS } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
+import { isYouTube, sourceLabel } from "../lib/source";
 import { fmt, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import Icon from "./Icon";
 import TagChip from "./TagChip";
@@ -101,6 +102,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
   };
   // Kept for the sound only: plays over its thumbnail, so say so on the card.
   const audioOnly  = AUDIO_FILE_RE.test(video.file_path || "");
+  const fromYT     = isYouTube(video);
   const dead       = video.availability && video.availability !== "available";
   const availLabel = dead ? (AVAIL_LABELS[video.availability] || "Unavailable") : null;
 
@@ -129,9 +131,14 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
             <Icon name="check" size={11} />{video.watch_count > 1 ? video.watch_count : ""}
           </span>
         )}
-        {audioOnly && (
-          <span className="audio-badge" title="Audio only — plays over the thumbnail">
-            <Icon name="volume" size={11} />Audio
+        {(audioOnly || !fromYT) && (
+          <span className="audio-badge" title={[
+            audioOnly && "Audio only — plays over the thumbnail",
+            !fromYT && (video.source === "local" ? "Local file — not from any site" : `From ${sourceLabel(video.source)}`),
+          ].filter(Boolean).join(" · ")}>
+            {audioOnly && <><Icon name="volume" size={11} />Audio</>}
+            {audioOnly && !fromYT && " · "}
+            {!fromYT && sourceLabel(video.source)}
           </span>
         )}
         {dur && <span className="dur-badge">{dur}</span>}
@@ -181,7 +188,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         ) : (
           <>
             <div className="va-left">
-              {onFetchMeta && (
+              {onFetchMeta && fromYT && (
                 <button
                   className={`del-btn fetch-btn${fetching ? " spinning" : ""}${fetchErr ? " fetch-err" : ""}${dead ? " fetch-dead" : ""}`}
                   title={fetchErr || (dead ? `${availLabel} — fetch may fail` : "Fetch metadata from YouTube")}
@@ -191,7 +198,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
                   <Icon name={fetchErr ? "warn" : "refresh"} />
                 </button>
               )}
-              {onFetchMeta && elapsed != null && (
+              {onFetchMeta && fromYT && elapsed != null && (
                 <span className="fetch-timer">{elapsed.toFixed(1)}s</span>
               )}
             </div>

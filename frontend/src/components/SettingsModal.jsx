@@ -2,16 +2,18 @@ import { useState } from "react";
 import WatchFolder from "./WatchFolder";
 import YtdlpSettings from "./YtdlpSettings";
 import AppearanceSettings from "./AppearanceSettings";
+import ProfileSettings from "./ProfileSettings";
 import Icon from "./Icon";
 
 const TABS = [
   { id: "library",    label: "Library",    icon: "folder" },
+  { id: "profiles",   label: "Profiles",   icon: "users" },
   { id: "youtube",    label: "YouTube",    icon: "download" },
   { id: "appearance", label: "Appearance", icon: "palette" },
 ];
 
-export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone }) {
-  const [tab, setTab] = useState("library");
+export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone, onProfilesChanged, initialTab = "library" }) {
+  const [tab, setTab] = useState(initialTab);
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -41,6 +43,11 @@ export default function SettingsModal({ onClose, initialDir, initialDataDir, ini
                 onScanDone={onScanDone}
                 embedded
               />
+            )}
+            {tab === "profiles" && (
+              <div className="watch-folder-body">
+                <ProfileSettings onChanged={onProfilesChanged} />
+              </div>
             )}
             {tab === "youtube" && (
               <div className="watch-folder-body">

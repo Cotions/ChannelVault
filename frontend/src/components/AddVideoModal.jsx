@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { addVideoManual, browseFile, fetchMetadata, readFileTags } from "../lib/api";
 import Icon from "./Icon";
+import { isYouTube } from "../lib/source";
 
 function extractVideoId(input) {
   const s = input.trim();
@@ -20,9 +21,12 @@ function extractVideoId(input) {
 
 export default function AddVideoModal({ onClose, onAdded, initialVideo = null }) {
   const isEdit = !!initialVideo;
+  // Editing a Twitch VOD / local file: the link is just a link, no fetching.
+  const editingOther = isEdit && !isYouTube(initialVideo);
+  const ytUrlOf = v => (isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : "");
 
   const [urlInput, setUrlInput] = useState(
-    initialVideo ? (initialVideo.url || `https://www.youtube.com/watch?v=${initialVideo.video_id}`) : ""
+    initialVideo ? (initialVideo.url || ytUrlOf(initialVideo)) : ""
   );
   const [form, setForm] = useState(
     initialVideo
@@ -30,7 +34,7 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
           video_id:     initialVideo.video_id     || "",
           title:        initialVideo.title         || "",
           channel_name: initialVideo.channel_name  || "",
-          url:          initialVideo.url           || `https://www.youtube.com/watch?v=${initialVideo.video_id}`,
+          url:          initialVideo.url           || ytUrlOf(initialVideo),
           file_path:    initialVideo.file_path     || "",
           recorded_date:initialVideo.recorded_date || "",
           genre:        initialVideo.genre         || "",
@@ -45,8 +49,10 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
   function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
 
   async function fetchMeta(input) {
+    if (editingOther) return;
     const id = extractVideoId(input || urlInput);
-    if (!id) { setFetchStatus("err"); return; }
+    // Another site's link: nothing to fetch, the fields are filled in by hand.
+    if (!id) { setFetchStatus(/^https?:\/\//i.test((input || urlInput).trim()) ? "other" : "err"); return; }
 
     setFetchStatus("loading");
     try {
@@ -87,26 +93,43 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
         description:  data.description  || f.description,
         recorded_date:data.recorded_date|| f.recorded_date,
       }));
-      if (data.url || data.video_id) {
-        setUrlInput(data.url || `https://www.youtube.com/watch?v=${data.video_id}`);
-        setFetchStatus("ok");
+      if (data.url) {
+        setUrlInput(data.url);
+        setFetchStatus(data.source === "youtube" ? "ok" : "other");
       }
     } catch {}
   }
 
   function handleUrlBlur() {
-    if (urlInput.trim() && fetchStatus !== "ok") fetchMeta();
+    if (urlInput.trim() && fetchStatus !== "ok" && fetchStatus !== "other") fetchMeta();
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!form.video_id.trim()) { setErr("Video ID is required — paste a URL above and fetch first."); return; }
+    // A YouTube id is fetched into form.video_id; anything else is sent as a plain
+    // link (or nothing, for a local file) and the server mints the entry's id.
+    const ytId    = isEdit ? null : extractVideoId(urlInput);
+    const link    = urlInput.trim();
+    const payload = isEdit
+      ? { ...form, url: editingOther ? link : form.url }
+      : ytId
+        ? { ...form, video_id: ytId, url: form.url || `https://www.youtube.com/watch?v=${ytId}` }
+        : { ...form, video_id: "", url: link };
+    if (!payload.video_id && !payload.url && !payload.file_path.trim()) {
+      setErr("Paste a video link, or pick the local file.");
+      return;
+    }
+    if (!isEdit && !ytId && link && !/^https?:\/\//i.test(link)) {
+      setErr("That's not a YouTube id or a link (https://…).");
+      return;
+    }
     setBusy(true); setErr(null);
     try {
-      const res = await addVideoManual(form);
+      const res = await addVideoManual(payload);
       if (res.ok) {
         onClose();
-        fetchMetadata(form.video_id).then(() => onAdded()).catch(() => onAdded());
+        if (res.source && res.source !== "youtube") onAdded();
+        else fetchMetadata(res.video_id).then(() => onAdded()).catch(() => onAdded());
       } else {
         setErr(res.error || "Failed to save video.");
         setBusy(false);
@@ -128,11 +151,11 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
         <form className="modal-form" onSubmit={handleSubmit}>
 
           <label>
-            {isEdit ? "YouTube URL" : <>YouTube URL or Video ID <span className="required">*</span></>}
+            {isEdit ? (editingOther ? "Video link" : "YouTube URL") : <>YouTube URL or Video ID <span className="required">*</span></>}
             <div className="fetch-row">
               <input
                 type="text"
-                placeholder="https://www.youtube.com/watch?v=… or video ID"
+                placeholder={editingOther ? "https://… (optional)" : "https://www.youtube.com/watch?v=… or video ID"}
                 value={urlInput}
                 onChange={e => { setUrlInput(e.target.value); setFetchStatus(null); }}
                 onBlur={handleUrlBlur}
@@ -149,14 +172,19 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
                 type="button"
                 className="btn-secondary"
                 onClick={() => fetchMeta()}
-                disabled={fetchStatus === "loading" || !urlInput.trim()}
+                disabled={editingOther || fetchStatus === "loading" || !urlInput.trim()}
               >
                 {fetchStatus === "loading" ? "…" : "Fetch"}
               </button>
             </div>
             {fetchStatus === "ok"  && <span className="field-hint" style={{color:"#81c784"}}>Metadata fetched</span>}
             {fetchStatus === "err" && <span className="field-hint" style={{color:"#ef9a9a"}}>Could not fetch — edit fields manually</span>}
-            {!fetchStatus          && <span className="field-hint">{isEdit ? "Fetch to refresh metadata from YouTube" : "Paste a URL or ID — metadata will auto-fill"}</span>}
+            {fetchStatus === "other" && <span className="field-hint">Not a YouTube link — saved as-is; fill in title and artist, and pick the file</span>}
+            {!fetchStatus          && <span className="field-hint">{
+              editingOther ? "Where this video lives online, if anywhere"
+                : isEdit ? "Fetch to refresh metadata from YouTube"
+                : "Paste a URL or ID — metadata will auto-fill. Not on YouTube? Paste its link, or leave empty and pick the file"
+            }</span>}
           </label>
 
           <label>

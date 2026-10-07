@@ -6,7 +6,8 @@ import {
   addVideoTag, removeVideoTag, importChapters, getTagSegments,
 } from "../lib/api";
 import { artistsOf } from "../lib/artists";
-import { fmt, fmtBytes, fmtDuration, fmtRecordedDate } from "../lib/fmt";
+import { isYouTube, sourceLabel } from "../lib/source";
+import { fmt, fmtBytes, fmtDuration, fmtRecordedDate, safeUrl } from "../lib/fmt";
 import { usePlayer } from "../player/playerContext";
 import { usePlaybackTime } from "../player/usePlaybackTime";
 import QueueBar from "../player/QueueBar";
@@ -197,7 +198,10 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     );
   }
 
-  const ytUrl  = `https://www.youtube.com/watch?v=${video.video_id}`;
+  const fromYT = isYouTube(video);
+  // Off YouTube the link is whatever the file was tagged with; a local file has none.
+  const srcUrl = fromYT ? `https://www.youtube.com/watch?v=${video.video_id}` : safeUrl(video.url);
+  const srcName = sourceLabel(video.source);
   const artists = artistsOf(video);
   // Tags that actually mark parts of this video, so "play only X" has something to play.
   const segmentTags = [...new Map(
@@ -234,21 +238,29 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
           <Icon name="back" size={15} />Back
         </button>
         <div className="video-page-spacer" />
-        <a href={ytUrl} target="_blank" rel="noreferrer" className="btn-yt" title="Open on YouTube">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-            <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.6 15.6V8.4L15.8 12l-6.2 3.6z"/>
-          </svg>
-          YouTube
-        </a>
+        {srcUrl && (
+          <a href={srcUrl} target="_blank" rel="noreferrer" className={fromYT ? "btn-yt" : "btn-yt btn-src"} title={`Open on ${srcName}`}>
+            {fromYT && (
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.6 15.6V8.4L15.8 12l-6.2 3.6z"/>
+              </svg>
+            )}
+            {srcName}
+          </a>
+        )}
         {elapsed != null && <span className="fetch-timer">{elapsed.toFixed(1)}s</span>}
         {thumbMsg && <span className="fetch-timer">{thumbMsg}</span>}
         <div className="vp-tools">
-          <button className="icon-btn" onClick={handleFetchMeta} disabled={fetching} title="Fetch metadata from YouTube">
-            <Icon name="refresh" size={16} className={fetching ? "spin" : ""} />
-          </button>
-          <button className="icon-btn" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
-            <Icon name="download" size={16} />
-          </button>
+          {fromYT && (
+            <>
+              <button className="icon-btn" onClick={handleFetchMeta} disabled={fetching} title="Fetch metadata from YouTube">
+                <Icon name="refresh" size={16} className={fetching ? "spin" : ""} />
+              </button>
+              <button className="icon-btn" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
+                <Icon name="download" size={16} />
+              </button>
+            </>
+          )}
           {thumbs.length > 1 && (
             <button className="icon-btn icon-btn-wide" onClick={cycle} title="Cycle thumbnail (newest first)">
               <Icon name="cycle" size={16} />
@@ -294,7 +306,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
             <img src={poster} alt="" onError={e => { e.target.style.display = "none"; }} />
             <div className="empty">
               Browser can't play this file{video.file_path ? ` (${video.file_path.split(".").pop()})` : ""}.{" "}
-              <a href={ytUrl} target="_blank" rel="noreferrer" style={{ color: "#90caf9" }}>Watch on YouTube</a>
+              {srcUrl && <a href={srcUrl} target="_blank" rel="noreferrer" style={{ color: "#90caf9" }}>Watch on {srcName}</a>}
             </div>
           </div>
         ) : (

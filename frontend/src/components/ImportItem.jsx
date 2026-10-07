@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { importInspect, importThumbUrl, importFetchMeta, importEnrich, organizeApply } from "../lib/api";
+import { isYouTubeUrl, sourceLabel } from "../lib/source";
 
 const FIELDS = [
   { key: "title",        label: "Title" },
   { key: "artist",       label: "Artist / Channel" },
-  { key: "url",          label: "YouTube URL" },
+  { key: "url",          label: "YouTube URL (not on YouTube: its link, or empty)" },
   { key: "genre",        label: "Genre" },
   { key: "recorded_date",label: "Recorded date" },
   { key: "description",  label: "Description", area: true },
@@ -12,7 +13,7 @@ const FIELDS = [
 
 const STATUS_LABEL = {
   ready: "ready", "in-place": "already in folder",
-  "no-artist": "no artist tag", duplicate: "duplicate on disk",
+  "no-artist": "no artist tag", "no-link": "open, then Write to file", duplicate: "duplicate on disk",
 };
 
 export default function ImportItem({ it, checked, onCheck, source, mode, onTransferred, onMetaChanged }) {
@@ -109,6 +110,8 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
 
   const meta      = detail?.meta;
   const canImport = meta && meta.artist && meta.video_id;
+  // Only a YouTube link (or no link yet, to look one up) has anything to fetch.
+  const canFetch  = !fields?.url || isYouTubeUrl(fields.url);
 
   return (
     <div style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, opacity: done ? 0.5 : 1 }}>
@@ -116,7 +119,7 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
         <input
           type="checkbox"
           checked={checked}
-          disabled={done || it.status === "no-artist"}
+          disabled={done || it.status === "no-artist" || it.status === "no-link"}
           onChange={e => onCheck(it.file, e.target.checked)}
         />
         <div style={{ minWidth: 0, flex: 1, cursor: "pointer" }} onClick={toggle}>
@@ -151,7 +154,8 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
             )}
             {meta && (
               <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
-                <div>id: {meta.video_id || "—"}</div>
+                <div>id: {meta.video_id || "— write to file"}</div>
+                {meta.source && <div>from: {sourceLabel(meta.source)}</div>}
                 <div>dest: {fields?.artist ? `${fields.artist}/` : "— need artist"}</div>
               </div>
             )}
@@ -183,7 +187,8 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
                 ))}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
                   <button className="btn-secondary" style={{ fontSize: 12, padding: "4px 10px" }}
-                    onClick={autoFetch} disabled={!!busy}>
+                    onClick={autoFetch} disabled={!!busy || !canFetch}
+                    title={canFetch ? "" : "Not a YouTube link — fill in by hand"}>
                     {busy === "fetch" ? "Fetching…" : "Auto-fetch from YouTube"}
                   </button>
                   <button className="btn-secondary" style={{ fontSize: 12, padding: "4px 10px" }}
@@ -192,7 +197,7 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
                   </button>
                   <button className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
                     onClick={transferThis} disabled={!!busy || done || !canImport}
-                    title={canImport ? "" : "Needs artist + YouTube URL written into the file first"}>
+                    title={canImport ? "" : "Write the artist into the file first"}>
                     {busy === "transfer" ? "Transferring…" : (mode === "copy" ? "Copy & Add" : "Move & Add")}
                   </button>
                 </div>

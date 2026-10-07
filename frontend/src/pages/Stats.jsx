@@ -3,6 +3,7 @@ import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 import { artistsOf } from "../lib/artists";
 import Icon from "../components/Icon";
+import { isYouTube } from "../lib/source";
 
 function fmtHours(secs) {
   if (!secs) return "—";
@@ -70,12 +71,14 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   // What is left of the channel on YouTube, as of each video's last fetch.
   // Geo-blocked and age-gated videos are still up for the public, just gated.
   // Unfetched videos (no availability yet) count toward none of these.
-  const availCount = (...states) => scopeVideos.filter(v => states.includes(v.availability)).length;
+  // Only YouTube entries can be up or down there; Twitch VODs and local files sit out.
+  const ytVideos   = scopeVideos.filter(isYouTube);
+  const availCount = (...states) => ytVideos.filter(v => states.includes(v.availability)).length;
   const publicCount    = availCount("available", "geo", "age");
   const deletedCount   = availCount("deleted", "unavailable");
   const privateCount   = availCount("private");
   const membersCount   = availCount("members");
-  const uncheckedCount = scopeVideos.filter(v => !v.availability).length;
+  const uncheckedCount = ytVideos.filter(v => !v.availability).length;
   const checkedCount = publicCount + deletedCount + privateCount + membersCount;
   const pct = n => (checkedCount ? `${Math.round((n / checkedCount) * 100)}% of checked` : null);
   const availSegments = [

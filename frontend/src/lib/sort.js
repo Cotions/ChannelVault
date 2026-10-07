@@ -41,9 +41,10 @@ function recDate(v) {
   return (v || "").replace(/\D/g, "");
 }
 
-// A video we can't refetch (private/deleted/etc). NULL or "available" = fetchable.
+// A video we can't refetch (private/deleted/etc, or not on YouTube at all).
+// NULL or "available" = fetchable.
 function isDead(v) {
-  return !!v.availability && v.availability !== "available";
+  return (!!v.availability && v.availability !== "available") || (v.source || "youtube") !== "youtube";
 }
 
 // Descending comparator per key (newest / most / largest / Z–A first).

@@ -8,13 +8,18 @@ import csv
 import time
 import json
 import shutil
+import errno
+import contextlib
+import tempfile
 import sqlite3
+import base64
 import hashlib
 import subprocess
 import urllib.request
 import urllib.parse
 import threading
 import unicodedata
+import uuid
 import difflib
 from tinytag import TinyTag
 from watchdog.observers import Observer
@@ -83,6 +88,52 @@ def _valid_video_id(value):
     v = (value or "").strip()
     return v if _VIDEO_ID_RE.fullmatch(v) else None
 
+
+def _clean_err(e):
+    """Exception or tool output as display text: control characters become spaces."""
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", str(e)).strip()
+
+
+# Entries that aren't YouTube videos (Twitch VODs, Facebook clips, untagged local
+# files) get a minted id in the same 11-char shape so every route keeps working.
+# A YouTube id packs 64 bits into 11 chars, so its last char is always one of
+# these 16; ending a minted id with "_" means it can never equal a real one.
+_YT_LAST_CHARS = set("AEIMQUYcgkosw048")
+# Untagged files are marked at import with a "local:<key>" comment tag.
+_LOCAL_PREFIX  = "local:"
+
+
+def _mint_id(key):
+    digest = hashlib.sha1(key.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode()[:10] + "_"
+
+
+def _entry_id(url):
+    """(video_id, source) for a file's URL tag, or (None, None) if it names nothing.
+    source is 'youtube', 'local', or the site's name ('twitch', 'facebook', ...)."""
+    url = (url or "").strip()
+    if not url:
+        return None, None
+    vid = _video_id_from_url(url)
+    if vid:
+        return vid, "youtube"
+    if url.startswith(_LOCAL_PREFIX):
+        key = url[len(_LOCAL_PREFIX):].strip()
+        return (_mint_id(url), "local") if key else (None, None)
+    m = re.match(r"https?://([^/?#]+)", url)
+    if not m:
+        return None, None
+    host  = m.group(1).lower().split(":")[0]
+    parts = [p for p in host.split(".") if p not in ("www", "m", "mobile")]
+    # twitch.tv → twitch, www.facebook.com → facebook, clips.twitch.tv → twitch
+    # bbc.co.uk → bbc, not co
+    if len(parts) >= 3 and parts[-2] in ("co", "com", "net", "org", "ne", "or", "ac", "gov"):
+        parts = parts[:-1]
+    source = parts[-2] if len(parts) >= 2 else (parts[0] if parts else host)
+    if source == "youtube" or source == "youtu":
+        return None, None             # a YouTube URL we couldn't read an id from
+    return _mint_id(url.split("#")[0]), source
+
 # ---------------------------------------------------------------------------
 # Origin lockdown
 #
@@ -141,7 +192,8 @@ def _is_public_endpoint():
 def _origin_guard():
     if _host_only(request.headers.get("Host")) not in _ALLOWED_HOSTS:
         return jsonify({"ok": False, "error": "forbidden host"}), 403
-    if request.method in ("OPTIONS", "HEAD") or request.endpoint is None:
+    # Not HEAD: Flask answers HEAD by running the GET handler, side effects and all.
+    if request.method == "OPTIONS" or request.endpoint is None:
         return None                            # nothing to protect; let Flask 404/405
     if _is_public_endpoint():
         return None
@@ -153,14 +205,101 @@ def _origin_guard():
 # Config
 # ---------------------------------------------------------------------------
 
-def load_config():
-    cfg = {}
+# A profile is a whole separate library: its own watch folder, media roots and
+# data directory (so its own videos.db, thumbs, tags, playlists and stats).
+# Everything else in the config (yt-dlp knobs) is shared by all profiles.
+# load_config() flattens the active profile into the top level, so the rest of
+# the code reads cfg["data_directory"] without knowing profiles exist.
+PROFILE_KEYS = ("watch_directory", "data_directory", "media_roots")
+
+
+def _read_raw_config():
+    raw = {}
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
-    cfg.setdefault("watch_directory", DEFAULT_WATCH)
-    cfg.setdefault("data_directory", DEFAULT_DATA)
-    cfg.setdefault("media_roots", [])
+            raw = json.load(f)
+    if not raw.get("profiles"):
+        # Pre-profiles config: its library becomes the "Default" profile.
+        default = {"id": "default", "name": "Default"}
+        for k in PROFILE_KEYS:
+            if k in raw:
+                default[k] = raw.pop(k)
+        raw["profiles"]       = [default]
+        raw["active_profile"] = "default"
+    return raw
+
+
+_config_write_lock = threading.Lock()
+
+def _write_raw_config(raw):
+    # Own temp name per write + a lock: two saves at once can't interleave
+    # into one temp file and leave config.json half-written.
+    with _config_write_lock:
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(CONFIG_PATH) or ".", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump(raw, f, indent=2)
+        os.replace(tmp, CONFIG_PATH)
+
+
+def _copy_db(src, dest):
+    """Copy a live SQLite DB including what still sits in its -wal file
+    (a plain file copy would drop recent, uncheckpointed changes)."""
+    s, d = sqlite3.connect(src), sqlite3.connect(dest)
+    try:
+        s.backup(d)
+    finally:
+        d.close()
+        s.close()
+
+
+# A long job (scan, backfill, organize) pins the profile it started in, so a
+# switch mid-job can't send the rest of its writes into another library.
+_job_profile = threading.local()
+
+
+def _active_profile(raw):
+    want = getattr(_job_profile, "id", None) or raw.get("active_profile")
+    for p in raw["profiles"]:
+        if p.get("id") == want:
+            return p
+    return raw["profiles"][0]
+
+
+@contextlib.contextmanager
+def _pinned_profile(profile_id=None):
+    prev = getattr(_job_profile, "id", None)
+    _job_profile.id = profile_id or load_config()["active_profile"]
+    try:
+        yield
+    finally:
+        _job_profile.id = prev
+
+
+def _stream_in_profile(gen):
+    """Run a streaming generator pinned to the profile active right now (when
+    the request came in), not whichever is active as it's iterated."""
+    pid = load_config()["active_profile"]
+    def run():
+        with _pinned_profile(pid):
+            yield from gen
+    return run()
+
+
+def _profile_defaults(p):
+    p.setdefault("watch_directory", DEFAULT_WATCH)
+    p.setdefault("data_directory", DEFAULT_DATA)
+    p.setdefault("media_roots", [])
+    return p
+
+
+def load_config():
+    raw  = _read_raw_config()
+    prof = _profile_defaults(dict(_active_profile(raw)))
+    cfg  = {k: v for k, v in raw.items() if k not in ("profiles", "active_profile")}
+    for k in PROFILE_KEYS:
+        cfg[k] = prof[k]
+    cfg["active_profile"] = prof["id"]
+    cfg["profile_name"]   = prof.get("name") or prof["id"]
     # yt-dlp knobs. Age-restricted videos need a signed-in cookie jar, and
     # YouTube's "n" challenge needs a JavaScript runtime, or the fetch dies with
     # "The page needs to be reloaded". Both are opt-in and empty by default.
@@ -169,8 +308,15 @@ def load_config():
     return cfg
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+    """Profile keys go to the active profile, the rest to the shared top level."""
+    raw  = _read_raw_config()
+    prof = _active_profile(raw)
+    for k, v in cfg.items():
+        if k in PROFILE_KEYS:
+            prof[k] = v
+        elif k not in ("active_profile", "profile_name", "profiles"):
+            raw[k] = v
+    _write_raw_config(raw)
 
 def get_db_path():
     return os.path.join(load_config()["data_directory"], "videos.db")
@@ -182,7 +328,23 @@ def ensure_data_dir(data_dir):
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(os.path.join(data_dir, "artist_thumbs"), exist_ok=True)
 
-_INVALID_CHARS = re.compile(r'[/\\:*?"<>|]')
+_INVALID_CHARS = re.compile(r'[/\\:*?"<>|\u29f8]')   # \u29f8 is the slash yt-dlp swaps in
+
+def _norm_date(value):
+    """A tag date as stored: "YYYY-MM-DD" when the day is known ("20210202",
+    "2021-02-02T..."), else "YYYY". None when there's no year."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    m = re.match(r"(\d{4})-?(\d{2})-?(\d{2})", s)
+    if m and 1 <= int(m.group(2)) <= 12 and 1 <= int(m.group(3)) <= 31:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    return s[:4] if s[:4].isdigit() else None
+
+
+def _clean_name(name):
+    """An artist/channel name as stored: outer whitespace (U+3000 too) gone, empty is None."""
+    return str(name).strip() or None if name is not None else None
 
 def _safe_dirname(name):
     return _INVALID_CHARS.sub("-", name).strip()
@@ -241,14 +403,42 @@ def sync_artist_folders():
 
         # Prune orphaned artist folders: anything not backed by a current
         # (split) artist name. Catches old combined collab folders and artists
-        # whose videos are all gone. Thumbs are a cache, rebuilt next scan.
+        # whose videos are all gone. A thumb in there may be the only copy
+        # (a renamed channel's), so one whose video is still tracked moves to
+        # that video's current artist folders before the folder goes.
         valid = {_safe_dirname(name) for name in channels}
+        homes = {}
+        for name, video_ids in channels.items():
+            for video_id in video_ids:
+                homes.setdefault(video_id, []).append(os.path.join(artist_thumbs_dir, _safe_dirname(name)))
         if os.path.isdir(artist_thumbs_dir):
             for entry in os.listdir(artist_thumbs_dir):
                 path = os.path.join(artist_thumbs_dir, entry)
-                if os.path.isdir(path) and entry not in valid:
-                    shutil.rmtree(path, ignore_errors=True)
-                    print(f"[artist_folders] Pruned orphan: {entry}")
+                if not os.path.isdir(path) or entry in valid:
+                    continue
+                for fname in os.listdir(path):
+                    for home in homes.get(os.path.splitext(fname)[0], []):
+                        dest = os.path.join(home, fname)
+                        if not os.path.exists(dest):
+                            shutil.copy2(os.path.join(path, fname), dest)
+                shutil.rmtree(path, ignore_errors=True)
+                print(f"[artist_folders] Pruned orphan: {entry}")
+
+        # A video's thumb left under an artist it's no longer credited to (a
+        # collab split differently, a credit fixed) moves to its current
+        # artists' folders.
+        for name, video_ids in channels.items():
+            artist_dir = os.path.join(artist_thumbs_dir, _safe_dirname(name))
+            own = set(video_ids)
+            for fname in os.listdir(artist_dir):
+                vid, ext = os.path.splitext(fname)
+                if vid in own or vid not in homes or ext.lower() not in (".jpg", ".jpeg", ".webp", ".png"):
+                    continue
+                stale = os.path.join(artist_dir, fname)
+                for h in homes[vid]:
+                    if not os.path.exists(os.path.join(h, fname)):
+                        shutil.copy2(stale, os.path.join(h, fname))
+                os.remove(stale)
 
         # Remove thumbs dir if now empty
         if os.path.isdir(thumbs_dir) and not os.listdir(thumbs_dir):
@@ -387,6 +577,12 @@ def init_db():
     # Migrate: availability — NULL/'available' = ok; 'private'/'deleted'/'members'/'geo'/'age'/'unavailable' = can't fetch
     if "availability" not in cols:
         conn.execute("ALTER TABLE downloaded_videos ADD COLUMN availability TEXT")
+
+    # Migrate: where the entry comes from — 'youtube', 'twitch', 'local', ...
+    # Everything before this column existed was YouTube.
+    if "source" not in cols:
+        conn.execute("ALTER TABLE downloaded_videos ADD COLUMN source TEXT DEFAULT 'youtube'")
+        conn.execute("UPDATE downloaded_videos SET source='youtube' WHERE source IS NULL")
 
     # Migrate: absorb wanted_videos table if it still exists
     existing = conn.execute(
@@ -558,10 +754,10 @@ def _meta_from_tinytag(file_path):
     return {
         "url":           tag.comment,
         "title":         tag.title,
-        "artist":        tag.artist,
+        "artist":        _clean_name(tag.artist),
         "genre":         tag.genre,
         "description":   description,
-        "recorded_date": str(year) if year else None,
+        "recorded_date": _norm_date(year),
         "duration":      tag.duration,
         "filesize":      tag.filesize,
     }
@@ -576,7 +772,7 @@ def _meta_from_ffprobe(file_path):
     fmt  = (json.loads(out.stdout or "{}")).get("format", {})
     tags = {k.lower(): v for k, v in (fmt.get("tags") or {}).items()}
     date = tags.get("date") or ""
-    year = date[:4] if len(date) >= 4 and date[:4].isdigit() else None
+    year = _norm_date(date)
     try:
         filesize = int(fmt.get("size"))
     except (TypeError, ValueError):
@@ -588,7 +784,7 @@ def _meta_from_ffprobe(file_path):
     return {
         "url":           tags.get("comment") or tags.get("purl"),
         "title":         tags.get("title"),
-        "artist":        tags.get("artist"),
+        "artist":        _clean_name(tags.get("artist")),
         "genre":         tags.get("genre"),
         "description":   tags.get("description") or tags.get("synopsis"),
         "recorded_date": year,
@@ -626,6 +822,21 @@ def _read_chapters(file_path):
 
 
 _COVER_EXTS = {"mjpeg": ".jpg", "png": ".png", "webp": ".webp"}
+
+
+def _grab_frame(file_path, dest, duration=None):
+    """Save one frame, a tenth of the way in, as a stand-in thumbnail.
+    Returns dest, or None (audio-only file, ffmpeg failure)."""
+    at = min(max((duration or 0) * 0.1, 0), 60)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-ss", f"{at:.1f}", "-i", file_path,
+             "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "3", dest],
+            capture_output=True, timeout=60, check=True,
+        )
+    except Exception:
+        return None
+    return dest if os.path.isfile(dest) and os.path.getsize(dest) > 0 else None
 
 
 def _extract_cover(file_path, dest_base):
@@ -704,15 +915,12 @@ def process_video_file(file_path):
             meta = _meta_from_ffprobe(file_path)
 
         url = meta.get("url")
-        if not url or "youtube.com" not in url:
+        video_id, source = _entry_id(url)
+        if not video_id:
             result["status"] = "skipped"
             return result
-
-        match = re.search(r"v=([a-zA-Z0-9_-]{11})", url)
-        if not match:
-            result["status"] = "skipped"
-            return result
-        video_id = match.group(1)
+        if source == "local":
+            url = None                    # the marker isn't a link anywhere
 
         title         = meta.get("title")
         artist        = meta.get("artist")
@@ -725,10 +933,11 @@ def process_video_file(file_path):
             conn.execute('''
                 INSERT INTO downloaded_videos
                     (video_id, title, channel_name, url, file_path,
-                     genre, description, recorded_date, duration_secs, file_size_bytes, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
+                     genre, description, recorded_date, duration_secs, file_size_bytes, source, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
                 ON CONFLICT(video_id) DO UPDATE SET
                     title=excluded.title,
+                    source=excluded.source,
                     channel_name=excluded.channel_name,
                     url=excluded.url,
                     file_path=excluded.file_path,
@@ -741,7 +950,14 @@ def process_video_file(file_path):
                     status='downloaded'
                 WHERE downloaded_videos.status != 'downloaded'
             ''', (video_id, title, artist, url, file_path,
-                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize")))
+                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source))
+            # An already-tracked row keeps its data, but its size follows the
+            # file: a size read while the file was still being copied heals here.
+            if meta.get("filesize"):
+                conn.execute(
+                    "UPDATE downloaded_videos SET file_size_bytes=? "
+                    "WHERE video_id=? AND file_path=? AND file_size_bytes IS NOT ?",
+                    (meta.get("filesize"), video_id, file_path, meta.get("filesize")))
             conn.commit()
             conn.close()
 
@@ -750,13 +966,15 @@ def process_video_file(file_path):
         # Embedded chapters become segments, once. A rescan never touches a video
         # that already has segments, so the user's edits survive.
         try:
-            with _db_lock:
-                conn = get_conn()
-                added = _import_chapters(conn, video_id, file_path, replace=False)
-                if added:
-                    _apply_rules(conn, video_ids=[video_id])
-                conn.commit()
-                conn.close()
+            chapters = _chapters_to_import(video_id, file_path)
+            if chapters:
+                with _db_lock:
+                    conn = get_conn()
+                    added = _import_chapters(conn, video_id, file_path, replace=False, chapters=chapters)
+                    if added:
+                        _apply_rules(conn, video_ids=[video_id])
+                    conn.commit()
+                    conn.close()
         except Exception as e:
             print(f"[segments] chapter import failed for {video_id}: {e}")
         # Copy thumbnail into each collaborating artist's folder. No sidecar
@@ -772,8 +990,11 @@ def process_video_file(file_path):
                 shutil.copy2(src, dest_base + os.path.splitext(src)[1])
             else:
                 src = _extract_cover(file_path, dest_base)
+                # Off YouTube there's no thumbnail to fetch later: use a frame.
+                if not src and source != "youtube":
+                    src = _grab_frame(file_path, dest_base + ".jpg", meta.get("duration"))
     except Exception as e:
-        result["status"] = f"error: {e}"
+        result["status"] = f"error: {_clean_err(e)}"
         print(f"[tracker] Error parsing {file_path}: {e}")
     return result
 
@@ -813,14 +1034,31 @@ _AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".opus", ".ogg", ".oga", ".flac", ".wav",
 _LIBRARY_EXTS = _VIDEO_EXTS + _AUDIO_EXTS
 
 
+def _wait_until_settled(path, step=2, limit=1800):
+    """Block until the file's size and mtime stop changing. False if it vanished
+    (renamed/removed while waiting)."""
+    last = None
+    for _ in range(int(limit / step)):
+        time.sleep(step)
+        try:
+            st = os.stat(path)
+        except OSError:
+            return False
+        now = (st.st_size, st.st_mtime_ns)
+        if now == last:
+            return True
+        last = now
+    return os.path.isfile(path)
+
+
 def _handle_new_path(path):
     if not path.lower().endswith(_LIBRARY_EXTS):
         return
     if _is_temp_file(path) or _is_ignored(path):
         return
-    time.sleep(2)
-    # Download may still be settling / renamed again during the wait.
-    if not os.path.isfile(path):
+    # A copy or a slow download keeps growing after the event fires; wait for
+    # the size to hold still so the tracked size/duration are the finished file's.
+    if not _wait_until_settled(path):
         return
     # A download that lands straight in the library root gets filed into its
     # artist folder, like "Organize loose files" would. Anything deeper, or a
@@ -839,7 +1077,7 @@ def _handle_new_path(path):
 
 def _tracked_elsewhere(path):
     """True when this file's video is already tracked at a different path that still exists."""
-    vid = _video_id_from_url(_read_meta(path).get("url"))
+    vid, _src = _entry_id(_read_meta(path).get("url"))
     if not vid:
         return False
     conn = get_conn()
@@ -946,6 +1184,19 @@ def ytdlp_status():
     })
 
 
+# Folders a library must never live in: the app writes and moves files there.
+_SYSTEM_DIRS = ("/etc", "/usr", "/bin", "/sbin", "/proc", "/sys", "/dev", "/boot", "/root")
+
+
+def _system_dir(path):
+    """True for /, $HOME itself, or anything in an OS directory."""
+    real = os.path.realpath(os.path.expanduser(path))
+    if real in ("/", os.path.realpath(os.path.expanduser("~"))):
+        return True
+    top = "/" + real.split("/")[1] if real.startswith("/") else ""
+    return top in _SYSTEM_DIRS or top.startswith("/lib")
+
+
 @app.post("/config")
 def set_config():
     body = request.get_json(silent=True) or {}
@@ -968,17 +1219,29 @@ def set_config():
             return jsonify({"ok": False, "error": "media_roots must be a list"}), 400
         # Don't require existence: a Windows root won't exist when running on
         # Linux (and vice-versa). The resolver skips dead roots at read time.
-        cfg["media_roots"] = [str(r).strip() for r in roots if str(r).strip()]
+        roots = [str(r).strip() for r in roots if str(r).strip()]
+        bad   = next((r for r in roots if _system_dir(r)), None)
+        if bad:
+            return jsonify({"ok": False, "error": f"Not a media folder: {bad}"}), 400
+        cfg["media_roots"] = roots
         save_config(cfg)
         clear_media_index()
 
     # yt-dlp: cookie jar for age-gated videos, JS runtime for the "n" challenge.
+    # Both end up on yt-dlp's command line, so only known values get stored.
     if "ytdlp_js_runtime" in body:
-        cfg["ytdlp_js_runtime"] = str(body["ytdlp_js_runtime"] or "").strip()
+        runtime = str(body["ytdlp_js_runtime"] or "").strip()
+        if runtime and not _check_js_runtime(runtime):
+            return jsonify({"ok": False, "error":
+                f"JS runtime must be one of {', '.join(_JS_RUNTIMES)}, or name:/path/to/executable"}), 400
+        cfg["ytdlp_js_runtime"] = _check_js_runtime(runtime) or ""
         save_config(cfg)
 
     if "ytdlp_cookies_from_browser" in body:
-        cfg["ytdlp_cookies_from_browser"] = str(body["ytdlp_cookies_from_browser"] or "").strip()
+        browser = str(body["ytdlp_cookies_from_browser"] or "").strip()
+        if browser and not _COOKIE_BROWSER_RE.fullmatch(browser):
+            return jsonify({"ok": False, "error": f"Unknown browser: {browser}"}), 400
+        cfg["ytdlp_cookies_from_browser"] = browser
         save_config(cfg)
         # Videos parked as "age" were only unfetchable because we had no cookies.
         # Now that there are some, put them back in the queue.
@@ -993,19 +1256,183 @@ def set_config():
         data_dir = body["data_directory"].strip()
         if not data_dir:
             return jsonify({"ok": False, "error": "data_directory is required"}), 400
+        if _system_dir(data_dir):
+            return jsonify({"ok": False, "error": f"Not a data directory: {data_dir}"}), 400
+        owner = _data_dir_owner(_read_raw_config(), data_dir, exclude=cfg["active_profile"])
+        if owner:
+            return jsonify({"ok": False, "error": f"Profile \"{owner}\" already uses that data directory"}), 400
         try:
             ensure_data_dir(data_dir)
         except Exception as e:
-            return jsonify({"ok": False, "error": f"Cannot create directory: {e}"}), 400
+            return jsonify({"ok": False, "error": f"Cannot create directory: {_clean_err(e)}"}), 400
         old_db = os.path.join(cfg["data_directory"], "videos.db")
         new_db = os.path.join(data_dir, "videos.db")
         if os.path.exists(old_db) and not os.path.exists(new_db):
-            shutil.copy2(old_db, new_db)
+            _copy_db(old_db, new_db)
         cfg["data_directory"] = data_dir
         save_config(cfg)
         init_db()
 
     return jsonify({"ok": True, **cfg})
+
+# ---------------------------------------------------------------------------
+# Profiles: separate libraries, one active at a time
+# ---------------------------------------------------------------------------
+
+def _data_dir_owner(raw, data_dir, exclude=None):
+    """Name of another profile whose data directory is data_dir, else None.
+
+    Two profiles on one data directory would share a database, which is exactly
+    what profiles exist to prevent.
+    """
+    want = os.path.realpath(os.path.expanduser(data_dir))
+    for p in raw["profiles"]:
+        if p.get("id") == exclude:
+            continue
+        have = _profile_defaults(dict(p))["data_directory"]
+        if os.path.realpath(os.path.expanduser(have)) == want:
+            return p.get("name") or p["id"]
+    return None
+
+
+def _profile_video_count(data_dir):
+    db = os.path.join(data_dir, "videos.db")
+    if not os.path.exists(db):
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        n = conn.execute("SELECT COUNT(*) FROM downloaded_videos WHERE status='downloaded'").fetchone()[0]
+        conn.close()
+        return n
+    except sqlite3.Error:
+        return None
+
+
+def _profile_json(p, active_id):
+    p = _profile_defaults(dict(p))
+    return {
+        "id":              p["id"],
+        "name":            p.get("name") or p["id"],
+        "watch_directory": p["watch_directory"],
+        "data_directory":  p["data_directory"],
+        "media_roots":     p["media_roots"],
+        "active":          p["id"] == active_id,
+        "video_count":     _profile_video_count(p["data_directory"]),
+    }
+
+
+def open_active_library():
+    """Point the database, media lookup and folder watcher at the active profile."""
+    cfg = load_config()
+    ensure_data_dir(cfg["data_directory"])
+    clear_media_index()
+    init_db()
+    sync_artist_folders()
+    start_observer(cfg["watch_directory"])
+
+
+@app.get("/profiles")
+def list_profiles():
+    raw    = _read_raw_config()
+    active = _active_profile(raw)["id"]
+    return jsonify({
+        "ok":       True,
+        "active":   active,
+        "profiles": [_profile_json(p, active) for p in raw["profiles"]],
+    })
+
+
+@app.post("/profiles")
+def create_profile():
+    body  = request.get_json(silent=True) or {}
+    name  = str(body.get("name") or "").strip()
+    data  = str(body.get("data_directory") or "").strip()
+    watch = str(body.get("watch_directory") or "").strip()
+    roots = body.get("media_roots") or []
+    if not name:
+        return jsonify({"ok": False, "error": "Name is required"}), 400
+    if not data:
+        return jsonify({"ok": False, "error": "Data directory is required"}), 400
+    if not watch:
+        return jsonify({"ok": False, "error": "Watch folder is required"}), 400
+    if not os.path.isdir(watch):
+        return jsonify({"ok": False, "error": f"Directory not found: {watch}"}), 400
+    if not isinstance(roots, list):
+        return jsonify({"ok": False, "error": "media_roots must be a list"}), 400
+    if _system_dir(data):
+        return jsonify({"ok": False, "error": f"Not a data directory: {data}"}), 400
+    bad = next((str(r).strip() for r in roots if str(r).strip() and _system_dir(str(r).strip())), None)
+    if bad:
+        return jsonify({"ok": False, "error": f"Not a media folder: {bad}"}), 400
+
+    raw = _read_raw_config()
+    if any((p.get("name") or "").lower() == name.lower() for p in raw["profiles"]):
+        return jsonify({"ok": False, "error": f"A profile named \"{name}\" already exists"}), 400
+    owner = _data_dir_owner(raw, data)
+    if owner:
+        return jsonify({"ok": False, "error": f"Profile \"{owner}\" already uses that data directory"}), 400
+    try:
+        ensure_data_dir(data)
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Cannot create directory: {_clean_err(e)}"}), 400
+
+    profile = {
+        "id":              uuid.uuid4().hex[:8],
+        "name":            name,
+        "watch_directory": watch,
+        "data_directory":  data,
+        "media_roots":     [str(r).strip() for r in roots if str(r).strip()],
+    }
+    raw["profiles"].append(profile)
+    _write_raw_config(raw)
+    return jsonify({"ok": True, "profile": _profile_json(profile, _active_profile(raw)["id"])})
+
+
+@app.patch("/profiles/<profile_id>")
+def rename_profile(profile_id):
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Name is required"}), 400
+    raw = _read_raw_config()
+    if any((p.get("name") or "").lower() == name.lower() and p["id"] != profile_id for p in raw["profiles"]):
+        return jsonify({"ok": False, "error": f"A profile named \"{name}\" already exists"}), 400
+    for p in raw["profiles"]:
+        if p["id"] == profile_id:
+            p["name"] = name
+            _write_raw_config(raw)
+            return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "No such profile"}), 404
+
+
+@app.delete("/profiles/<profile_id>")
+def delete_profile(profile_id):
+    """Forget a profile. Its data directory and videos stay on disk untouched."""
+    raw = _read_raw_config()
+    if _active_profile(raw)["id"] == profile_id:
+        return jsonify({"ok": False, "error": "Switch to another profile before removing this one"}), 400
+    kept = [p for p in raw["profiles"] if p["id"] != profile_id]
+    if len(kept) == len(raw["profiles"]):
+        return jsonify({"ok": False, "error": "No such profile"}), 404
+    raw["profiles"] = kept
+    _write_raw_config(raw)
+    return jsonify({"ok": True})
+
+
+@app.post("/profiles/<profile_id>/activate")
+def activate_profile(profile_id):
+    raw = _read_raw_config()
+    if not any(p["id"] == profile_id for p in raw["profiles"]):
+        return jsonify({"ok": False, "error": "No such profile"}), 404
+    raw["active_profile"] = profile_id
+    _write_raw_config(raw)
+    try:
+        open_active_library()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Cannot open profile: {_clean_err(e)}"}), 500
+    print(f"[profiles] Switched to {load_config()['profile_name']}")
+    return jsonify({"ok": True, "active": profile_id})
+
 
 @app.get("/browse")
 def browse():
@@ -1018,6 +1445,7 @@ def browse():
         )
         chosen = result.stdout.strip()
         if chosen:
+            _remember_picked(chosen)
             return jsonify({"ok": True, "directory": chosen})
     except Exception:
         pass
@@ -1043,6 +1471,7 @@ def browse_file():
         )
         chosen = result.stdout.strip()
         if chosen:
+            _remember_picked(chosen)
             return jsonify({"ok": True, "file": chosen})
     except Exception:
         pass
@@ -1147,7 +1576,7 @@ def scan():
         clear_media_index()
         yield f"data: {json.dumps({'type': 'done', 'total': total, 'tracked': tracked, 'skipped': skipped, 'errors': errors})}\n\n"
 
-    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+    return Response(stream_with_context(_stream_in_profile(generate())), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 @app.get("/check-video/<vid:video_id>")
@@ -1210,7 +1639,7 @@ def add_wanted():
     video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
         return jsonify({"ok": False, "error": "valid video_id required"}), 400
-    _upsert_mark(video_id, body.get("title"), body.get("channel_name"), body.get("url"), "wanted")
+    _upsert_mark(video_id, body.get("title"), _clean_name(body.get("channel_name")), body.get("url"), "wanted")
     return jsonify({"ok": True})
 
 @app.post("/do-not-want")
@@ -1219,7 +1648,7 @@ def add_ignored():
     video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
         return jsonify({"ok": False, "error": "valid video_id required"}), 400
-    _upsert_mark(video_id, body.get("title"), body.get("channel_name"), body.get("url"), "ignored")
+    _upsert_mark(video_id, body.get("title"), _clean_name(body.get("channel_name")), body.get("url"), "ignored")
     return jsonify({"ok": True})
 
 @app.delete("/mark/<vid:video_id>")
@@ -1289,7 +1718,7 @@ def stream_video(video_id):
     conn.close()
     if not row or not row["file_path"]:
         return jsonify({"ok": False, "error": "no file for video"}), 404
-    path = resolve_media_path(row["file_path"])
+    path = _under_media_roots(resolve_media_path(row["file_path"]))
     if not path:
         return jsonify({"ok": False, "error": "file missing on disk"}), 404
     ext  = os.path.splitext(path)[1].lower()
@@ -1342,6 +1771,34 @@ def _under_media_roots(path):
     return None
 
 
+# Folders and files the user picked in a native dialog or scanned for import this
+# session. Imports come from anywhere (a Downloads folder), so these count as
+# reachable alongside the media roots. Only header-carrying calls add to them.
+_picked_paths = set()
+
+
+def _remember_picked(path):
+    if path:
+        _picked_paths.add(os.path.realpath(path))
+
+
+def _import_allowed(path):
+    """Like _under_media_roots, but also accepts files picked or scanned for import."""
+    real = _under_media_roots(path)
+    if real:
+        return real
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError):
+        return None
+    if not os.path.isfile(real):
+        return None
+    for p in _picked_paths:
+        if real == p or real.startswith(p.rstrip(os.sep) + os.sep):
+            return real
+    return None
+
+
 def _resolve_audio_path(stored):
     """Same stale-path handling as video files, then the media-root check."""
     return _under_media_roots(resolve_media_path(stored) or stored)
@@ -1372,6 +1829,17 @@ def _parse_offset(value):
         return None
     # Beyond a few minutes it is a different recording, not a sync nudge.
     return max(-600.0, min(600.0, secs))
+
+
+def _ffprobe_duration(path):
+    """Container duration in seconds via ffprobe, or None."""
+    try:
+        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=nw=1:nk=1", path],
+                           capture_output=True, text=True, timeout=60)
+        return float(r.stdout.strip())
+    except Exception:
+        return None
 
 
 def _audio_duration(path):
@@ -1485,6 +1953,7 @@ def add_audio_track(video_id):
         return jsonify({"ok": False, "error": "not an audio file"}), 400
     label  = (body.get("label") or "").strip() or _default_audio_label(path)
     offset = _parse_offset(body.get("offset_secs"))
+    duration = _audio_duration(path)      # file read stays outside the DB lock
     with _db_lock:
         conn = get_conn()
         if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone():
@@ -1494,7 +1963,7 @@ def add_audio_track(video_id):
             cur = conn.execute(
                 "INSERT INTO audio_tracks (video_id, label, file_path, offset_secs, duration_secs)"
                 " VALUES (?, ?, ?, ?, ?)",
-                (video_id, label, path, offset or 0.0, _audio_duration(path)),
+                (video_id, label, path, offset or 0.0, duration),
             )
             track_id = cur.lastrowid
         except sqlite3.IntegrityError:
@@ -1538,6 +2007,18 @@ def update_audio_track(track_id):
     return jsonify({"ok": True, "track": _track_row(row)})
 
 
+def _restore_detached_audio(conn, file_path):
+    """Back in the library once no video keeps the file as a soundtrack.
+    Call after its audio_tracks row is gone; returns the restored entries."""
+    path = resolve_media_path(file_path) or file_path
+    if _is_attached_track(path, conn):
+        return []
+    restored = _entries_for_file(conn, path, "attached")
+    for r in restored:
+        conn.execute("UPDATE downloaded_videos SET status = 'downloaded' WHERE video_id = ?", (r["video_id"],))
+    return restored
+
+
 @app.delete("/audio-tracks/<int:track_id>")
 def delete_audio_track(track_id):
     """Detach only. The audio file itself is left alone on disk."""
@@ -1545,14 +2026,7 @@ def delete_audio_track(track_id):
         conn = get_conn()
         row = conn.execute("SELECT file_path FROM audio_tracks WHERE id = ?", (track_id,)).fetchone()
         conn.execute("DELETE FROM audio_tracks WHERE id = ?", (track_id,))
-        # Back in the library once no video keeps the file as a soundtrack.
-        restored = []
-        if row:
-            path = resolve_media_path(row["file_path"]) or row["file_path"]
-            if not _is_attached_track(path, conn):
-                restored = _entries_for_file(conn, path, "attached")
-                for r in restored:
-                    conn.execute("UPDATE downloaded_videos SET status = 'downloaded' WHERE video_id = ?", (r["video_id"],))
+        restored = _restore_detached_audio(conn, row["file_path"]) if row else []
         conn.commit()
         conn.close()
     return jsonify({"ok": True, "restored": [r["video_id"] for r in restored]})
@@ -1738,7 +2212,7 @@ EXPORT_FIELDS = [
     "video_id", "title", "channel_name", "url", "file_path",
     "genre", "description", "recorded_date", "duration_secs",
     "file_size_bytes", "downloaded_at", "view_count", "like_count",
-    "stats_updated_at", "status", "tags",
+    "stats_updated_at", "status", "source", "tags",
 ]
 
 def _export_rows():
@@ -1803,28 +2277,64 @@ def serve_userscript():
 
 @app.post("/videos/manual")
 def add_video_manual():
-    body     = request.get_json(silent=True) or {}
-    raw_id   = (body.get("video_id") or "").strip()
-    if not raw_id:
-        return jsonify({"ok": False, "error": "video_id is required"}), 400
+    body      = request.get_json(silent=True) or {}
+    raw_id    = (body.get("video_id") or "").strip()
+    url       = (body.get("url") or "").strip()
+    file_path = (body.get("file_path") or "").strip()
+
+    if url and not re.match(r"https?://", url, re.I):
+        return jsonify({"ok": False, "error": "url must be an http(s) link"}), 400
 
     # extract bare ID if caller passed a full URL
     m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", raw_id) or \
         re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", raw_id) or \
         re.search(r"/(?:shorts|embed|v)/([A-Za-z0-9_-]{11})", raw_id)
     video_id = _valid_video_id(m.group(1) if m else raw_id)
-    if not video_id:
-        return jsonify({"ok": False, "error": "not a YouTube video id or URL"}), 400
+    source   = None
+    if video_id:
+        conn = get_conn()
+        row  = conn.execute("SELECT source FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+        conn.close()
+        # Editing an existing entry keeps its source; a new bare id is YouTube's.
+        if not row:
+            source = "youtube" if video_id[-1] in _YT_LAST_CHARS else None
+            if not source:
+                return jsonify({"ok": False, "error": "not a YouTube video id"}), 400
+    else:
+        # Not YouTube: a link to another site, or just a file on disk.
+        video_id, source = _entry_id(url)
+        # A file already carrying a link or local: marker keeps the id the
+        # tracker gives it, or adding it here would make a second entry.
+        if not video_id and file_path and os.path.isfile(file_path):
+            try:
+                video_id, source = _entry_id(_read_meta(file_path).get("url"))
+            except Exception:
+                pass
+        if not video_id and file_path:
+            video_id, source = _mint_id(_LOCAL_PREFIX + os.path.realpath(file_path)), "local"
+        if not video_id:
+            return jsonify({"ok": False, "error": "needs a video link or a local file"}), 400
 
-    url = body.get("url") or f"https://www.youtube.com/watch?v={video_id}"
+    if not url and source == "youtube":
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # A file on disk must be one the user can reach through the app anyway. A
+    # path that doesn't exist (another machine's drive) is only stored, and an
+    # entry keeping the path it already has is left alone.
+    if file_path and os.path.exists(file_path) and not _import_allowed(file_path):
+        conn = get_conn()
+        row  = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+        conn.close()
+        if not row or row["file_path"] != file_path:
+            return jsonify({"ok": False, "error": "file is not inside a media folder"}), 400
 
     with _db_lock:
         conn = get_conn()
         conn.execute('''
             INSERT INTO downloaded_videos
                 (video_id, title, channel_name, url, file_path,
-                 genre, description, recorded_date, duration_secs, file_size_bytes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
+                 genre, description, recorded_date, duration_secs, file_size_bytes, source, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'youtube'), 'downloaded')
             ON CONFLICT(video_id) DO UPDATE SET
                 title            = COALESCE(excluded.title, downloaded_videos.title),
                 channel_name     = COALESCE(excluded.channel_name, downloaded_videos.channel_name),
@@ -1835,24 +2345,44 @@ def add_video_manual():
                 recorded_date    = COALESCE(excluded.recorded_date, downloaded_videos.recorded_date),
                 duration_secs    = COALESCE(excluded.duration_secs, downloaded_videos.duration_secs),
                 file_size_bytes  = COALESCE(excluded.file_size_bytes, downloaded_videos.file_size_bytes),
-                downloaded_at    = CURRENT_TIMESTAMP,
-                status           = 'downloaded'
+                -- An edit keeps the original download date and a hidden (attached)
+                -- audio entry stays hidden; wanted/ignored still get promoted.
+                downloaded_at    = CASE WHEN downloaded_videos.status IN ('downloaded', 'attached')
+                                        THEN downloaded_videos.downloaded_at ELSE CURRENT_TIMESTAMP END,
+                status           = CASE WHEN downloaded_videos.status = 'attached'
+                                        THEN 'attached' ELSE 'downloaded' END
         ''', (
             video_id,
             body.get("title") or None,
-            body.get("channel_name") or None,
-            url,
-            body.get("file_path") or None,
+            _clean_name(body.get("channel_name")),
+            url or None,
+            file_path or None,
             body.get("genre") or None,
             body.get("description") or None,
             body.get("recorded_date") or None,
             body.get("duration_secs") or None,
             body.get("file_size_bytes") or None,
+            source,
         ))
         conn.commit()
         conn.close()
 
-    return jsonify({"ok": True, "video_id": video_id})
+    # Nothing will ever fetch a thumbnail for a non-YouTube entry: take a frame.
+    if source and source != "youtube" and os.path.isfile(file_path):
+        artist = (body.get("channel_name") or "").strip()
+        for name in _artist_names(artist):
+            artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(name))
+            dest_base  = os.path.join(artist_dir, video_id)
+            if any(os.path.exists(dest_base + e) for e in (".jpg", ".jpeg", ".webp", ".png")):
+                continue
+            os.makedirs(artist_dir, exist_ok=True)
+            side = _sidecar_thumb(file_path)
+            if side:
+                shutil.copy2(side, dest_base + os.path.splitext(side)[1])
+            elif not _extract_cover(file_path, dest_base):
+                _grab_frame(file_path, dest_base + ".jpg", _read_meta(file_path).get("duration"))
+
+    return jsonify({"ok": True, "video_id": video_id, "source": source})
 
 
 @app.post("/read-file-tags")
@@ -1861,6 +2391,8 @@ def read_file_tags():
     file_path = (body.get("file_path") or "").strip()
     if not file_path or not os.path.isfile(file_path):
         return jsonify({"ok": False, "error": "File not found"}), 404
+    if not _import_allowed(file_path):
+        return jsonify({"ok": False, "error": "Not in a media or import folder"}), 403
     try:
         try:
             meta = _meta_from_tinytag(file_path)
@@ -1869,24 +2401,20 @@ def read_file_tags():
         if not meta or not meta.get("url"):
             meta = _meta_from_ffprobe(file_path)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": _clean_err(e)}), 500
 
-    url      = meta.get("url") or ""
-    video_id = None
-    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url)
-    if m:
-        video_id = m.group(1)
-    else:
-        m = re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
-        if m:
-            video_id = m.group(1)
+    url              = meta.get("url") or ""
+    video_id, source = _entry_id(url)
+    if source == "local":
+        url = ""
 
     return jsonify({
         "ok":           True,
         "video_id":     video_id,
         "title":        meta.get("title"),
         "channel_name": meta.get("artist"),
-        "url":          url or (f"https://www.youtube.com/watch?v={video_id}" if video_id else None),
+        "url":          url or (f"https://www.youtube.com/watch?v={video_id}" if source == "youtube" else None),
+        "source":       source,
         "genre":        meta.get("genre"),
         "description":  meta.get("description"),
         "recorded_date":meta.get("recorded_date"),
@@ -1909,14 +2437,9 @@ def _js_runtime_args():
     Without one, YouTube's "n" challenge cannot be solved and a fetch that got
     past the age gate still fails with "The page needs to be reloaded".
     """
-    configured = (load_config().get("ytdlp_js_runtime") or "").strip()
+    configured = _check_js_runtime(load_config().get("ytdlp_js_runtime"))
     if configured:
-        # Either "node" / "node:/path/to/node", or a bare path we name ourselves.
-        if ":" in configured or configured in _JS_RUNTIMES:
-            return ["--js-runtimes", configured]
-        name = os.path.basename(configured.rstrip("/"))
-        name = name if name in _JS_RUNTIMES else "node"
-        return ["--js-runtimes", f"{name}:{configured}"]
+        return ["--js-runtimes", configured]
 
     found = []
     for name in _JS_RUNTIMES:
@@ -1926,6 +2449,33 @@ def _js_runtime_args():
     return [arg for f in found for arg in ("--js-runtimes", f)]
 
 
+def _check_js_runtime(value):
+    """value as a --js-runtimes argument ("node" or "node:/path/to/node"), else None.
+
+    Accepts a runtime name, name:path, or a bare path. A path must be an existing
+    executable named after its runtime, so the setting can't run any binary."""
+    value = (value or "").strip()
+    if value in _JS_RUNTIMES:
+        return value
+    name, sep, path = value.partition(":")
+    if not sep:
+        name, path = "", value
+    path = os.path.expanduser(path.strip())
+    base = os.path.basename(path.rstrip("/")).lower()
+    base = base[:-4] if base.endswith(".exe") else base
+    name = name.strip() or base
+    if name not in _JS_RUNTIMES or base != name:
+        return None
+    if not (os.path.isfile(path) and os.access(path, os.X_OK)):
+        return None
+    return f"{name}:{path}"
+
+
+# Browsers yt-dlp reads cookies from, optionally with a ":profile" suffix.
+_COOKIE_BROWSER_RE = re.compile(
+    r"(?:brave|chrome|chromium|edge|firefox|opera|safari|vivaldi|whale)(?::[^\x00-\x1f]+)?")
+
+
 def _cookie_args():
     """--cookies-from-browser flags, if a browser is configured.
 
@@ -1933,7 +2483,7 @@ def _cookie_args():
     all without a signed-in cookie jar; no player client bypasses it.
     """
     browser = (load_config().get("ytdlp_cookies_from_browser") or "").strip()
-    return ["--cookies-from-browser", browser] if browser else []
+    return ["--cookies-from-browser", browser] if _COOKIE_BROWSER_RE.fullmatch(browser) else []
 
 
 def _ytdlp(*args, timeout=45):
@@ -1951,7 +2501,7 @@ def _ytdlp_error(stderr):
             # Drop the "[youtube] <id>: " prefix and the trailing help links.
             line = re.sub(r"^\[[^\]]+\]\s*[A-Za-z0-9_-]{11}:\s*", "", line)
             line = re.split(r"\s+(?:Use --cookies|See\s+https?://)", line)[0]
-            return line.strip()[:300]
+            return _clean_err(line)[:300]
     return "yt-dlp failed"
 
 
@@ -1991,9 +2541,21 @@ def _set_availability(video_id, availability):
         conn.close()
 
 
+def _not_youtube(video_id):
+    """An error response when this entry isn't a YouTube video, else None."""
+    conn = get_conn()
+    row  = conn.execute("SELECT source FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+    conn.close()
+    if (row and (row["source"] or "youtube") != "youtube") or video_id[-1] not in _YT_LAST_CHARS:
+        return jsonify({"ok": False, "error": "not a YouTube video"}), 400
+    return None
+
+
 @app.post("/fetch-metadata/<vid:video_id>")
 def fetch_metadata(video_id):
     import json as _json
+    if (err := _not_youtube(video_id)):
+        return err
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         result = _ytdlp("--dump-json", "--no-download", "--no-playlist", url, timeout=60)
@@ -2006,21 +2568,23 @@ def fetch_metadata(video_id):
             return jsonify({"ok": False, "error": reason}), 502
         info = _json.loads(result.stdout)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": _clean_err(e)}), 500
 
     upload_date = info.get("upload_date")  # YYYYMMDD
     recorded_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}" if upload_date and len(upload_date) == 8 else None
 
+    # The file's own credit (collabs "A, B", a name from before a channel
+    # rename) and its real length win; the fetch only fills them when missing.
     with _db_lock:
         conn = get_conn()
         conn.execute('''
             UPDATE downloaded_videos SET
                 title          = COALESCE(?, title),
-                channel_name   = COALESCE(?, channel_name),
+                channel_name   = COALESCE(NULLIF(TRIM(channel_name), ''), ?),
                 url            = COALESCE(?, url),
                 description    = COALESCE(?, description),
                 recorded_date  = COALESCE(?, recorded_date),
-                duration_secs  = COALESCE(?, duration_secs),
+                duration_secs  = COALESCE(duration_secs, ?),
                 view_count     = COALESCE(?, view_count),
                 like_count     = COALESCE(?, like_count),
                 stats_updated_at = CURRENT_TIMESTAMP,
@@ -2028,7 +2592,7 @@ def fetch_metadata(video_id):
             WHERE video_id = ?
         ''', (
             info.get("title") or None,
-            info.get("channel") or info.get("uploader") or None,
+            _clean_name(info.get("channel") or info.get("uploader")),
             info.get("webpage_url") or url,
             info.get("description") or None,
             recorded_date,
@@ -2045,13 +2609,22 @@ def fetch_metadata(video_id):
 
 @app.delete("/videos/<vid:video_id>")
 def delete_video(video_id):
+    with _db_lock:
+        conn = get_conn()
+        tracks = conn.execute("SELECT file_path FROM audio_tracks WHERE video_id = ?", (video_id,)).fetchall()
+        conn.execute("DELETE FROM audio_tracks WHERE video_id = ?", (video_id,))
+        # Its soundtracks were hidden audio entries; unhide the ones it was the last user of.
+        for t in tracks:
+            _restore_detached_audio(conn, t["file_path"])
+        conn.commit()
+        conn.close()
     conn = get_conn()
     conn.execute("DELETE FROM downloaded_videos WHERE video_id = ?", (video_id,))
+    conn.execute("DELETE FROM playlist_items WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM watch_sessions WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM segment_tags WHERE segment_id IN (SELECT id FROM segments WHERE video_id = ?)", (video_id,))
     conn.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM video_tags WHERE video_id = ?", (video_id,))
-    conn.execute("DELETE FROM audio_tracks WHERE video_id = ?", (video_id,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -2074,11 +2647,9 @@ def data_quality_duplicates():
                     meta = None
                 if not meta or not meta.get("url"):
                     meta = _meta_from_ffprobe(fpath)
-                url = meta.get("url") or ""
-                m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url) or \
-                    re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
-                if m:
-                    groups[m.group(1)].append(fpath)
+                vid, _src = _entry_id(meta.get("url"))
+                if vid:
+                    groups[vid].append(fpath)
             except Exception:
                 pass
     duplicates = [
@@ -2114,6 +2685,90 @@ def data_quality_missing():
         if not resolve_media_path(r["file_path"])
     ]
     return jsonify({"ok": True, "missing": missing})
+
+
+_GONE = ("deleted", "private", "members", "unavailable")
+
+
+@app.get("/data-quality/checks")
+def data_quality_checks():
+    """Cheaper library checks found by the data audit. Each check is a list of
+    items {video_id?, title, detail}; the page renders them all the same way."""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT video_id, title, channel_name, file_path, file_size_bytes, recorded_date, "
+        "availability, source FROM downloaded_videos WHERE status = 'downloaded'"
+    ).fetchall()
+    profiles = {r["channel_name"] for r in conn.execute("SELECT channel_name FROM creators")}
+    marked   = {r["channel_name"] for r in conn.execute("SELECT channel_name FROM channel_status")}
+    conn.close()
+
+    def item(r, detail):
+        return {"video_id": r["video_id"], "title": r["title"] or r["video_id"], "detail": detail}
+
+    names, dates, stale, sizes = [], [], [], []
+    per_artist = {}
+    for r in rows:
+        ch = r["channel_name"]
+        if ch is not None and _clean_name(ch) != ch:
+            names.append(item(r, f"{ch!r}"))
+        rd = r["recorded_date"]
+        if rd and not re.fullmatch(r"\d{4}(-\d{2}-\d{2})?", rd):
+            dates.append(item(r, f"{rd} (should be {_norm_date(rd) or 'a date'})"))
+        for name in _artist_names(ch):
+            a = per_artist.setdefault(name, {"total": 0, "gone": 0, "yt": 0})
+            a["total"] += 1
+            if (r["source"] or "youtube") == "youtube":
+                a["yt"] += 1
+                a["gone"] += r["availability"] in _GONE
+        fp = r["file_path"]
+        if not fp:
+            continue
+        if os.path.isfile(fp):
+            if r["file_size_bytes"] is not None and os.path.getsize(fp) != r["file_size_bytes"]:
+                sizes.append(item(r, f"stored {r['file_size_bytes']:,} bytes, file is {os.path.getsize(fp):,}"))
+        else:
+            hit = resolve_media_path(fp)
+            if hit:
+                stale.append(item(r, f"{fp} → {hit}"))
+
+    dead = [
+        {"title": name, "detail": f"{a['gone']} of {a['yt']} YouTube videos gone, channel not marked"}
+        for name, a in sorted(per_artist.items())
+        if a["yt"] >= 3 and a["gone"] / a["yt"] >= 0.8 and name not in marked
+    ]
+    no_profile = [
+        {"title": name, "detail": f"{a['total']} video{'s' if a['total'] != 1 else ''}"}
+        for name, a in sorted(per_artist.items(), key=lambda kv: -kv[1]["total"])
+        if name not in profiles
+    ]
+
+    # Leftovers on disk: partial downloads anywhere, media loose in the root.
+    watch_dir = load_config().get("watch_directory", DEFAULT_WATCH)
+    tracked   = {os.path.realpath(r["file_path"]) for r in rows if r["file_path"]}
+    partial, loose = [], []
+    if os.path.isdir(watch_dir):
+        for dirpath, _, files in os.walk(watch_dir):
+            for f in files:
+                p = os.path.join(dirpath, f)
+                if f.lower().endswith((".part", ".ytdl")):
+                    partial.append({"title": f, "detail": p})
+                elif dirpath.rstrip(os.sep) == watch_dir.rstrip(os.sep) \
+                        and f.lower().endswith(_LIBRARY_EXTS) and os.path.realpath(p) not in tracked:
+                    loose.append({"title": f, "detail": "untracked, in the library root"})
+
+    checks = [
+        ("names",   "channel names with stray spaces", names),
+        ("dates",   "dates in an odd format", dates),
+        ("dead",    "channels mostly gone but not marked", dead),
+        ("stale",   "paths found only by fallback", stale),
+        ("sizes",   "stored sizes that don't match the file", sizes),
+        ("partial", "leftover partial downloads", partial),
+        ("loose",   "untracked files in the library root", loose),
+        ("profile", "artists without a creator profile", no_profile),
+    ]
+    return jsonify({"ok": True, "checks": [
+        {"key": k, "label": label, "items": items} for k, label, items in checks]})
 
 
 # ---------------------------------------------------------------------------
@@ -2174,18 +2829,53 @@ def _candidate_files(root, recursive):
     return sorted(out)
 
 
+_filing_lock = threading.Lock()
+
+
+def _place(src, dest, mode):
+    """Move or copy one file to dest without ever overwriting anything there.
+
+    A same-drive move is a rename. Otherwise the bytes go to dest.part first
+    (the watcher skips .part) and only a complete copy is renamed into place,
+    so a crash or a slow copy never leaves a half file under the real name.
+    The lock keeps the watcher and an organize run from filing two different
+    files onto one name at the same moment."""
+    with _filing_lock:
+        if os.path.exists(dest):
+            raise FileExistsError(f"already exists: {dest}")
+        if mode == "move":
+            try:
+                os.rename(src, dest)
+                return
+            except OSError as e:
+                if e.errno != errno.EXDEV:
+                    raise
+        part = dest + ".part"
+        try:
+            shutil.copy2(src, part)
+            if os.path.getsize(part) != os.path.getsize(src):
+                raise OSError("copy came out short")
+            if os.path.exists(dest):
+                raise FileExistsError(f"already exists: {dest}")
+            os.replace(part, dest)
+        finally:
+            if os.path.exists(part):
+                os.remove(part)
+        if mode == "move":
+            os.remove(src)
+
+
 def _transfer(src, dest, mode):
     """Move or copy the video plus any companion files sharing its stem
     (thumbnail, info json). mode is 'move' or 'copy'."""
-    op = shutil.move if mode == "move" else shutil.copy2
-    op(src, dest)
+    _place(src, dest, mode)
     src_base = os.path.splitext(src)[0]
     dst_base = os.path.splitext(dest)[0]
     for ext in (".jpg", ".jpeg", ".webp", ".png", ".info.json", ".description"):
         s = src_base + ext
-        if os.path.exists(s) and not os.path.exists(dst_base + ext):
+        if os.path.exists(s):
             try:
-                op(s, dst_base + ext)
+                _place(s, dst_base + ext, mode)
             except Exception:
                 pass
 
@@ -2198,9 +2888,13 @@ def _file_into_library(src, watch_dir, mode="move"):
     if not os.path.isfile(src):
         r["status"] = "missing-source"; return r
 
-    artist = (_read_meta(src).get("artist") or "").strip()
+    meta   = _read_meta(src)
+    artist = (meta.get("artist") or "").strip()
     if not artist:
         r["status"] = "no-artist"; return r
+    # The tracker would skip it after the move: no link and no local marker yet.
+    if not _entry_id(meta.get("url"))[0]:
+        r["status"] = "no-link"; return r
 
     dest_dir = os.path.join(watch_dir, _safe_dirname(artist))
     dest     = os.path.join(dest_dir, os.path.basename(src))
@@ -2216,7 +2910,7 @@ def _file_into_library(src, watch_dir, mode="move"):
             _transfer(src, dest, mode)
             r["moved"] = True
         except Exception as e:
-            r["status"] = f"{mode}-failed: {e}"; return r
+            r["status"] = f"{mode}-failed: {_clean_err(e)}"; return r
         # Verify the file actually landed BEFORE writing to the DB.
         r["verified"] = os.path.isfile(dest)
         if not r["verified"]:
@@ -2254,6 +2948,9 @@ def organize_preview():
     source = (request.args.get("source") or "").strip() or watch_dir
     if not os.path.isdir(source):
         return jsonify({"ok": False, "error": f"Source folder not found: {source}"}), 400
+    if _system_dir(source):
+        return jsonify({"ok": False, "error": f"Not a media folder: {source}"}), 400
+    _remember_picked(source)
     recursive = os.path.abspath(source) != os.path.abspath(watch_dir)
 
     items = []
@@ -2262,7 +2959,7 @@ def organize_preview():
         fname  = os.path.basename(src)
         meta   = _read_meta(src)
         artist = (meta.get("artist") or "").strip()
-        vid    = _video_id_from_url(meta.get("url"))
+        vid, _src = _entry_id(meta.get("url"))
 
         row   = conn.execute(
             "SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'", (vid,)
@@ -2276,6 +2973,8 @@ def organize_preview():
 
         if not artist:
             dest, status = None, "no-artist"
+        elif not vid:
+            dest, status = None, "no-link"
         else:
             dest = os.path.join(watch_dir, _safe_dirname(artist), fname)
             if duplicate:
@@ -2295,6 +2994,11 @@ def organize_preview():
 
 @app.post("/organize/apply")
 def organize_apply():
+    with _pinned_profile():
+        return _organize_apply()
+
+
+def _organize_apply():
     body      = request.get_json(silent=True) or {}
     cfg       = load_config()
     watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
@@ -2304,9 +3008,19 @@ def organize_apply():
     mode    = "copy" if body.get("mode") == "copy" else "move"
     source  = (body.get("source") or "").strip() or watch_dir
     files   = body.get("files")
+    # Only files the app can already see: media roots, or a folder scanned for import.
     if isinstance(files, list) and files:
-        targets = files
+        targets = [str(f) for f in files]
+        bad     = next((f for f in targets if not _import_allowed(f)), None)
+        if bad:
+            return jsonify({"ok": False, "error": f"Not in a media or import folder: {bad}"}), 400
     else:
+        real = os.path.realpath(source)
+        if not os.path.isdir(real) or not (
+                any(real == os.path.realpath(r) or real.startswith(os.path.realpath(r) + os.sep)
+                    for r in get_media_roots())
+                or any(real == p or real.startswith(p.rstrip(os.sep) + os.sep) for p in _picked_paths)):
+            return jsonify({"ok": False, "error": f"Not a media or import folder: {source}"}), 400
         targets = _candidate_files(source, os.path.abspath(source) != os.path.abspath(watch_dir))
 
     results = [_file_into_library(src, watch_dir, mode) for src in targets]
@@ -2321,11 +3035,13 @@ def organize_apply():
 
 def _meta_payload(meta):
     artist = (meta.get("artist") or "").strip()
+    vid, source = _entry_id(meta.get("url"))
     return {
         "title":         meta.get("title"),
         "artist":        artist or None,
-        "url":           meta.get("url"),
-        "video_id":      _video_id_from_url(meta.get("url")),
+        "url":           None if source == "local" else meta.get("url"),
+        "video_id":      vid,
+        "source":        source,
         "genre":         meta.get("genre"),
         "description":   meta.get("description"),
         "recorded_date": meta.get("recorded_date"),
@@ -2347,6 +3063,8 @@ def import_inspect():
     path = (request.args.get("file") or "").strip()
     if not path or not os.path.isfile(path):
         return jsonify({"ok": False, "error": "file not found"}), 404
+    if not _import_allowed(path):
+        return jsonify({"ok": False, "error": "Not in a media or import folder"}), 403
     cfg       = load_config()
     watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
     meta      = _read_meta(path)
@@ -2370,8 +3088,8 @@ def import_inspect():
 
 @app.get("/import/thumb")
 def import_thumb():
-    path = (request.args.get("file") or "").strip()
-    thumb = _sidecar_thumb(path) if path and os.path.isfile(path) else None
+    path = _import_allowed((request.args.get("file") or "").strip())
+    thumb = _sidecar_thumb(path) if path else None
     if thumb:
         return send_from_directory(os.path.dirname(thumb), os.path.basename(thumb))
     return ("", 404)
@@ -2382,16 +3100,17 @@ def import_fetch_meta():
     """Suggest metadata from YouTube (yt-dlp) WITHOUT writing anything."""
     body = request.get_json(silent=True) or {}
     path = (body.get("file") or "").strip()
-    vid  = body.get("video_id")
+    vid  = _valid_video_id(str(body.get("video_id") or ""))
     if not vid and path and os.path.isfile(path):
         vid = _video_id_from_url(_read_meta(path).get("url"))
-    if not vid:
+    # Minted ids (non-YouTube entries) end in "_", which no YouTube id can.
+    if not vid or vid[-1] not in _YT_LAST_CHARS:
         return jsonify({"ok": False, "error": "no YouTube id — add a URL first"}), 400
     url = f"https://www.youtube.com/watch?v={vid}"
     try:
         res = _ytdlp("--dump-json", "--no-download", "--no-playlist", url, timeout=60)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return jsonify({"ok": False, "error": _clean_err(e)}), 500
     if res.returncode != 0:
         avail = _classify_unavailable(res.stderr)
         if avail and path:
@@ -2403,7 +3122,7 @@ def import_fetch_meta():
     rec  = f"{ud[:4]}-{ud[4:6]}-{ud[6:]}" if ud and len(ud) == 8 else None
     return jsonify({"ok": True, "suggested": {
         "title":         info.get("title"),
-        "artist":        info.get("channel") or info.get("uploader"),
+        "artist":        _clean_name(info.get("channel") or info.get("uploader")),
         "url":           info.get("webpage_url") or url,
         "video_id":      vid,
         "description":   info.get("description"),
@@ -2436,25 +3155,45 @@ def import_enrich():
     fields = body.get("fields") or {}
     if not path or not os.path.isfile(path):
         return jsonify({"ok": False, "error": "file not found"}), 404
+    if not _import_allowed(path):
+        return jsonify({"ok": False, "error": "Not in a media or import folder"}), 403
+    # No link anywhere (a rip, a clip from a dead site): mark the file as a local
+    # entry so the tracker can still give it a stable id.
+    fields = dict(fields)
+    if not (fields.get("url") or "").strip():
+        if _read_meta(path).get("url"):
+            fields.pop("url", None)                 # keep the existing tag as is
+        else:
+            fields["url"] = _LOCAL_PREFIX + uuid.uuid4().hex
     metargs = _ffmeta_args(fields)
     if not metargs:
         return jsonify({"ok": False, "error": "no fields to write"}), 400
 
     ext = os.path.splitext(path)[1]
-    tmp = path + ".enrich" + ext
+    tmp = path + ".enrich.temp" + ext  # ".temp." keeps the watcher off it
     # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
     # existing tags, then the -metadata flags override only the provided fields.
     args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
     try:
         res = subprocess.run(args, capture_output=True, text=True, timeout=600)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+        return jsonify({"ok": False, "error": _clean_err(e)}), 500
 
     if res.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
         if os.path.exists(tmp):
             try: os.remove(tmp)
             except OSError: pass
-        return jsonify({"ok": False, "error": "ffmpeg failed: " + (res.stderr or "")[-300:]}), 500
+        return jsonify({"ok": False, "error": "ffmpeg failed: " + _clean_err((res.stderr or "")[-300:])}), 500
+
+    # The original is the only copy: refuse a rewrite that came out shorter.
+    old_d, new_d = _ffprobe_duration(path), _ffprobe_duration(tmp)
+    if old_d and (not new_d or abs(old_d - new_d) > 1.0):
+        try: os.remove(tmp)
+        except OSError: pass
+        return jsonify({"ok": False, "error": "rewritten file's length doesn't match the original; left it untouched"}), 500
 
     os.replace(tmp, path)              # atomic swap over the original
     return jsonify({"ok": True, "meta": _meta_payload(_read_meta(path))})
@@ -2462,9 +3201,14 @@ def import_enrich():
 
 @app.get("/artist-thumb/<path:name>")
 def serve_artist_thumb(name):
-    artist_thumbs_dir = get_artist_thumbs_dir()
+    artist_thumbs_dir = os.path.realpath(get_artist_thumbs_dir())
     safe = _safe_dirname(name)
-    artist_dir = os.path.join(artist_thumbs_dir, safe)
+    if not safe or safe.startswith("."):          # also rules out "." and ".."
+        return ("", 404)
+    artist_dir = os.path.realpath(os.path.join(artist_thumbs_dir, safe))
+    if artist_dir == artist_thumbs_dir or \
+            os.path.commonpath([artist_dir, artist_thumbs_dir]) != artist_thumbs_dir:
+        return ("", 404)
     if os.path.isdir(artist_dir):
         for fname in os.listdir(artist_dir):
             if fname.lower().endswith((".jpg", ".jpeg", ".webp", ".png")):
@@ -2479,9 +3223,9 @@ def serve_thumb(video_id):
         "SELECT channel_name, file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
     ).fetchone()
     conn.close()
-    # Look in artist folder
-    if row and row["channel_name"]:
-        artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(row["channel_name"]))
+    # Look in artist folder (a collab's copies sit under each split name)
+    for name in _artist_names(row["channel_name"] if row else None):
+        artist_dir = os.path.join(get_artist_thumbs_dir(), _safe_dirname(name))
         for ext in (".jpg", ".jpeg", ".webp", ".png"):
             candidate = os.path.join(artist_dir, f"{video_id}{ext}")
             if os.path.exists(candidate):
@@ -2527,8 +3271,8 @@ def _original_thumb_path(video_id):
         "SELECT channel_name, file_path FROM downloaded_videos WHERE video_id = ?", (video_id,)
     ).fetchone()
     conn.close()
-    if row and row["channel_name"]:
-        ad = os.path.join(get_artist_thumbs_dir(), _safe_dirname(row["channel_name"]))
+    for name in _artist_names(row["channel_name"] if row else None):
+        ad = os.path.join(get_artist_thumbs_dir(), _safe_dirname(name))
         for ext in (".jpg", ".jpeg", ".webp", ".png"):
             p = os.path.join(ad, f"{video_id}{ext}")
             if os.path.exists(p):
@@ -2546,11 +3290,32 @@ def _original_thumb_path(video_id):
 _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024   # thumbnails are well under this
 
 
+# Only YouTube's image CDNs: the fallback url comes from yt-dlp output, so it
+# must not be able to point (or redirect) us at localhost or the LAN.
+_THUMB_HOSTS = ("ytimg.com", "ggpht.com", "googleusercontent.com")
+
+
+def _check_thumb_url(url):
+    parts = urllib.parse.urlsplit(str(url))
+    host  = (parts.hostname or "").lower()
+    if parts.scheme != "https" or not any(host == h or host.endswith("." + h) for h in _THUMB_HOSTS):
+        raise ValueError("thumbnail host not allowed")
+
+
+class _ThumbRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-check the host on every redirect hop."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_thumb_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_thumb_opener = urllib.request.build_opener(_ThumbRedirectHandler)
+
+
 def _download_bytes(url):
-    if not str(url).lower().startswith(("http://", "https://")):
-        raise ValueError("unsupported url scheme")
+    _check_thumb_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with _thumb_opener.open(req, timeout=20) as r:
         data = r.read(_MAX_DOWNLOAD_BYTES + 1)
     if len(data) > _MAX_DOWNLOAD_BYTES:
         raise ValueError("thumbnail too large")
@@ -2645,6 +3410,8 @@ def _phash_min_distance(new_hash, paths):
 
 @app.post("/fetch-thumbnail/<vid:video_id>")
 def fetch_thumbnail(video_id):
+    if (err := _not_youtube(video_id)):
+        return err
     body  = request.get_json(silent=True) or {}
     force = bool(body.get("force")) or request.args.get("force") in ("1", "true")
     url = f"https://www.youtube.com/watch?v={video_id}"
@@ -2660,7 +3427,7 @@ def fetch_thumbnail(video_id):
     try:
         data, ext = _fetch_youtube_thumb(video_id, thumb_url)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 502
+        return jsonify({"ok": False, "error": _clean_err(e)}), 502
 
     digest = hashlib.sha1(data).hexdigest()[:12]
     # Collect existing thumbnails: the original plus any fetched version.
@@ -3052,14 +3819,24 @@ def _segments_for(conn, video_id):
     return segs
 
 
-def _import_chapters(conn, video_id, file_path, replace=False):
+def _chapters_to_import(video_id, file_path):
+    """Chapters for a video that has no segments yet, read without holding the
+    DB lock (ffprobe can take seconds). [] when there's nothing to import."""
+    conn = get_conn()
+    has_any = conn.execute("SELECT 1 FROM segments WHERE video_id = ? LIMIT 1", (video_id,)).fetchone()
+    conn.close()
+    return [] if has_any else (_read_chapters(file_path) or [])
+
+
+def _import_chapters(conn, video_id, file_path, replace=False, chapters=None):
     """Turn embedded chapters into `source='chapter'` segments. Returns how many
     were added. With replace=False a video that already has segments is left
     alone; with replace=True only the chapter-sourced ones are swapped out."""
     has_any = conn.execute("SELECT 1 FROM segments WHERE video_id = ? LIMIT 1", (video_id,)).fetchone()
     if has_any and not replace:
         return 0
-    chapters = _read_chapters(file_path)
+    if chapters is None:
+        chapters = _read_chapters(file_path)
     if not chapters:
         return 0
     if replace:
@@ -3530,13 +4307,16 @@ def backfill_segments():
                 missing += 1
             else:
                 try:
-                    with _db_lock:
-                        conn = get_conn()
-                        n = _import_chapters(conn, vid, path, replace=False)
-                        if n:
-                            _apply_rules(conn, video_ids=[vid])
-                        conn.commit()
-                        conn.close()
+                    chapters = _chapters_to_import(vid, path)
+                    n = 0
+                    if chapters:
+                        with _db_lock:
+                            conn = get_conn()
+                            n = _import_chapters(conn, vid, path, replace=False, chapters=chapters)
+                            if n:
+                                _apply_rules(conn, video_ids=[vid])
+                            conn.commit()
+                            conn.close()
                     if n:
                         with_chapters += 1
                         segments += n
@@ -3547,7 +4327,7 @@ def backfill_segments():
                 yield f"data: {json.dumps({'type': 'progress', 'done': done, 'total': total, 'with_chapters': with_chapters, 'segments': segments, 'missing': missing})}\n\n"
         yield f"data: {json.dumps({'type': 'done', 'total': total, 'with_chapters': with_chapters, 'segments': segments, 'missing': missing})}\n\n"
 
-    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+    return Response(stream_with_context(_stream_in_profile(generate())), mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -3588,13 +4368,20 @@ if __name__ == "__main__":
     if "--version" in sys.argv:
         print(f"ChannelVault {__version__}")
         sys.exit(0)
+    url = f"http://localhost:{PORT}"
+    # Before touching the database: a second launch must leave the running one's alone.
+    if _port_busy(PORT):
+        print(f"[api] Port {PORT} already in use — ChannelVault may already be running.")
+        print(f"[api] Opening {url}")
+        webbrowser.open(url)
+        sys.exit(1)
     cfg = load_config()
     ensure_data_dir(cfg["data_directory"])
     # One-time migration: copy old backend/videos.db to data_directory if new location is empty
     legacy_db = os.path.join(BASE_DIR, "videos.db")
     new_db    = get_db_path()
     if os.path.exists(legacy_db) and not os.path.exists(new_db):
-        shutil.copy2(legacy_db, new_db)
+        _copy_db(legacy_db, new_db)
         print(f"[init] Migrated DB to {new_db}")
     init_db()
     sync_artist_folders()
@@ -3602,16 +4389,11 @@ if __name__ == "__main__":
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )
     watcher_thread.start()
-    url = f"http://localhost:{PORT}"
-    if _port_busy(PORT):
-        print(f"[api] Port {PORT} already in use — ChannelVault may already be running.")
-        print(f"[api] Opening {url}")
-        webbrowser.open(url)
-        sys.exit(1)
     if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"[api] ChannelVault {__version__}")
     print(f"[api] Dashboard → {url}")
     print(f"[api] UI files    {STATIC_DIR}")
     print(f"[api] Config      {CONFIG_PATH}")
+    print(f"[api] Profile     {cfg['profile_name']} ({cfg['data_directory']})")
     app.run(host="127.0.0.1", port=PORT, debug=False)
