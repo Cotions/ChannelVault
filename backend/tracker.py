@@ -3335,7 +3335,7 @@ _filing_lock = threading.Lock()
 def _place(src, dest, mode):
     """Move or copy one file to dest without ever overwriting anything there.
 
-    A same-drive move is a rename. Otherwise the bytes go to dest.part first
+    A same-drive move is a rename. Otherwise the bytes go to a fresh dest.*.part first
     (the watcher skips .part) and only a complete copy is renamed into place,
     so a crash or a slow copy never leaves a half file under the real name.
     The lock keeps the watcher and an organize run from filing two different
@@ -3350,7 +3350,10 @@ def _place(src, dest, mode):
             except OSError as e:
                 if e.errno != errno.EXDEV:
                     raise
-        part = dest + ".part"
+        # A fresh name: "<dest>.part" could be someone else's download in progress.
+        fd, part = tempfile.mkstemp(prefix=os.path.basename(dest) + ".", suffix=".part",
+                                    dir=os.path.dirname(dest) or ".")
+        os.close(fd)
         try:
             shutil.copy2(src, part)
             if os.path.getsize(part) != os.path.getsize(src):
@@ -3737,7 +3740,14 @@ def import_enrich():
                                               "the link can't be changed here"}), 409
 
     ext = os.path.splitext(path)[1]
-    tmp = path + ".enrich.temp" + ext  # ".temp." keeps the watcher off it
+    # ".temp." keeps the watcher off it; a fresh name keeps two enrich runs on
+    # one file from writing into the same output.
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".enrich.", suffix=".temp" + ext,
+                                   dir=os.path.dirname(path) or ".")
+        os.close(fd)
+    except OSError as e:
+        return jsonify({"ok": False, "error": _clean_err(e)}), 500
     # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
     # existing tags, then the -metadata flags override only the provided fields.
     args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
@@ -3762,6 +3772,7 @@ def import_enrich():
         except OSError: pass
         return jsonify({"ok": False, "error": "rewritten file's length doesn't match the original; left it untouched"}), 500
 
+    shutil.copymode(path, tmp)         # mkstemp made it owner-only
     os.replace(tmp, path)              # atomic swap over the original
     meta = _read_meta(path)
     if tracked:
