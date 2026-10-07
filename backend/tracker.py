@@ -3693,6 +3693,58 @@ def serve_artist_thumb(name):
     return ("", 404)
 
 
+# 4:3 fallbacks (sddefault/hqdefault) are a 16:9 frame with black bars baked
+# in; in a 16:9 player they end up small in the middle. Crop the bars at serve
+# time: files on disk stay byte-identical (OVD matching, dedup hashes).
+_letterbox_cache = {}
+
+def _letterbox_crop(path):
+    """JPEG bytes of path without baked-in letterbox bars, or None to send the
+    file as is (not 4:3, no bars, or a crop that wouldn't come out 16:9)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key in _letterbox_cache:
+        return _letterbox_cache[key]
+    out = None
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            w, h = im.size
+            if h and abs(w / h - 4 / 3) < 0.02:
+                # Rows holding anything brighter than near-black are picture.
+                box = im.convert("L").point(lambda v: 255 if v > 30 else 0).getbbox()
+                if box:
+                    top, bottom = box[1], box[3]
+                    # Letterbox bars are equal top and bottom; a dark band on
+                    # one side is part of a genuine 4:3 picture.
+                    if bottom - top < h * 0.95 and abs(top - (h - bottom)) <= max(4, h * 0.03) \
+                            and abs(w / (bottom - top) - 16 / 9) < 0.08:
+                        buf = io.BytesIO()
+                        im.convert("RGB").crop((0, top, w, bottom)).save(buf, "JPEG", quality=90)
+                        out = buf.getvalue()
+    except Exception:
+        out = None
+    if len(_letterbox_cache) > 2000:
+        _letterbox_cache.clear()
+    _letterbox_cache[key] = out
+    return out
+
+
+def _send_thumb(directory, fname):
+    """send_from_directory for thumbnails, letterbox bars cropped off."""
+    path = os.path.join(directory, fname)
+    data = _letterbox_crop(path)
+    if data is None:
+        return send_from_directory(directory, fname)
+    from flask import send_file
+    st = os.stat(path)
+    return send_file(io.BytesIO(data), mimetype="image/jpeg", conditional=True,
+                     etag=f"crop-{st.st_mtime_ns:x}-{st.st_size:x}", last_modified=st.st_mtime)
+
+
 @app.get("/thumb/<vid:video_id>")
 def serve_thumb(video_id):
     conn = get_conn()
@@ -3706,7 +3758,7 @@ def serve_thumb(video_id):
         for ext in (".jpg", ".jpeg", ".webp", ".png"):
             candidate = os.path.join(artist_dir, f"{video_id}{ext}")
             if os.path.exists(candidate):
-                return send_from_directory(artist_dir, f"{video_id}{ext}")
+                return _send_thumb(artist_dir, f"{video_id}{ext}")
     # Fallback to the sidecar next to the (resolved) video file
     if row and row["file_path"]:
         resolved = resolve_media_path(row["file_path"])
@@ -3715,7 +3767,7 @@ def serve_thumb(video_id):
             for ext in (".jpg", ".jpeg", ".webp", ".png"):
                 candidate = base + ext
                 if os.path.exists(candidate):
-                    return send_from_directory(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
+                    return _send_thumb(os.path.dirname(os.path.abspath(candidate)), os.path.basename(candidate))
     return ("", 404)
 
 
@@ -3727,10 +3779,10 @@ def serve_thumb_latest(video_id):
         files = [f for f in os.listdir(vdir) if f.lower().endswith((".jpg", ".jpeg", ".webp", ".png"))]
         if files:
             newest = max(files, key=lambda f: os.path.getmtime(os.path.join(vdir, f)))
-            return send_from_directory(vdir, newest)
+            return _send_thumb(vdir, newest)
     op = _original_thumb_path(video_id)
     if op:
-        return send_from_directory(os.path.dirname(op), os.path.basename(op))
+        return _send_thumb(os.path.dirname(op), os.path.basename(op))
     return ("", 404)
 
 # ---------------------------------------------------------------------------
@@ -3973,7 +4025,7 @@ def serve_thumbnail_version(video_id, fname):
     vdir = _thumb_versions_dir(video_id)
     safe = os.path.basename(fname)
     if os.path.exists(os.path.join(vdir, safe)):
-        return send_from_directory(vdir, safe)
+        return _send_thumb(vdir, safe)
     return ("", 404)
 
 
