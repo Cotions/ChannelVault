@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.6.4
+// @version      1.6.5
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -662,7 +662,12 @@ function captureMenuContext(btn) {
 
 document.addEventListener("click", (e) => {
   const cardBtn = e.target.closest(".ytLockupMetadataViewModelMenuButton button");
-  const videoBtn = e.target.closest("#button-shape button[aria-label='More actions']");
+  // The overflow (⋯) button under the player. Matched by position as well as
+  // by its English label, so the menu works in any YouTube UI language.
+  const videoBtn = e.target.closest(
+    "ytd-watch-metadata ytd-menu-renderer > yt-button-shape#button-shape button, " +
+    "#button-shape button[aria-label='More actions']"
+  );
 
   if (cardBtn) {
     captureMenuContext(cardBtn);
