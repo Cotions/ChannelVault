@@ -45,7 +45,15 @@ export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDe
       ) : (
         <div className="playlist-list">
           {shown.map(pl => (
-            <div key={pl.id} className="playlist-row" onClick={() => navigate(`/playlist/${pl.id}`)}>
+            // Not an <a>: it holds the delete button. Keyboard opens it like a link.
+            <div
+              key={pl.id}
+              className="playlist-row"
+              role="link"
+              tabIndex={0}
+              onClick={() => navigate(`/playlist/${pl.id}`)}
+              onKeyDown={e => { if (e.key === "Enter" && e.target === e.currentTarget) navigate(`/playlist/${pl.id}`); }}
+            >
               <Icon name="playlist" size={15} className="playlist-icon" />
               <span className="playlist-name">{pl.name}</span>
               <span className="playlist-count">{pl.video_count}</span>

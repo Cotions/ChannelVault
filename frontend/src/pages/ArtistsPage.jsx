@@ -1,14 +1,17 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { artistThumbUrl, getCreators, getChannelStatuses } from "../lib/api";
 import { CHANNEL_STATUS } from "../lib/channelStatus";
 import { artistsOf } from "../lib/artists";
 import Icon from "../components/Icon";
 
-function ArtistCard({ name, stats, status, onClick }) {
+function ArtistCard({ name, stats, status }) {
   const [hasThumb, setHasThumb] = useState(true);
   return (
-    <div className={`creator-card${CHANNEL_STATUS[status]?.gone ? " is-gone" : ""}`} onClick={onClick}>
+    <Link
+      to={`/artist/${encodeURIComponent(name)}`}
+      className={`creator-card${CHANNEL_STATUS[status]?.gone ? " is-gone" : ""}`}
+    >
       {hasThumb && (
         <img
           className="creator-avatar"
@@ -34,12 +37,11 @@ function ArtistCard({ name, stats, status, onClick }) {
           </span>
         )}
       </div>
-    </div>
+    </Link>
   );
 }
 
 export default function ArtistsPage({ videos, wanted, ignored, query }) {
-  const navigate = useNavigate();
   const q = (query || "").trim().toLowerCase();
   const [creators, setCreators] = useState([]);
   const [statuses, setStatuses] = useState({});
@@ -86,7 +88,6 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
               name={name}
               stats={stats}
               status={statuses[name]?.status}
-              onClick={() => navigate(`/artist/${encodeURIComponent(name)}`)}
             />
           ))}
         </div>
