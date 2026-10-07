@@ -87,10 +87,24 @@ function cmpDesc(key, a, b) {
 // `pins` (see lib/sortPins.js) maps video_id -> a pre-fetch snapshot of the row.
 // A pinned video is compared on its snapshot, so a just-fetched card keeps its
 // slot for a few seconds instead of jumping the moment its stats change.
+// A video with no value for the key (never fetched, no date) sinks to the
+// bottom in both directions; reversing the whole list would float them all
+// to the top of an ascending sort.
+const NUM_FIELDS = { duration: "duration_secs", views: "view_count", likes: "like_count", size: "file_size_bytes" };
+function missing(key, v) {
+  if (key === "upload") return !recDate(v.recorded_date);
+  return key in NUM_FIELDS && v[NUM_FIELDS[key]] == null;
+}
+
 export function sortVideos(videos, key, dir = "desc", pins = null) {
   const arr = [...videos];
   const row = pins ? (v => pins[v.video_id] || v) : (v => v);
-  arr.sort((a, b) => cmpDesc(key, row(a), row(b)));
-  if (dir === "asc") arr.reverse();
+  const sign = dir === "asc" ? -1 : 1;
+  arr.sort((a, b) => {
+    const x = row(a), y = row(b);
+    const mx = missing(key, x), my = missing(key, y);
+    if (mx !== my) return mx ? 1 : -1;
+    return sign * cmpDesc(key, x, y);
+  });
   return arr;
 }
