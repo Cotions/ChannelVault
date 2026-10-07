@@ -30,6 +30,7 @@ export function fmtRecordedDate(raw) {
   const s = String(raw).trim();
   let y, m, d;
 
+  if (/^\d{4}$/.test(s)) return s;      // year only: don't invent Jan 1
   const compact = s.match(/^(\d{4})(\d{2})(\d{2})$/);
   const dashed  = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (compact || dashed) {

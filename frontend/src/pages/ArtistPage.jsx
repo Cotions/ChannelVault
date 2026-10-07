@@ -9,6 +9,7 @@ import { getCreator, getCreators, getArtistLinks, linkArtists, unlinkArtist, get
 import { CHANNEL_STATUS, markedOn } from "../lib/channelStatus";
 import { describeLink } from "../lib/socials";
 import { fmt, safeUrl } from "../lib/fmt";
+import { isYouTube } from "../lib/source";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
@@ -68,7 +69,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
     setLinking(false);
     try {
       const r = await linkArtists(artist, other);
-      setLinked(r.linked || []);
+      if (r.ok !== false) setLinked(r.linked || []);
     } catch { /* leave the list as it was */ }
   }
 
@@ -316,7 +317,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
           <div className="wanted-list">
             {artistWanted.map(v => (
               <div key={v.video_id} className="wanted-item">
-                <a href={`https://www.youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noreferrer">
+                <a href={isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url)} target="_blank" rel="noreferrer">
                   {v.title || v.video_id}
                 </a>
                 <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>
@@ -332,7 +333,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
           <div className="wanted-list">
             {artistIgnored.map(v => (
               <div key={v.video_id} className="ignored-item">
-                <a href={`https://www.youtube.com/watch?v=${v.video_id}`} target="_blank" rel="noreferrer">
+                <a href={isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url)} target="_blank" rel="noreferrer">
                   {v.title || v.video_id}
                 </a>
                 <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>

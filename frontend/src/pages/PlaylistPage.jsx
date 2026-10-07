@@ -43,7 +43,8 @@ export default function PlaylistPage({ query, onEdit, onFetchMeta }) {
   }
 
   async function handleRemove(videoId) {
-    await removeFromPlaylist(id, videoId);
+    const r = await removeFromPlaylist(id, videoId);
+    if (r && r.ok === false) return;
     setVideos(prev => prev.filter(v => v.video_id !== videoId));
   }
 

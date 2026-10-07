@@ -91,7 +91,8 @@ export default function App() {
   useEffect(() => { load(); loadProfiles(); }, []);
 
   async function handleDelete(id) {
-    await deleteVideo(id);
+    const r = await deleteVideo(id);
+    if (r && r.ok === false) throw new Error(r.error || "delete failed");   // keep it on screen
     setVideos(prev => prev.filter(v => v.video_id !== id));
   }
 
@@ -121,7 +122,8 @@ export default function App() {
   }
 
   async function handleDeletePlaylist(id) {
-    await deletePlaylist(id);
+    const r = await deletePlaylist(id);
+    if (r && r.ok === false) throw new Error(r.error || "delete failed");
     setPlaylists(prev => prev.filter(p => p.id !== id));
   }
 

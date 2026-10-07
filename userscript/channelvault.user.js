@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.6.0
+// @version      1.6.1
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -230,6 +230,9 @@ async function checkAndAnnotate() {
   } catch (_) {
     return;
   }
+  // YouTube is a single-page app: by the time the answer arrives the user may
+  // be on another video. Don't paint this one's badge on that one.
+  if (getVideoId() !== videoId) return;
 
   if (status === "downloaded") {
     waitForTitle(() => { injectBadge("✓ In Vault", COLOR_DOWNLOADED, "#fff"); colorTitle(COLOR_DOWNLOADED); });
@@ -302,13 +305,22 @@ function annotateCards(downloaded, wanted, ignored) {
       const isDownloaded = downloaded.has(videoId);
       const isWanted     = !isDownloaded && wanted.has(videoId);
       const isIgnored    = !isDownloaded && !isWanted && ignored.has(videoId);
-      if (!isDownloaded && !isWanted && !isIgnored) return;
+      const mark = isDownloaded ? "downloaded" : isWanted ? "wanted" : isIgnored ? "ignored" : "";
 
       const card = link.closest(
         "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
         "ytd-grid-video-renderer, ytd-compact-video-renderer"
       ) || link.parentElement;
-      if (!card || card.querySelector(`.${CARD_BADGE_CLASS}`)) return;
+      if (!card) return;
+      // YouTube reuses card elements for other videos: a badge is only kept
+      // when it still describes this card's video and mark.
+      const old = card.querySelector(`.${CARD_BADGE_CLASS}`);
+      if (old && old.dataset.cvKey === `${videoId}:${mark}`) return;
+      if (old) {
+        old.remove();
+        link.classList.remove("cv-title-downloaded", "cv-title-wanted", "cv-title-ignored");
+      }
+      if (!mark) return;
 
       let color, text, textColor;
       if (isDownloaded) { color = COLOR_DOWNLOADED; text = "✓ In Vault";  textColor = "#fff"; }
@@ -320,6 +332,7 @@ function annotateCards(downloaded, wanted, ignored) {
 
       const badge = document.createElement("div");
       badge.className = CARD_BADGE_CLASS;
+      badge.dataset.cvKey = `${videoId}:${mark}`;
       badge.appendChild(document.createTextNode(text));
 
       const thumb = card.querySelector(
@@ -402,7 +415,14 @@ function gmPost(url, body) {
       // pages cannot attach a custom header cross-origin; this script can.
       headers: { "Content-Type": "application/json", ...CV_HEADERS },
       data:    JSON.stringify(body),
-      onload:  resolve,
+      // Only a 2xx with ok:true counts as saved; a refused write (403/400/500,
+      // an HTML error page) must not show "Saved".
+      onload:  (res) => {
+        let data = null;
+        try { data = JSON.parse(res.responseText); } catch (_) { /* not JSON */ }
+        if (res.status >= 200 && res.status < 300 && data && data.ok !== false) resolve(data);
+        else reject(new Error((data && data.error) || `HTTP ${res.status}`));
+      },
       onerror: reject,
     });
   });
