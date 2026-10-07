@@ -101,8 +101,9 @@ jobs:
             ./channelvault
             ```
 
-            The dashboard opens at http://localhost:3360. Nothing else to install — the
-            binary carries its own Python runtime, the backend and the dashboard UI.
+            The dashboard opens at http://localhost:3360. The binary carries its own
+            Python runtime, the backend and the dashboard UI. It needs `ffmpeg` on PATH
+            (`sudo apt install ffmpeg`) to read webm/mkv files, chapters and frame grabs.
 
             Config lives at `~/.config/channelvault/config.json`; your database goes
             wherever you point `data_directory` in the dashboard.

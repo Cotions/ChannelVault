@@ -63,10 +63,17 @@ command -v python3 &>/dev/null || die "python3 not found"
 # --- port check -----------------------------------------------------------
 if python3 -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$PORT))==0 else 1)"; then
   say "Port $PORT already in use."
-  read -rp "Kill it and continue? [y/N] " confirm
+  read -rp "Stop it and continue? [y/N] " confirm
   [[ "$confirm" =~ ^[Yy]$ ]] || die "Aborted."
-  fuser -k "${PORT}/tcp" 2>/dev/null || true
-  sleep 1
+  port_free() { ! python3 -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$PORT))==0 else 1)"; }
+  wait_free() { for _ in $(seq "$1"); do port_free && return 0; sleep 0.5; done; return 1; }
+  # A running ChannelVault quits cleanly on request, finishing any file move
+  # first. Anything else gets SIGTERM; never SIGKILL mid-write.
+  curl -s -m 3 -X POST -H "X-ChannelVault: 1" "http://127.0.0.1:${PORT}/shutdown" >/dev/null 2>&1 || true
+  if ! wait_free 40; then
+    fuser -k -TERM "${PORT}/tcp" 2>/dev/null || true
+    wait_free 20 || die "Port $PORT is still in use. Stop that process yourself, then run again."
+  fi
 fi
 
 # --- python deps ----------------------------------------------------------
