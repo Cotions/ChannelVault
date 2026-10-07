@@ -74,6 +74,7 @@ export default function ArtistPage({ videos, wanted, ignored, query, onDelete, o
   }
 
   async function handleUnlink(other) {
+    if (!window.confirm(`Unlink ${other} from ${artist}?`)) return;
     try {
       await unlinkArtist(other);
       setLinked(await getArtistLinks(artist));

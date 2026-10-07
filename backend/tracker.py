@@ -8,6 +8,7 @@ import csv
 import time
 import json
 import shutil
+import functools
 import queue
 import errno
 import contextlib
@@ -231,7 +232,7 @@ def _read_raw_config():
     return raw
 
 
-_config_write_lock = threading.Lock()
+_config_write_lock = threading.RLock()   # re-entrant: also held around read-modify-write
 
 def _write_raw_config(raw):
     # Own temp name per write + a lock: two saves at once can't interleave
@@ -241,6 +242,15 @@ def _write_raw_config(raw):
         with os.fdopen(fd, "w") as f:
             json.dump(raw, f, indent=2)
         os.replace(tmp, CONFIG_PATH)
+
+
+def _config_locked(fn):
+    """Run a config read-modify-write handler under the config lock."""
+    @functools.wraps(fn)
+    def run(*a, **kw):
+        with _config_write_lock:
+            return fn(*a, **kw)
+    return run
 
 
 def _copy_db(src, dest):
@@ -314,15 +324,17 @@ def load_config():
     return cfg
 
 def save_config(cfg):
-    """Profile keys go to the active profile, the rest to the shared top level."""
-    raw  = _read_raw_config()
-    prof = _active_profile(raw)
-    for k, v in cfg.items():
-        if k in PROFILE_KEYS:
-            prof[k] = v
-        elif k not in ("active_profile", "profile_name", "profiles"):
-            raw[k] = v
-    _write_raw_config(raw)
+    """Profile keys go to the active profile, the rest to the shared top level.
+    Read and write under one lock so a concurrent save can't drop this one."""
+    with _config_write_lock:
+        raw  = _read_raw_config()
+        prof = _active_profile(raw)
+        for k, v in cfg.items():
+            if k in PROFILE_KEYS:
+                prof[k] = v
+            elif k not in ("active_profile", "profile_name", "profiles"):
+                raw[k] = v
+        _write_raw_config(raw)
 
 def get_db_path():
     return os.path.join(load_config()["data_directory"], "videos.db")
@@ -413,6 +425,9 @@ def sync_artist_folders():
         # (a renamed channel's), so one whose video is still tracked moves to
         # that video's current artist folders before the folder goes.
         valid = {_safe_dirname(name) for name in channels}
+        conn = get_conn()
+        tracked_ids = {r[0] for r in conn.execute("SELECT video_id FROM downloaded_videos")}
+        conn.close()
         homes = {}
         for name, video_ids in channels.items():
             for video_id in video_ids:
@@ -422,11 +437,18 @@ def sync_artist_folders():
                 path = os.path.join(artist_thumbs_dir, entry)
                 if not os.path.isdir(path) or entry in valid:
                     continue
+                homeless = False
                 for fname in os.listdir(path):
-                    for home in homes.get(os.path.splitext(fname)[0], []):
+                    vid = os.path.splitext(fname)[0]
+                    for home in homes.get(vid, []):
                         dest = os.path.join(home, fname)
                         if not os.path.exists(dest):
                             shutil.copy2(os.path.join(path, fname), dest)
+                    # A tracked video with no artist right now (channel cleared)
+                    # has nowhere else to keep its thumb: leave the folder be.
+                    homeless = homeless or (vid not in homes and vid in tracked_ids)
+                if homeless:
+                    continue
                 shutil.rmtree(path, ignore_errors=True)
                 print(f"[artist_folders] Pruned orphan: {entry}")
 
@@ -441,6 +463,10 @@ def sync_artist_folders():
                 if vid in own or vid not in homes or ext.lower() not in (".jpg", ".jpeg", ".webp", ".png"):
                     continue
                 stale = os.path.join(artist_dir, fname)
+                # Two names can share a folder (A/B and A:B both become A-B):
+                # then this file is also a current home, never stale.
+                if any(os.path.realpath(h) == os.path.realpath(artist_dir) for h in homes[vid]):
+                    continue
                 for h in homes[vid]:
                     if not os.path.exists(os.path.join(h, fname)):
                         shutil.copy2(stale, os.path.join(h, fname))
@@ -1408,6 +1434,7 @@ def list_profiles():
 
 
 @app.post("/profiles")
+@_config_locked
 def create_profile():
     body  = request.get_json(silent=True) or {}
     name  = str(body.get("name") or "").strip()
@@ -1457,6 +1484,7 @@ def create_profile():
 
 
 @app.patch("/profiles/<profile_id>")
+@_config_locked
 def rename_profile(profile_id):
     body = request.get_json(silent=True) or {}
     name = str(body.get("name") or "").strip()
@@ -1474,6 +1502,7 @@ def rename_profile(profile_id):
 
 
 @app.delete("/profiles/<profile_id>")
+@_config_locked
 def delete_profile(profile_id):
     """Forget a profile. Its data directory and videos stay on disk untouched."""
     raw = _read_raw_config()
@@ -1488,6 +1517,7 @@ def delete_profile(profile_id):
 
 
 @app.post("/profiles/<profile_id>/activate")
+@_config_locked
 def activate_profile(profile_id):
     raw = _read_raw_config()
     if not any(p["id"] == profile_id for p in raw["profiles"]):
@@ -1622,6 +1652,9 @@ def _artist_scan_files(artist):
 def scan():
     artist = (request.args.get("artist") or "").strip()
     if artist:
+        if _safe_dirname(artist) in (".", ".."):
+            # "<root>/.." would walk the folder above the media root
+            return jsonify({"ok": False, "error": "bad artist name"}), 400
         files = _artist_scan_files(artist)
     else:
         cfg       = load_config()
@@ -1673,12 +1706,17 @@ def check_video(video_id):
 @app.post("/update-stats/<vid:video_id>")
 def update_stats(video_id):
     body       = request.get_json(silent=True) or {}
-    view_count = body.get("view_count")
-    like_count = body.get("like_count")
+    def count(v):
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None
+    view_count = count(body.get("view_count"))
+    like_count = count(body.get("like_count"))
+    if view_count is None and like_count is None:
+        return jsonify({"ok": False, "error": "no counts"}), 400
     conn = get_conn()
     conn.execute('''
         UPDATE downloaded_videos
-        SET view_count = ?, like_count = ?, stats_updated_at = CURRENT_TIMESTAMP
+        SET view_count = COALESCE(?, view_count), like_count = COALESCE(?, like_count),
+            stats_updated_at = CURRENT_TIMESTAMP
         WHERE video_id = ? AND status = 'downloaded'
     ''', (view_count, like_count, video_id))
     conn.commit()
@@ -2313,6 +2351,15 @@ def remove_playlist_video(playlist_id, video_id):
     conn.close()
     return jsonify({"ok": True})
 
+def _csv_cell(v):
+    """Spreadsheets run a cell starting with = + - @ as a formula: a video id
+    like "-B6nJSEpSbI" turns into #NAME?, a crafted title into a formula.
+    A leading apostrophe keeps it text."""
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
 EXPORT_FIELDS = [
     "video_id", "title", "channel_name", "url", "file_path",
     "genre", "description", "recorded_date", "duration_secs",
@@ -2360,7 +2407,8 @@ def export_csv():
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=EXPORT_FIELDS, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows({**r, "tags": "; ".join(r["tags"])} for r in _export_rows())
+    writer.writerows({k: _csv_cell(v) for k, v in {**r, "tags": "; ".join(r["tags"])}.items()}
+                     for r in _export_rows())
     # BOM so Excel detects UTF-8
     resp = Response("\ufeff" + buf.getvalue(), mimetype="text/csv")
     resp.headers["Content-Disposition"] = 'attachment; filename="channelvault-export.csv"'
@@ -2613,6 +2661,11 @@ def _ytdlp_error(stderr):
 def _classify_unavailable(text):
     """Map a yt-dlp error message to an availability state, or None if it looks transient."""
     t = (text or "").lower()
+    # Throttling and bot checks wear YouTube's "Video unavailable" wording too
+    # ("This content isn't available, try again later"). Never mark those.
+    if any(m in t for m in ("try again later", "rate-limit", "rate limit", "too many requests",
+                            "http error 429", "not a bot", "temporarily")):
+        return None
     if "private video" in t or "this video is private" in t:
         return "private"
     if ("members-only" in t or "members only" in t or "join this channel" in t):
@@ -2723,6 +2776,7 @@ def delete_video(video_id):
             _restore_detached_audio(conn, t["file_path"])
         conn.commit()
         conn.close()
+    shutil.rmtree(_thumb_versions_dir(video_id), ignore_errors=True)   # fetched thumbs die with the entry
     conn = get_conn()
     conn.execute("DELETE FROM downloaded_videos WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM playlist_items WHERE video_id = ?", (video_id,))
@@ -3527,20 +3581,24 @@ def fetch_thumbnail(video_id):
         return err
     body  = request.get_json(silent=True) or {}
     force = bool(body.get("force")) or request.args.get("force") in ("1", "true")
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    res = _ytdlp("--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url, timeout=60)
-    if res.returncode != 0:
-        avail = _classify_unavailable(res.stderr)
-        if avail:
-            _set_availability(video_id, avail)
-            return jsonify({"ok": False, "error": _ytdlp_error(res.stderr), "availability": avail}), 200
-        return jsonify({"ok": False, "error": _ytdlp_error(res.stderr)}), 502
-
-    thumb_url = (res.stdout or "").strip().splitlines()[0] if res.stdout.strip() else ""
+    # YouTube's image CDN first: no yt-dlp call, so no bot check or rate limit
+    # in the way. yt-dlp only resolves an odd thumbnail URL when that fails.
     try:
-        data, ext = _fetch_youtube_thumb(video_id, thumb_url)
-    except Exception as e:
-        return jsonify({"ok": False, "error": _clean_err(e)}), 502
+        data, ext = _fetch_youtube_thumb(video_id)
+    except Exception:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        res = _ytdlp("--no-warnings", "--skip-download", "--print", "%(thumbnail)s", url, timeout=60)
+        if res.returncode != 0:
+            avail = _classify_unavailable(res.stderr)
+            if avail:
+                _set_availability(video_id, avail)
+                return jsonify({"ok": False, "error": _ytdlp_error(res.stderr), "availability": avail}), 200
+            return jsonify({"ok": False, "error": _ytdlp_error(res.stderr)}), 502
+        thumb_url = (res.stdout or "").strip().splitlines()[0] if res.stdout.strip() else ""
+        try:
+            data, ext = _fetch_youtube_thumb(video_id, thumb_url)
+        except Exception as e:
+            return jsonify({"ok": False, "error": _clean_err(e)}), 502
 
     digest = hashlib.sha1(data).hexdigest()[:12]
     # Collect existing thumbnails: the original plus any fetched version.
@@ -3678,25 +3736,34 @@ def _creator_row_to_dict(row):
 @app.post("/creator")
 def upsert_creator():
     body         = request.get_json(silent=True) or {}
-    channel_name = (body.get("channel_name") or "").strip()
+    channel_name = _clean_name(body.get("channel_name") if isinstance(body.get("channel_name"), str) else "")
     if not channel_name:
         return jsonify({"ok": False, "error": "channel_name required"}), 400
+
+    def count(v):
+        # Scraped numbers: a string or float from a bad parse must not land in
+        # an integer column and break sorting.
+        try:
+            n = int(v) if v is not None and not isinstance(v, bool) else None
+        except (TypeError, ValueError):
+            return None
+        return n if n is not None and n >= 0 else None
 
     links      = _safe_links(body.get("links"))
     links_json = json.dumps(links) if links else None
     vals = {
         "channel_name":     channel_name,
-        "handle":           body.get("handle"),
+        "handle":           _text(body.get("handle"), 200),
         "channel_url":      _safe_link(body.get("channel_url")),
-        "description":      body.get("description"),
-        "country":          body.get("country"),
-        "joined_date":      body.get("joined_date"),
-        "subscriber_count": body.get("subscriber_count"),
-        "subscribers_text": body.get("subscribers_text"),
-        "video_count":      body.get("video_count"),
-        "total_views":      body.get("total_views"),
+        "description":      _text(body.get("description"), 10000),
+        "country":          _text(body.get("country"), 100),
+        "joined_date":      _text(body.get("joined_date"), 100),
+        "subscriber_count": count(body.get("subscriber_count")),
+        "subscribers_text": _text(body.get("subscribers_text"), 100),
+        "video_count":      count(body.get("video_count")),
+        "total_views":      count(body.get("total_views")),
         "links":            links_json,
-        "email":            body.get("email"),
+        "email":            _text(body.get("email"), 320),
     }
     # Only overwrite a stored field when the new payload actually carries a value,
     # so a partial capture never blanks out previously-saved data.
@@ -3762,17 +3829,35 @@ def get_artist_links(channel_name):
     return jsonify(names)
 
 
+def _body_name(body, key):
+    v = body.get(key)
+    return _clean_name(v) if isinstance(v, str) else None
+
+
+def _known_artist(conn, name):
+    """A name some video credits (alone or in a collab) or a captured creator.
+    Rows keyed by a typo or a stale name would never show anywhere."""
+    if conn.execute("SELECT 1 FROM creators WHERE channel_name = ?", (name,)).fetchone():
+        return True
+    rows = conn.execute(
+        "SELECT DISTINCT channel_name FROM downloaded_videos WHERE instr(channel_name, ?) > 0", (name,))
+    return any(name in _artist_names(r[0]) for r in rows)
+
+
 @app.post("/artist-links")
 def link_artists():
     """Mark two channels as the same person. Linking into an existing group
     pulls the whole other group along, so A-B plus B-C ends as one A-B-C group."""
     body = request.get_json(silent=True) or {}
-    a = (body.get("a") or "").strip()
-    b = (body.get("b") or "").strip()
+    a, b = _body_name(body, "a"), _body_name(body, "b")
     if not a or not b or a == b:
         return jsonify({"ok": False, "error": "two different channel names required"}), 400
     with _db_lock:
         conn = get_conn()
+        unknown = [n for n in (a, b) if not _known_artist(conn, n)]
+        if unknown:
+            conn.close()
+            return jsonify({"ok": False, "error": f"no videos from {unknown[0]}"}), 404
         groups = {
             r["channel_name"]: r["group_id"]
             for r in conn.execute(
@@ -3836,7 +3921,7 @@ def list_channel_status():
 def set_channel_status():
     """Mark a channel abandoned, deleted or banned; a null status clears the mark."""
     body         = request.get_json(silent=True) or {}
-    channel_name = (body.get("channel_name") or "").strip()
+    channel_name = _body_name(body, "channel_name")
     status       = body.get("status")
     if not channel_name:
         return jsonify({"ok": False, "error": "channel_name required"}), 400
@@ -3844,6 +3929,9 @@ def set_channel_status():
         return jsonify({"ok": False, "error": "status must be abandoned, deleted, banned or null"}), 400
     with _db_lock:
         conn = get_conn()
+        if status is not None and not _known_artist(conn, channel_name):
+            conn.close()
+            return jsonify({"ok": False, "error": f"no videos from {channel_name}"}), 404
         if status is None:
             conn.execute("DELETE FROM channel_status WHERE channel_name = ?", (channel_name,))
         else:

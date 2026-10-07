@@ -10,7 +10,8 @@ the DB and its watcher would react to the file deletes).
   backend/venv/bin/python scripts/data_cleanup.py --apply --delete-staging-dupes
 
 DB fixes (all on the active profile's videos.db, after a backup copy next to it):
-  names   channel_name with outer whitespace (U+3000 too) is trimmed
+  names   channel_name with outer whitespace (U+3000 too) is trimmed, here and
+          in creators / artist_links / channel_status
   dates   recorded_date "YYYYMMDD" / "YYYY-MM-DDT..." becomes "YYYY-MM-DD"
   paths   a file_path that no longer exists but resolves to exactly one file
           (outside _archive-import) is rewritten to that file
@@ -155,6 +156,14 @@ def main():
     with conn:
         for vid, _, clean in names:
             conn.execute("UPDATE downloaded_videos SET channel_name=? WHERE video_id=?", (clean, vid))
+        # Side tables keyed by the old spelling follow it, unless the trimmed
+        # name already has its own row there (that one wins).
+        for table in ("creators", "artist_links", "channel_status"):
+            for (old,) in conn.execute(f"SELECT channel_name FROM {table}").fetchall():
+                clean = tracker._clean_name(old)
+                if clean and clean != old:
+                    conn.execute(f"UPDATE OR IGNORE {table} SET channel_name=? WHERE channel_name=?", (clean, old))
+                    conn.execute(f"DELETE FROM {table} WHERE channel_name=?", (old,))
         for vid, _, norm in dates:
             conn.execute("UPDATE downloaded_videos SET recorded_date=? WHERE video_id=?", (norm, vid))
         for vid, _, hit in paths:
