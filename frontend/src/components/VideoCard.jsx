@@ -167,13 +167,13 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
       <div className="video-actions">
         {confirming ? (
           <>
-            <span className="del-confirm-label">Delete?</span>
+            <span className="del-confirm-label">Remove entry?</span>
             <button
               ref={confirmRef}
               className="del-btn del-btn-confirm"
               onClick={handleDelete}
               disabled={deleting}
-              title="Confirm delete (Enter)"
+              title="Remove (Enter): tags, playlists and watch history go with it; the file stays on disk and a scan adds it back"
             >
               <Icon name="check" />
             </button>
@@ -244,7 +244,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
             {onDelete && (
               <button
                 className="del-btn del-btn-danger"
-                title="Remove from vault"
+                title="Remove from vault (the file stays on disk)"
                 disabled={deleting}
                 onClick={() => setConfirming(true)}
               >
