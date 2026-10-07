@@ -2,7 +2,7 @@ import { useState } from "react";
 import { getDuplicates, getMissing, getQualityChecks, organizePreview, organizeApply, browse } from "../lib/api";
 import ImportItem from "../components/ImportItem";
 
-export default function DataQualityPage() {
+export default function DataQualityPage({ onLibraryChanged }) {
   const [status,     setStatus]     = useState("idle"); // idle | scanning | done | error
   const [duplicates, setDuplicates] = useState([]);
   const [missing,    setMissing]    = useState([]);
@@ -72,6 +72,7 @@ export default function DataQualityPage() {
       const d = await organizeApply({ files, source: source.trim() || undefined, mode });
       setResults(d.results || []);
       setOrgStatus("done");
+      if ((d.results || []).some(r => r.added)) onLibraryChanged?.();   // header, Home, Stats follow
     } catch {
       setOrgStatus("error");
     }

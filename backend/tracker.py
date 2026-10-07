@@ -2105,7 +2105,10 @@ def add_audio_track(video_id):
     duration = _audio_duration(path)      # file read stays outside the DB lock
     with _db_lock:
         conn = get_conn()
-        if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone():
+        # Only a library video takes a soundtrack: on a wanted mark or a hidden
+        # (itself attached) entry, it would vanish from view along with the file's entry.
+        if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ? AND status = 'downloaded'",
+                            (video_id,)).fetchone():
             conn.close()
             return jsonify({"ok": False, "error": "video not found"}), 404
         try:
@@ -2249,6 +2252,11 @@ def watch_progress(video_id):
                 WHERE id = ? AND video_id = ?
             ''', (watched_secs, position_secs, duration_secs, completed, session_id, video_id))
         else:
+            # A player still running on a deleted entry must not leave history behind.
+            if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ? AND status = 'downloaded'",
+                                (video_id,)).fetchone():
+                conn.close()
+                return jsonify({"ok": False, "error": "video not found"}), 404
             cur = conn.execute('''
                 INSERT INTO watch_sessions (video_id, watched_secs, position_secs, duration_secs, completed)
                 VALUES (?, ?, ?, ?, ?)

@@ -21,7 +21,7 @@ import ChannelStatusMenu from "../components/ChannelStatusMenu";
 export default function ArtistPage({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
   const { name } = useParams();
   const navigate = useNavigate();
-  const artist   = decodeURIComponent(name);
+  const artist   = name;              // the router already decoded it; again would choke on "%"
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useState("upload");
   const [dir,    setDir]    = useState("desc");

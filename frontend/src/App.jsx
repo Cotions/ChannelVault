@@ -94,6 +94,7 @@ export default function App() {
     const r = await deleteVideo(id);
     if (r && r.ok === false) throw new Error(r.error || "delete failed");   // keep it on screen
     setVideos(prev => prev.filter(v => v.video_id !== id));
+    window.dispatchEvent(new CustomEvent("cv:video-deleted", { detail: id }));
   }
 
   async function handleFetchMeta(id) {
@@ -279,7 +280,7 @@ export default function App() {
               path="/artists"
               element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} />}
             />
-            <Route path="/data-quality" element={<DataQualityPage />} />
+            <Route path="/data-quality" element={<DataQualityPage onLibraryChanged={load} />} />
             <Route path="/tags" element={<TagsPage tags={tags} query={query} onChanged={handleTagsChanged} />} />
             <Route
               path="/tag/:id"

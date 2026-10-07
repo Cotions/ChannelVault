@@ -34,7 +34,7 @@ function RecordCard({ video, label, statText, delay }) {
 export default function Stats({ videos, wanted = [], ignored = [] }) {
   const navigate = useNavigate();
   const { name } = useParams();
-  const artist   = name != null ? decodeURIComponent(name) : null;
+  const artist   = name != null ? name : null;   // already decoded by the router
 
   const scopeVideos = artist
     ? videos.filter(v => artistsOf(v).includes(artist))
@@ -44,7 +44,7 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   const totalBytes = withSize.reduce((sum, v) => sum + v.file_size_bytes, 0);
   const totalSecs  = scopeVideos.reduce((sum, v) => sum + (v.duration_secs || 0), 0);
 
-  const channelCounts = {};
+  const channelCounts = Object.create(null);
   for (const v of scopeVideos) {
     for (const ch of artistsOf(v)) {
       channelCounts[ch] = (channelCounts[ch] || 0) + 1;
