@@ -20,6 +20,13 @@ import Stats           from "./pages/Stats";
 import TagsPage        from "./pages/TagsPage";
 import TagPage         from "./pages/TagPage";
 
+// A deleted tag must leave the Home filter too, or the grid filters on an id
+// nothing carries.
+function dropDeletedTags(ids, tags) {
+  const next = ids.filter(id => tags.some(t => t.id === id));
+  return next.length === ids.length ? ids : next;
+}
+
 export default function App() {
   const [online,  setOnline]  = useState(false);
   const [cfg,     setCfg]     = useState({});
@@ -80,6 +87,7 @@ export default function App() {
       setIgnored(i);
       setPlaylists(p);
       setTags(t);
+      setTagIds(prev => dropDeletedTags(prev, t));
       setLibVer(n => n + 1);     // pages holding their own lists (tag, playlist) reload on this
       setOnline(true);
     } catch {
@@ -117,6 +125,7 @@ export default function App() {
     const [v, t] = await Promise.all([getVideos(), getTags()]);
     setVideos(v);
     setTags(t);
+    setTagIds(prev => dropDeletedTags(prev, t));
   }
 
   async function handleCreatePlaylist(name) {
@@ -301,7 +310,7 @@ export default function App() {
             />
             <Route
               path="/playlist/:id"
-              element={<PlaylistPage libraryVersion={libVer} query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
+              element={<PlaylistPage libraryVersion={libVer} query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onPlaylistsChanged={async () => setPlaylists(await getPlaylists())} />}
             />
           </Routes>
         </main>
