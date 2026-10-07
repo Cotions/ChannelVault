@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.6.1
+// @version      1.6.2
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -178,42 +178,6 @@ function gmFetch(url) {
 }
 
 // ---------------------------------------------------------------------------
-// Stats scraping
-// ---------------------------------------------------------------------------
-
-function parseCount(text) {
-  if (!text) return null;
-  const digits = text.replace(/[^0-9]/g, "");
-  return digits ? parseInt(digits, 10) : null;
-}
-
-function scrapeStats() {
-  const viewEl = document.querySelector(
-    "ytd-video-view-count-renderer span.view-count, span.view-count"
-  );
-  const viewCount = viewEl ? parseCount(viewEl.textContent) : null;
-
-  const likeBtn = document.querySelector(
-    "ytd-segmented-like-dislike-button-renderer #segmented-like-button button, " +
-    "ytd-toggle-button-renderer[is-icon-button] button[aria-label*='like']"
-  );
-  let likeCount = null;
-  if (likeBtn) {
-    const label = likeBtn.getAttribute("aria-label") || "";
-    const match = label.match(/([\d,]+)/);
-    if (match) likeCount = parseInt(match[1].replace(/,/g, ""), 10);
-    if (!likeCount) {
-      const countEl = likeBtn
-        .closest("ytd-toggle-button-renderer, ytd-segmented-like-dislike-button-renderer")
-        ?.querySelector("yt-formatted-string, span.yt-core-attributed-string");
-      if (countEl) likeCount = parseCount(countEl.textContent);
-    }
-  }
-
-  return { view_count: viewCount, like_count: likeCount };
-}
-
-// ---------------------------------------------------------------------------
 // Main check
 // ---------------------------------------------------------------------------
 
@@ -243,7 +207,9 @@ async function checkAndAnnotate() {
   }
 }
 
-function waitForTitle(cb, attempts = 0) {
+function waitForTitle(cb, attempts = 0, videoId = getVideoId()) {
+  // Retries span ~6s; the user may have moved to another video meanwhile.
+  if (getVideoId() !== videoId) return;
   const titleEl =
     document.querySelector("ytd-watch-metadata h1") ||
     document.querySelector("h1.ytd-watch-metadata") ||
@@ -255,7 +221,7 @@ function waitForTitle(cb, attempts = 0) {
   if (titleEl) {
     cb();
   } else if (attempts < 20) {
-    setTimeout(() => waitForTitle(cb, attempts + 1), 300);
+    setTimeout(() => waitForTitle(cb, attempts + 1, videoId), 300);
   }
 }
 
@@ -299,7 +265,10 @@ function annotateCards(downloaded, wanted, ignored) {
   document
     .querySelectorAll("a.ytLockupMetadataViewModelTitle[href*='watch?v=']")
     .forEach(link => {
-      const videoId = extractVideoIdFromHref(link.getAttribute("href"));
+      const href = link.getAttribute("href");
+      // Playlist/mix tiles link to their first video: not that video's card.
+      if (href.includes("list=")) return;
+      const videoId = extractVideoIdFromHref(href);
       if (!videoId) return;
 
       const isDownloaded = downloaded.has(videoId);
@@ -384,16 +353,32 @@ function stopCardObserver() {
   if (_cardObserver) { _cardObserver.disconnect(); _cardObserver = null; }
 }
 
+let _cardGeneration = 0;
+
 async function initCardAnnotation() {
   stopCardObserver();
+  // A newer navigation may start while this fetch is in flight; only the
+  // latest call may install an observer, so they never pile up.
+  const gen = ++_cardGeneration;
   const ids  = await gmFetchIds();
+  if (gen !== _cardGeneration) return;
+  stopCardObserver();
   _downloadedIds = ids.downloaded;
   _wantedIds     = ids.wanted;
   _ignoredIds    = ids.ignored;
 
   annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
 
-  _cardObserver = new MutationObserver(() => annotateCards(_downloadedIds, _wantedIds, _ignoredIds));
+  // YouTube mutates the DOM constantly: annotate at most once per frame.
+  let queued = false;
+  _cardObserver = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
+    });
+  });
   _cardObserver.observe(document.body, { childList: true, subtree: true });
 }
 
@@ -658,13 +643,15 @@ function extractChannelFromCard(card) {
 }
 
 function captureMenuContext(btn) {
+  // Never let a previous card's context leak into this menu.
+  _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
   const card = btn.closest(
     "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
     "ytd-grid-video-renderer, ytd-compact-video-renderer"
   );
   if (!card) return;
   const link = card.querySelector("a.ytLockupMetadataViewModelTitle[href*='watch?v=']");
-  if (!link) return;
+  if (!link || link.getAttribute("href").includes("list=")) return;
   const videoId = extractVideoIdFromHref(link.getAttribute("href"));
   if (!videoId) return;
   _pendingMenuVideoId  = videoId;
@@ -684,10 +671,11 @@ document.addEventListener("click", (e) => {
       if (container) injectCVMenuItems(container);
     }, 80);
   } else if (videoBtn) {
+    _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
     const videoId = getVideoId();
     if (!videoId) return;
     _pendingMenuVideoId  = videoId;
-    _pendingMenuVideoUrl = window.location.href;
+    _pendingMenuVideoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     _pendingMenuTitle    = document.querySelector(
       "ytd-watch-metadata h1 yt-formatted-string, #above-the-fold h1 yt-formatted-string"
     )?.textContent.trim() || null;
