@@ -2414,7 +2414,31 @@ MIN_WATCHED_SECS = 30
 
 @app.post("/watch-progress/<vid:video_id>")
 def watch_progress(video_id):
+    # A session belongs to the library it started in. After a profile switch,
+    # the player's last flush (pagehide) or another open tab still reports on
+    # it; the update goes back there, not into whichever library is active now.
     body = request.get_json(silent=True) or {}
+    pid  = _existing_profile(body.get("profile")) or load_config()["active_profile"]
+    with _pinned_profile(pid):
+        out, code = _record_progress(video_id, body)
+    if code == 200:
+        out["profile"] = pid
+    return jsonify(out), code
+
+
+def _existing_profile(profile_id):
+    """profile_id when it names a profile whose database exists, else None:
+    never create an empty library on an unmounted drive."""
+    if not isinstance(profile_id, str):
+        return None
+    for p in _read_raw_config()["profiles"]:
+        if p.get("id") == profile_id:
+            data = _profile_defaults(dict(p))["data_directory"]
+            return profile_id if os.path.isfile(os.path.join(data, "videos.db")) else None
+    return None
+
+
+def _record_progress(video_id, body):
     try:
         session_id    = _positive_num(body.get("session_id"), int)
         watched_secs  = max(0.0, float(body.get("watched_secs") or 0))
@@ -2424,7 +2448,7 @@ def watch_progress(video_id):
         if not all(math.isfinite(x) for x in (watched_secs, position_secs, duration_secs or 0)):
             raise ValueError
     except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "bad numbers"}), 400
+        return {"ok": False, "error": "bad numbers"}, 400
 
     with _db_lock:
         conn = get_conn()
@@ -2462,7 +2486,7 @@ def watch_progress(video_id):
             if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ? AND status = 'downloaded'",
                                 (video_id,)).fetchone():
                 conn.close()
-                return jsonify({"ok": False, "error": "video not found"}), 404
+                return {"ok": False, "error": "video not found"}, 404
             cur = conn.execute('''
                 INSERT INTO watch_sessions (video_id, watched_secs, position_secs, duration_secs, completed)
                 VALUES (?, ?, ?, ?, ?)
@@ -2471,7 +2495,7 @@ def watch_progress(video_id):
         conn.commit()
         conn.close()
 
-    return jsonify({"ok": True, "session_id": session_id, "completed": bool(completed)})
+    return {"ok": True, "session_id": session_id, "completed": bool(completed)}, 200
 
 @app.get("/watch-history")
 def watch_history():
