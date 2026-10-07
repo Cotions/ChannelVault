@@ -67,6 +67,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [confirmQuit]);
 
+  const [libVer, setLibVer] = useState(0);
+
   async function load() {
     try {
       const [c, v, w, i, p, t] = await Promise.all([
@@ -78,6 +80,7 @@ export default function App() {
       setIgnored(i);
       setPlaylists(p);
       setTags(t);
+      setLibVer(n => n + 1);     // pages holding their own lists (tag, playlist) reload on this
       setOnline(true);
     } catch {
       setOnline(false);
@@ -284,7 +287,7 @@ export default function App() {
             <Route path="/tags" element={<TagsPage tags={tags} query={query} onChanged={handleTagsChanged} />} />
             <Route
               path="/tag/:id"
-              element={<TagPage query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+              element={<TagPage libraryVersion={libVer} query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
             />
             <Route path="/stats" element={<Stats videos={videos} wanted={wanted} ignored={ignored} />} />
             <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
@@ -298,7 +301,7 @@ export default function App() {
             />
             <Route
               path="/playlist/:id"
-              element={<PlaylistPage query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
+              element={<PlaylistPage libraryVersion={libVer} query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} />}
             />
           </Routes>
         </main>

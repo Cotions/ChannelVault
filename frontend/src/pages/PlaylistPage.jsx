@@ -10,7 +10,7 @@ import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 
-export default function PlaylistPage({ query, onEdit, onFetchMeta }) {
+export default function PlaylistPage({ libraryVersion, query, onEdit, onFetchMeta }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [playlist, setPlaylist] = useState(null);
@@ -31,7 +31,7 @@ export default function PlaylistPage({ query, onEdit, onFetchMeta }) {
     }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, libraryVersion]);   // an edit elsewhere shows here too
 
   const q = (query || "").trim();
   const pins = useSortPins();   // videos fetched seconds ago hold their slot

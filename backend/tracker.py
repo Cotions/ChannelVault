@@ -23,6 +23,7 @@ import threading
 import unicodedata
 import uuid
 import difflib
+import glob
 from tinytag import TinyTag
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -517,21 +518,20 @@ def clear_media_index():
 
 
 def _basename_index():
-    """Lazy {filename: full_path} map across all roots; last-resort lookup.
-    A name found in more than one place maps to None: picking one would hand
-    out some other video's file."""
+    """Lazy {filename: [full paths]} map across all roots; last-resort lookup.
+    One name can sit in several places (a staging copy, two "intro.m4a")."""
     global _media_index
     with _media_index_lock:
         if _media_index is None:
-            idx = {}
+            idx, seen = {}, set()
             for root in get_media_roots():
                 for dirpath, _dirs, files in os.walk(root):
                     for f in files:
                         p = os.path.join(dirpath, f)
-                        if f not in idx:
-                            idx[f] = p
-                        elif idx[f] and os.path.realpath(idx[f]) != os.path.realpath(p):
-                            idx[f] = None
+                        real = os.path.realpath(p)
+                        if real not in seen:          # overlapping roots list a file once
+                            seen.add(real)
+                            idx.setdefault(f, []).append(p)
             _media_index = idx
         return _media_index
 
@@ -571,17 +571,24 @@ def resolve_media_path(stored):
                 return hit
     # Last resort: the file was reorganised — match by name anywhere under a root,
     # unless another entry already owns that file (same name, different video).
-    hit = _basename_index().get(comps[-1])
-    if not hit or not os.path.isfile(hit):
+    cands = [p for p in _basename_index().get(comps[-1], []) if os.path.isfile(p)]
+    if not cands:
         return None
+    # A file another library entry already points at is that entry's, not this
+    # one's. Hidden soundtrack entries share their file with audio_tracks on
+    # purpose, so they don't count as owners.
     try:
         conn  = get_conn()
-        owned = conn.execute("SELECT 1 FROM downloaded_videos WHERE file_path = ? AND file_path != ? LIMIT 1",
-                             (hit, stored)).fetchone()
+        marks = ",".join("?" * len(cands))
+        owned = {r[0] for r in conn.execute(
+            f"SELECT file_path FROM downloaded_videos WHERE file_path IN ({marks}) "
+            f"AND file_path != ? AND status != 'attached'", (*cands, stored))}
         conn.close()
     except sqlite3.Error:
-        owned = None
-    return None if owned else hit
+        owned = set()
+    free = [p for p in cands if p not in owned]
+    # Two unowned copies: no way to tell which is this entry's, so neither.
+    return free[0] if len(free) == 1 else None
 
 # ---------------------------------------------------------------------------
 # Database
@@ -788,6 +795,8 @@ def init_db():
     ''')
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audio_tracks_video ON audio_tracks(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id)")
+    # resolve_media_path asks "does another entry own this file?" on every fallback hit.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_file_path ON downloaded_videos(file_path)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segment_tags_tag ON segment_tags(tag_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_video_tags_tag ON video_tags(tag_id)")
 
@@ -1291,6 +1300,7 @@ def _system_dir(path):
 
 
 @app.post("/config")
+@_config_locked
 def set_config():
     body = request.get_json(silent=True) or {}
     cfg  = load_config()
@@ -2015,7 +2025,7 @@ def _audio_suggestions(video_path, attached):
     vdir = os.path.dirname(os.path.realpath(video_path))
     seen = {os.path.realpath(p) for p in attached if p}
     out  = []
-    for path in set(_basename_index().values()):
+    for path in {p for paths in _basename_index().values() for p in paths}:
         if not path.lower().endswith(_AUDIO_EXTS):
             continue
         real = os.path.realpath(path)
@@ -3095,7 +3105,7 @@ def _transfer(src, dest, mode):
     # json, description, subtitles, nfo. Other videos sharing the stem stay.
     folder = os.path.dirname(src) or "."
     stem   = os.path.basename(src_base) + "."
-    names  = os.listdir(folder)
+    names  = [os.path.basename(p) for p in glob.glob(glob.escape(src_base) + ".*")]
     videos = {os.path.splitext(n)[0] + "." for n in names if n.lower().endswith(_LIBRARY_EXTS)}
     for name in sorted(names):
         s = os.path.join(folder, name)
