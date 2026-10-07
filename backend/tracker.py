@@ -2446,7 +2446,9 @@ def watch_progress(video_id):
 
 @app.get("/watch-history")
 def watch_history():
-    limit = min(int(request.args.get("limit", 50)), 200)
+    # SQLite reads a negative LIMIT as "no limit"; junk is the default.
+    limit = request.args.get("limit", 50, type=int) or 50
+    limit = max(1, min(limit, 200))
     conn = get_conn()
     rows = conn.execute('''
         SELECT s.id, s.video_id, s.started_at, s.updated_at,
@@ -3447,10 +3449,16 @@ def _organize_apply():
         return jsonify({"ok": False, "error": f"Directory not found: {watch_dir}"}), 400
 
     mode    = "copy" if body.get("mode") == "copy" else "move"
-    source  = _body_str(body, "source", 4096) or watch_dir
     files   = body.get("files")
+    # This moves files: a malformed request is refused, never widened to the
+    # whole source folder.
+    if "source" in body and body["source"] is not None and not isinstance(body["source"], str):
+        return jsonify({"ok": False, "error": "source must be a path"}), 400
+    if files is not None and not (isinstance(files, list) and files):
+        return jsonify({"ok": False, "error": "files must be a non-empty list"}), 400
+    source  = _body_str(body, "source", 4096) or watch_dir
     # Only files the app can already see: media roots, or a folder scanned for import.
-    if isinstance(files, list) and files:
+    if files:
         targets = [str(f) for f in files]
         bad     = next((f for f in targets if not _import_allowed(f)), None)
         if bad:
