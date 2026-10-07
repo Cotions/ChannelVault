@@ -447,7 +447,15 @@ def _artist_names(channel):
         return []
     return [n.strip() for n in channel.split(",") if n.strip()]
 
+# A scan and an edit can both reconcile; one at a time, or one run removes a
+# stale copy the other is copying from.
+_artist_sync_lock = threading.Lock()
+
 def sync_artist_folders():
+    with _artist_sync_lock:
+        _sync_artist_folders()
+
+def _sync_artist_folders():
     from collections import defaultdict
     cfg = load_config()
     artist_thumbs_dir = os.path.join(cfg["data_directory"], "artist_thumbs")
@@ -2776,6 +2784,7 @@ def add_video_manual():
 
     with _db_lock:
         conn = get_conn()
+        before = conn.execute("SELECT channel_name FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
         conn.execute('''
             INSERT INTO downloaded_videos
                 (video_id, title, channel_name, url, file_path,
@@ -2817,7 +2826,12 @@ def add_video_manual():
             "edit":    editing,
         })
         conn.commit()
+        after = conn.execute("SELECT channel_name FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
         conn.close()
+    # A changed credit: the thumbnail follows to the new artist folders now, not
+    # at the next scan or restart.
+    if before and before["channel_name"] != after["channel_name"]:
+        sync_artist_folders()
 
     # Nothing will ever fetch a thumbnail for a non-YouTube entry: take a frame.
     if source and source != "youtube" and os.path.isfile(file_path):
@@ -3779,6 +3793,8 @@ def import_enrich():
         # A rescan never re-reads a tracked file, so the library row follows here.
         with _db_lock:
             conn = get_conn()
+            before = conn.execute("SELECT channel_name FROM downloaded_videos WHERE video_id = ?",
+                                  (tracked["video_id"],)).fetchone()
             conn.execute('''
                 UPDATE downloaded_videos SET title = COALESCE(?, title),
                     channel_name = COALESCE(?, channel_name), genre = COALESCE(?, genre),
@@ -3789,7 +3805,11 @@ def import_enrich():
                   meta.get("description"), _norm_date(meta.get("recorded_date")),
                   os.path.getsize(path), tracked["video_id"]))
             conn.commit()
+            after = conn.execute("SELECT channel_name FROM downloaded_videos WHERE video_id = ?",
+                                 (tracked["video_id"],)).fetchone()
             conn.close()
+        if before and after and before["channel_name"] != after["channel_name"]:
+            sync_artist_folders()
     return jsonify({"ok": True, "meta": _meta_payload(meta)})
 
 
