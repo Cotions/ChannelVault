@@ -148,8 +148,19 @@ json.dump(c, open(out, "w"), indent=2)
 PY
 say "Test config at $TEST_CONFIG (data_directory → $TEST_DATA)"
 
-# --- UI must be built, same as the live app --------------------------------
-[ -f "$ROOT/frontend/dist/index.html" ] || die "UI not built. Run: cd frontend && bun run build"
+# --- UI must be built from the current source -----------------------------
+# Testing UI changes against an old build tests nothing, so rebuild when any
+# source file is newer than the build.
+DIST="$ROOT/frontend/dist"
+if [ ! -f "$DIST/index.html" ] || \
+   [ -n "$(find "$ROOT/frontend/src" "$ROOT/frontend/index.html" -newer "$DIST/index.html" -print -quit 2>/dev/null)" ]; then
+  if command -v bun &>/dev/null; then PM=bun
+  elif command -v npm &>/dev/null; then PM=npm
+  else die "UI build is missing or stale and neither bun nor npm is installed."; fi
+  [ -d "$ROOT/frontend/node_modules" ] || { say "Installing UI dependencies ($PM)"; (cd "$ROOT/frontend" && "$PM" install); }
+  say "UI source changed since the last build: rebuilding ($PM)"
+  (cd "$ROOT/frontend" && "$PM" run build)
+fi
 [ -x "$VENV/bin/python" ] || die "No virtualenv at $VENV. Run ./run.sh once."
 
 if python3 -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$PORT))==0 else 1)"; then

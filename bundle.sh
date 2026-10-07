@@ -59,7 +59,8 @@ if [ "${1:-}" = "--install" ]; then
   mkdir -p "$BIN_DIR" "$ICON_DIR" "$APP_DIR"
   install -m 755 "$OUT" "$BIN_DIR/channelvault"
   install -m 644 "$ROOT/packaging/channelvault.svg" "$ICON_DIR/channelvault.svg"
-  sed -e "s|__EXEC__|$BIN_DIR/channelvault|" \
+  # Quoted per the desktop-entry spec, so a space in $HOME doesn't split it.
+  sed -e "s|__EXEC__|\"$BIN_DIR/channelvault\"|" \
       -e "s|__ICON__|channelvault|" \
       "$ROOT/packaging/ChannelVault.desktop" > "$APP_DIR/ChannelVault.desktop"
   chmod 644 "$APP_DIR/ChannelVault.desktop"
