@@ -15,6 +15,7 @@ const STATUS_LABEL = {
   ready: "ready", "in-place": "already in folder",
   "no-artist": "no artist tag", "no-link": "open, then Write to file", duplicate: "duplicate on disk",
   "bad-artist": "artist tag can't be a folder name", soundtrack: "attached as a soundtrack",
+  "dest-exists": "name taken in the artist folder",
 };
 
 export default function ImportItem({ it, checked, onCheck, source, mode, onTransferred, onMetaChanged, locked = false }) {

@@ -3448,6 +3448,9 @@ def organize_preview():
 
     items = []
     conn  = get_conn()
+    # Apply handles files in this order: a later copy of a video filed earlier in
+    # the batch is a duplicate, and a name taken earlier in the batch is taken.
+    batch_ids, batch_dests = set(), set()
     for src in _candidate_files(source, recursive):
         fname  = os.path.basename(src)
         meta   = _read_meta(src)
@@ -3474,12 +3477,17 @@ def organize_preview():
             dest, status = None, "soundtrack"
         else:
             dest = os.path.join(watch_dir, _safe_dirname(artist), fname)
-            if duplicate:
+            if duplicate or vid in batch_ids:
                 status = "duplicate"
             elif os.path.abspath(dest) == os.path.abspath(src):
                 status = "in-place"
+            elif os.path.exists(dest) or os.path.abspath(dest) in batch_dests:
+                status = "dest-exists"
             else:
                 status = "ready"
+            if status in ("ready", "in-place"):
+                batch_ids.add(vid)
+                batch_dests.add(os.path.abspath(dest))
         items.append({
             "file": src, "basename": fname, "artist": artist or None,
             "video_id": vid, "dest": dest, "status": status,
