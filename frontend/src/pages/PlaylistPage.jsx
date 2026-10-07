@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { goBack } from "../lib/nav";
 import { getPlaylist, removeFromPlaylist } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
@@ -68,7 +69,7 @@ function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlayli
     return (
       <div className="card">
         <div className="artist-page-header">
-          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+          <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
             <Icon name="back" size={15} />Back
           </button>
           <h2 className="artist-page-title">Playlist</h2>
@@ -86,7 +87,7 @@ function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlayli
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+        <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
           <Icon name="back" size={15} />Back
         </button>
         <h2 className="artist-page-title">{playlist ? playlist.name : "…"}</h2>

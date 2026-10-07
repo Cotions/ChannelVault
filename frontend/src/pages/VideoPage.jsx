@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom";
+import { goBack } from "../lib/nav";
 import {
   thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl,
   getSegments, createSegment, updateSegment, deleteSegment, addSegmentTag, removeSegmentTag,
@@ -199,7 +200,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     return (
       <div className="card">
         <div className="artist-page-header">
-          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+          <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
             <Icon name="back" size={15} />Back
           </button>
           <h2 className="artist-page-title">Video</h2>
@@ -236,7 +237,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     try {
       closePlayer();
       await onDelete(video.video_id);
-      navigate(-1);
+      goBack(navigate);
     } catch {
       setDeleting(false);
     }
@@ -245,7 +246,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+        <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
           <Icon name="back" size={15} />Back
         </button>
         <div className="video-page-spacer" />
@@ -284,15 +285,15 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
           </button>
           {confirming ? (
             <>
-              <span className="del-confirm-label">Delete from vault?</span>
+              <span className="del-confirm-label">Remove from vault?</span>
               <button
                 className="btn-danger btn-export"
                 onClick={handleDelete}
                 disabled={deleting}
                 autoFocus
-                title="Confirm delete"
+                title="Tags, playlists and watch history go with it; the file stays on disk and a scan adds it back"
               >
-                Delete
+                Remove
               </button>
               <button className="icon-btn" onClick={() => setConfirming(false)} title="Cancel (Esc)">
                 <Icon name="close" size={16} />

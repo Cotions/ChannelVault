@@ -1,4 +1,5 @@
 import { useParams, useNavigate, Link } from "react-router-dom";
+import { goBack } from "../lib/nav";
 import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 import { artistsOf } from "../lib/artists";
@@ -131,7 +132,7 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   return (
     <div className="stats-page">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+        <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
           <Icon name="back" size={15} />Back
         </button>
         <h2 className="artist-page-title">{title}</h2>
