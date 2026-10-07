@@ -42,32 +42,44 @@ export default function ProfileSettings({ onChanged }) {
   }
 
   async function handleCreate() {
-    const r = await createProfile({
-      name:            form.name.trim(),
-      watch_directory: form.watch_directory.trim(),
-      data_directory:  form.data_directory.trim(),
-    });
-    if (!r.ok) { flash(r.error || "Could not create the profile", "err"); return; }
-    setForm(EMPTY);
-    await reload();
-    onChanged?.();
-    flash(`Created ${r.profile.name}`, "ok");
+    try {
+      const r = await createProfile({
+        name:            form.name.trim(),
+        watch_directory: form.watch_directory.trim(),
+        data_directory:  form.data_directory.trim(),
+      });
+      if (!r.ok) { flash(r.error || "Could not create the profile", "err"); return; }
+      setForm(EMPTY);
+      await reload();
+      onChanged?.();
+      flash(`Created ${r.profile.name}`, "ok");
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
   }
 
   async function handleRename() {
-    const r = await renameProfile(editing.id, editing.name.trim());
-    if (!r.ok) { flash(r.error || "Rename failed", "err"); return; }
-    setEditing(null);
-    await reload();
-    onChanged?.();
+    try {
+      const r = await renameProfile(editing.id, editing.name.trim());
+      if (!r.ok) { flash(r.error || "Rename failed", "err"); return; }
+      setEditing(null);
+      await reload();
+      onChanged?.();
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
   }
 
   async function handleRemove(id) {
-    const r = await deleteProfile(id);
-    setRemoving(null);
-    if (!r.ok) { flash(r.error || "Remove failed", "err"); return; }
-    await reload();
-    onChanged?.();
+    try {
+      const r = await deleteProfile(id);
+      setRemoving(null);
+      if (!r.ok) { flash(r.error || "Remove failed", "err"); return; }
+      await reload();
+      onChanged?.();
+    } catch {
+      flash("Request failed — is the backend running?", "err");
+    }
   }
 
   async function handleSwitch(id) {
