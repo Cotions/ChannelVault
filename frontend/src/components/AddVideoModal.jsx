@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { addVideoManual, browseFile, fetchMetadata, readFileTags } from "../lib/api";
 import Icon from "./Icon";
 import { isYouTube } from "../lib/source";
@@ -42,9 +42,10 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
         }
       : { video_id: "", title: "", channel_name: "", url: "", file_path: "", recorded_date: "", genre: "", description: "" }
   );
-  const [fetchStatus, setFetchStatus] = useState(isEdit ? null : null);
+  const [fetchStatus, setFetchStatus] = useState(null);
   const [err,  setErr]  = useState(null);
   const [busy, setBusy] = useState(false);
+  const downOnBackdrop = useRef(false);
 
   function set(k, v) { setForm(f => ({ ...f, [k]: v })); }
 
@@ -53,6 +54,13 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
     const id = extractVideoId(input || urlInput);
     // Another site's link: nothing to fetch, the fields are filled in by hand.
     if (!id) { setFetchStatus(/^https?:\/\//i.test((input || urlInput).trim()) ? "other" : "err"); return; }
+    // An edit can refresh this video's details, never turn it into another one.
+    if (isEdit && id !== initialVideo.video_id) {
+      setFetchStatus("err");
+      setErr("That link is a different video. Editing can't change which video this is.");
+      return;
+    }
+    setErr(null);
 
     setFetchStatus("loading");
     try {
@@ -100,7 +108,10 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
     } catch {}
   }
 
+  // Editing fetches only on the Fetch button: tabbing through the field must
+  // not swap the typed title and channel for YouTube's.
   function handleUrlBlur() {
+    if (isEdit) return;
     if (urlInput.trim() && fetchStatus !== "ok" && fetchStatus !== "other") fetchMeta();
   }
 
@@ -111,7 +122,7 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
     const ytId    = isEdit ? null : extractVideoId(urlInput);
     const link    = urlInput.trim();
     const payload = isEdit
-      ? { ...form, url: editingOther ? link : form.url }
+      ? { ...form, video_id: initialVideo.video_id, url: editingOther ? link : form.url, edit: true }
       : ytId
         ? { ...form, video_id: ytId, url: form.url || `https://www.youtube.com/watch?v=${ytId}` }
         : { ...form, video_id: "", url: link };
@@ -142,7 +153,13 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    // Close only on a click that starts and ends on the backdrop: selecting
+    // text in a field and releasing outside must not lose the input.
+    <div
+      className="modal-overlay"
+      onMouseDown={e => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={e => { if (downOnBackdrop.current && e.target === e.currentTarget) onClose(); }}
+    >
       <div className="modal">
         <div className="modal-header">
           <span className="modal-title">{isEdit ? "Edit Video Metadata" : "Add Video Manually"}</span>
@@ -164,7 +181,7 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
                   const pasted = e.clipboardData.getData("text");
                   setUrlInput(pasted);
                   setFetchStatus(null);
-                  setTimeout(() => fetchMeta(pasted), 0);
+                  if (!isEdit) setTimeout(() => fetchMeta(pasted), 0);
                   e.preventDefault();
                 }}
                 autoFocus={!isEdit}
