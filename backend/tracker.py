@@ -992,6 +992,12 @@ def process_video_file(file_path):
                 WHERE downloaded_videos.status != 'downloaded'
             ''', (video_id, title, artist, url, file_path,
                   meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source))
+            # A tracked row whose file is gone (moved or renamed outside the app)
+            # follows this copy, so it doesn't sit there as "missing" forever.
+            row = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'",
+                               (video_id,)).fetchone()
+            if row and row["file_path"] != file_path and not resolve_media_path(row["file_path"]):
+                conn.execute("UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (file_path, video_id))
             # An already-tracked row keeps its data, but its size follows the
             # file: a size read while the file was still being copied heals here.
             if meta.get("filesize"):
@@ -1777,13 +1783,16 @@ def add_ignored():
 
 @app.delete("/mark/<vid:video_id>")
 def remove_mark(video_id):
-    conn = get_conn()
-    conn.execute(
-        "DELETE FROM downloaded_videos WHERE video_id = ? AND status NOT IN ('downloaded', 'attached')",
-        (video_id,)
-    )
-    conn.commit()
-    conn.close()
+    # A wanted/ignored entry can carry tags, playlist items or a soundtrack;
+    # those go with it, or they'd point at nothing (and a soundtrack entry
+    # would stay hidden for good).
+    with _db_lock:
+        conn = get_conn()
+        with conn:
+            row = conn.execute("SELECT status FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
+            if row and row["status"] not in ("downloaded", "attached"):
+                _purge_entry(conn, video_id)
+        conn.close()
     return jsonify({"ok": True})
 
 @app.get("/wanted")
@@ -2269,9 +2278,10 @@ def list_playlists():
         return _spa()  # browser navigating to the playlists page, not an API call
     conn = get_conn()
     rows = conn.execute('''
-        SELECT p.id, p.name, p.created_at, COUNT(pi.video_id) AS video_count
+        SELECT p.id, p.name, p.created_at, COUNT(v.video_id) AS video_count
         FROM playlists p
         LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
+        LEFT JOIN downloaded_videos v ON v.video_id = pi.video_id AND v.status = 'downloaded'
         GROUP BY p.id
         ORDER BY p.created_at ASC
     ''').fetchall()
@@ -2310,9 +2320,9 @@ def get_playlist(playlist_id):
     rows = conn.execute('''
         SELECT v.*, pi.added_at AS playlist_added_at
         FROM playlist_items pi
-        JOIN downloaded_videos v ON v.video_id = pi.video_id
+        JOIN downloaded_videos v ON v.video_id = pi.video_id AND v.status = 'downloaded'
         WHERE pi.playlist_id = ?
-        ORDER BY pi.added_at ASC
+        ORDER BY pi.added_at ASC, pi.rowid ASC
     ''', (playlist_id,)).fetchall()
     videos = [dict(r) for r in rows]
     _attach_tags(conn, videos)
@@ -2765,27 +2775,29 @@ def fetch_metadata(video_id):
     return jsonify({"ok": True, "video_id": video_id})
 
 
-@app.delete("/videos/<vid:video_id>")
-def delete_video(video_id):
-    with _db_lock:
-        conn = get_conn()
-        tracks = conn.execute("SELECT file_path FROM audio_tracks WHERE video_id = ?", (video_id,)).fetchall()
-        conn.execute("DELETE FROM audio_tracks WHERE video_id = ?", (video_id,))
-        # Its soundtracks were hidden audio entries; unhide the ones it was the last user of.
-        for t in tracks:
-            _restore_detached_audio(conn, t["file_path"])
-        conn.commit()
-        conn.close()
-    shutil.rmtree(_thumb_versions_dir(video_id), ignore_errors=True)   # fetched thumbs die with the entry
-    conn = get_conn()
+def _purge_entry(conn, video_id):
+    """Delete an entry and every row hanging off it, in the caller's transaction."""
+    tracks = conn.execute("SELECT file_path FROM audio_tracks WHERE video_id = ?", (video_id,)).fetchall()
+    conn.execute("DELETE FROM audio_tracks WHERE video_id = ?", (video_id,))
+    # Its soundtracks were hidden audio entries; unhide the ones it was the last user of.
+    for t in tracks:
+        _restore_detached_audio(conn, t["file_path"])
     conn.execute("DELETE FROM downloaded_videos WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM playlist_items WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM watch_sessions WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM segment_tags WHERE segment_id IN (SELECT id FROM segments WHERE video_id = ?)", (video_id,))
     conn.execute("DELETE FROM segments WHERE video_id = ?", (video_id,))
     conn.execute("DELETE FROM video_tags WHERE video_id = ?", (video_id,))
-    conn.commit()
-    conn.close()
+    shutil.rmtree(_thumb_versions_dir(video_id), ignore_errors=True)   # fetched thumbs die with the entry
+
+
+@app.delete("/videos/<vid:video_id>")
+def delete_video(video_id):
+    with _db_lock:
+        conn = get_conn()
+        with conn:
+            _purge_entry(conn, video_id)
+        conn.close()
     return jsonify({"ok": True})
 
 @app.get("/data-quality/duplicates")
@@ -3964,7 +3976,7 @@ def _tag_row(row):
 
 def _ensure_tag(conn, name, color=None):
     """Return the tag row for `name`, creating it (case-insensitive) if missing."""
-    name = (name or "").strip()
+    name = (name or "").strip()[:60]          # same cap as creating one by hand
     if not name:
         return None
     row = conn.execute("SELECT id, name, color FROM tags WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
@@ -4118,13 +4130,15 @@ def list_tags():
     conn = get_conn()
     rows = conn.execute('''
         SELECT t.id, t.name, t.color, t.created_at,
-               (SELECT COUNT(*) FROM segment_tags st WHERE st.tag_id = t.id) AS segment_count,
-               (SELECT COUNT(DISTINCT video_id) FROM (
+               (SELECT COUNT(*) FROM segment_tags st JOIN segments s ON s.id = st.segment_id
+                    JOIN downloaded_videos v ON v.video_id = s.video_id AND v.status = 'downloaded'
+                    WHERE st.tag_id = t.id) AS segment_count,
+               (SELECT COUNT(DISTINCT x.video_id) FROM (
                     SELECT video_id FROM video_tags WHERE tag_id = t.id
                     UNION
                     SELECT s.video_id FROM segment_tags st JOIN segments s ON s.id = st.segment_id
                     WHERE st.tag_id = t.id
-               )) AS video_count
+               ) x JOIN downloaded_videos v ON v.video_id = x.video_id AND v.status = 'downloaded') AS video_count
         FROM tags t ORDER BY t.name COLLATE NOCASE
     ''').fetchall()
     rules = conn.execute("SELECT id, tag_id, keyword FROM tag_rules ORDER BY keyword COLLATE NOCASE").fetchall()
@@ -4164,6 +4178,8 @@ def update_tag(tag_id):
         name = (body.get("name") or "").strip()
         if not name:
             return jsonify({"ok": False, "error": "name required"}), 400
+        if len(name) > 60:
+            return jsonify({"ok": False, "error": "name too long"}), 400
         sets.append("name = ?"); params.append(name)
     if "color" in body:
         color = (body.get("color") or "").strip()
