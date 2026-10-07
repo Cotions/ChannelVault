@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.6.3
+// @version      1.6.4
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -821,6 +821,13 @@ function injectCreatorButton() {
         await gmPost(`${API_BASE}/creator`, data);
         btn.textContent = "✓ Saved to Vault";
         btn.classList.add("cv-saved");
+        // YouTube reuses this panel for the next channel's About: the button
+        // must come back usable, not stay on "Saved".
+        setTimeout(() => {
+          btn.textContent = "Save to Vault";
+          btn.classList.remove("cv-saved");
+          btn.disabled = false;
+        }, 3000);
       } catch (_) {
         btn.textContent = "Save failed";
         btn.disabled = false;
