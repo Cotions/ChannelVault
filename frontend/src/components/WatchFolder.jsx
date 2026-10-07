@@ -25,7 +25,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
       if (data.ok && data.directory) {
         setDir(data.directory);
         const saved = await saveConfig(data.directory);
-        if (saved.ok) flash(`Watching: ${saved.watch_directory}`, "ok");
+        if (saved.ok) { flash(`Watching: ${saved.watch_directory}`, "ok"); onScanDone?.(); }
         else flash(saved.error, "err");
       }
     } catch {
@@ -36,7 +36,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
   async function handleSave() {
     try {
       const data = await saveConfig(dir);
-      if (data.ok) flash(`Watching: ${data.watch_directory}`, "ok");
+      if (data.ok) { flash(`Watching: ${data.watch_directory}`, "ok"); onScanDone?.(); }
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");
@@ -49,7 +49,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
       if (data.ok && data.directory) {
         setDataDir(data.directory);
         const saved = await saveDataDir(data.directory);
-        if (saved.ok) flash(`Data directory: ${saved.data_directory}`, "ok");
+        if (saved.ok) window.location.reload();   // another library: start clean, like a profile switch
         else flash(saved.error, "err");
       }
     } catch {
@@ -60,7 +60,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
   async function handleSaveData() {
     try {
       const data = await saveDataDir(dataDir);
-      if (data.ok) flash(`Data directory: ${data.data_directory}`, "ok");
+      if (data.ok) window.location.reload();
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");
@@ -86,7 +86,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
     try {
       const clean = roots.map(r => r.trim()).filter(Boolean);
       const data  = await saveMediaRoots(clean);
-      if (data.ok) { setRoots(clean); flash(`Saved ${clean.length} media root(s)`, "ok"); }
+      if (data.ok) { setRoots(clean); flash(`Saved ${clean.length} media root(s)`, "ok"); onScanDone?.(); }
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");

@@ -367,7 +367,15 @@ def _clean_name(name):
     return str(name).strip() or None if name is not None else None
 
 def _safe_dirname(name):
-    return _INVALID_CHARS.sub("-", name).strip()
+    """An artist name as one folder name. Never "", "." or ".." (those would
+    land in the parent folder) and never over the 255-byte name limit."""
+    safe = _INVALID_CHARS.sub("-", name or "").strip()
+    if safe in ("", ".", ".."):
+        return "_"
+    raw = safe.encode("utf-8")
+    if len(raw) > 240:
+        safe = raw[:240].decode("utf-8", "ignore").strip() or "_"
+    return safe
 
 def _artist_names(channel):
     """Split a collab credit ("A, B") into individual artist names.
@@ -1305,6 +1313,15 @@ def _system_dir(path):
     return top in _SYSTEM_DIRS or top.startswith("/lib")
 
 
+def _body_path(body, key):
+    """A folder from a request: a string, ~ expanded, made absolute (a relative
+    path would mean something else next time the app starts elsewhere)."""
+    v = body.get(key)
+    if not isinstance(v, str) or not v.strip():
+        return None
+    return os.path.abspath(os.path.expanduser(v.strip()))
+
+
 @app.post("/config")
 @_config_locked
 def set_config():
@@ -1312,11 +1329,13 @@ def set_config():
     cfg  = load_config()
 
     if "watch_directory" in body:
-        directory = body["watch_directory"].strip()
+        directory = _body_path(body, "watch_directory")
         if not directory:
             return jsonify({"ok": False, "error": "watch_directory is required"}), 400
         if not os.path.isdir(directory):
             return jsonify({"ok": False, "error": f"Directory not found: {directory}"}), 400
+        if _system_dir(directory):
+            return jsonify({"ok": False, "error": f"Not a media folder: {directory}"}), 400
         owner = _watch_dir_owner(_read_raw_config(), directory, exclude=cfg["active_profile"])
         if owner:
             return jsonify({"ok": False, "error": f"Profile \"{owner}\" already watches that folder or one overlapping it"}), 400
@@ -1353,11 +1372,12 @@ def set_config():
         browser = str(body["ytdlp_cookies_from_browser"] or "").strip()
         if browser and not _COOKIE_BROWSER_RE.fullmatch(browser):
             return jsonify({"ok": False, "error": f"Unknown browser: {browser}"}), 400
+        changed = browser != (cfg.get("ytdlp_cookies_from_browser") or "")
         cfg["ytdlp_cookies_from_browser"] = browser
         save_config(cfg)
         # Videos parked as "age" were only unfetchable because we had no cookies.
-        # Now that there are some, put them back in the queue.
-        if cfg["ytdlp_cookies_from_browser"]:
+        # New cookies put them back in the queue; re-saving the same ones doesn't.
+        if browser and changed:
             with _db_lock:
                 conn = get_conn()
                 conn.execute("UPDATE downloaded_videos SET availability = NULL WHERE availability = 'age'")
@@ -1365,7 +1385,7 @@ def set_config():
                 conn.close()
 
     if "data_directory" in body:
-        data_dir = body["data_directory"].strip()
+        data_dir = _body_path(body, "data_directory")
         if not data_dir:
             return jsonify({"ok": False, "error": "data_directory is required"}), 400
         if _system_dir(data_dir):
@@ -1381,9 +1401,14 @@ def set_config():
         new_db = os.path.join(data_dir, "videos.db")
         if os.path.exists(old_db) and not os.path.exists(new_db):
             _copy_db(old_db, new_db)
+            # Thumbnails live next to the DB; fetched versions exist nowhere else.
+            for sub in ("artist_thumbs", "thumbs", "thumb_versions"):
+                src = os.path.join(cfg["data_directory"], sub)
+                if os.path.isdir(src):
+                    shutil.copytree(src, os.path.join(data_dir, sub), dirs_exist_ok=True)
         cfg["data_directory"] = data_dir
         save_config(cfg)
-        init_db()
+        open_active_library()
 
     return jsonify({"ok": True, **cfg})
 
@@ -1476,8 +1501,8 @@ def list_profiles():
 def create_profile():
     body  = request.get_json(silent=True) or {}
     name  = str(body.get("name") or "").strip()
-    data  = str(body.get("data_directory") or "").strip()
-    watch = str(body.get("watch_directory") or "").strip()
+    data  = _body_path(body, "data_directory") or ""
+    watch = _body_path(body, "watch_directory") or ""
     roots = body.get("media_roots") or []
     if not name:
         return jsonify({"ok": False, "error": "Name is required"}), 400
@@ -1491,6 +1516,8 @@ def create_profile():
         return jsonify({"ok": False, "error": "media_roots must be a list"}), 400
     if _system_dir(data):
         return jsonify({"ok": False, "error": f"Not a data directory: {data}"}), 400
+    if _system_dir(watch):
+        return jsonify({"ok": False, "error": f"Not a media folder: {watch}"}), 400
     bad = next((str(r).strip() for r in roots if str(r).strip() and _system_dir(str(r).strip())), None)
     if bad:
         return jsonify({"ok": False, "error": f"Not a media folder: {bad}"}), 400
@@ -1690,7 +1717,7 @@ def _artist_scan_files(artist):
 def scan():
     artist = (request.args.get("artist") or "").strip()
     if artist:
-        if _safe_dirname(artist) in (".", ".."):
+        if _INVALID_CHARS.sub("-", artist).strip() in (".", ".."):
             # "<root>/.." would walk the folder above the media root
             return jsonify({"ok": False, "error": "bad artist name"}), 400
         files = _artist_scan_files(artist)
@@ -3147,7 +3174,7 @@ def _file_into_library(src, watch_dir, mode="move"):
         r["status"] = "no-link"; return r
 
     folder = _safe_dirname(artist)
-    if folder in ("", ".", ".."):
+    if _INVALID_CHARS.sub("-", artist).strip() in ("", ".", ".."):
         r["status"] = "bad-artist"; return r          # "<watch>/.." is outside the library
     # Filing a second copy would move the entry onto it and orphan the first;
     # filing a soundtrack would bring its hidden entry back.
@@ -3235,7 +3262,7 @@ def organize_preview():
             dest, status = None, "no-artist"
         elif not vid:
             dest, status = None, "no-link"
-        elif _safe_dirname(artist) in ("", ".", ".."):
+        elif _INVALID_CHARS.sub("-", artist).strip() in ("", ".", ".."):
             dest, status = None, "bad-artist"
         elif src.lower().endswith(_AUDIO_EXTS) and _is_attached_track(src, conn):
             dest, status = None, "soundtrack"
