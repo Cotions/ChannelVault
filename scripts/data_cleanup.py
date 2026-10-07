@@ -172,8 +172,11 @@ def main():
                     conn.execute(f"DELETE FROM {table} WHERE channel_name=?", (old,))
         for vid, _, norm in dates:
             conn.execute("UPDATE downloaded_videos SET recorded_date=? WHERE video_id=?", (norm, vid))
-        for vid, _, hit in paths:
+        for vid, old, hit in paths:
             conn.execute("UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (hit, vid))
+            # A soundtrack's file is named twice (its hidden entry and its track
+            # row); both must move together or the track stops being recognised.
+            conn.execute("UPDATE audio_tracks SET file_path=? WHERE file_path=?", (hit, old))
         for vid, _, tag in credits:
             conn.execute("UPDATE downloaded_videos SET channel_name=? WHERE video_id=?", (tag, vid))
         for sid, *_ in watches:

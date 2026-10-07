@@ -15,7 +15,7 @@ import { usePlayer } from "../player/playerContext";
 
 /* The home of one tag: every video carrying it, and under each card the exact
    segments, as links that open the video at that second. */
-export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddToPlaylist, onDelete }) {
+export default function TagPage({ libraryVersion, query, onEdit, onFetchMeta, playlists, onAddToPlaylist, onDelete }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [tag,    setTag]    = useState(null);
@@ -49,7 +49,7 @@ export default function TagPage({ query, onEdit, onFetchMeta, playlists, onAddTo
       setError(e.message);
     }
   }, [id]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, libraryVersion]);   // an edit elsewhere shows here too
 
   const q = (query || "").trim();
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
