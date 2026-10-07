@@ -14,7 +14,8 @@ DB fixes (all on the active profile's videos.db, after a backup copy next to it)
           in creators / artist_links / channel_status
   dates   recorded_date "YYYYMMDD" / "YYYY-MM-DDT..." becomes "YYYY-MM-DD"
   paths   a file_path that no longer exists but resolves to exactly one file
-          (outside _archive-import) is rewritten to that file
+          (outside _archive-import) whose link tag names the same video is
+          rewritten to that file
   sizes   file_size_bytes follows the file on disk
   watches a session marked watched with under 70% of a known length watched
           (an old rule counted any 30s as watched) goes back to unwatched
@@ -83,6 +84,11 @@ def main():
         real = fp if os.path.isfile(fp) else None
         if not real:
             hit = tracker.resolve_media_path(fp)
+            # A same-named file can be another video's: only trust a hit whose
+            # own link tag names this entry.
+            if hit and tracker._entry_id(tracker._read_meta(hit).get("url"))[0] != r["video_id"]:
+                unresolved.append((r["video_id"], fp, None))
+                continue
             if hit and not under(hit, staging):
                 paths.append((r["video_id"], fp, hit))
                 real = hit

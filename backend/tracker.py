@@ -517,7 +517,9 @@ def clear_media_index():
 
 
 def _basename_index():
-    """Lazy {filename: full_path} map across all roots; last-resort lookup."""
+    """Lazy {filename: full_path} map across all roots; last-resort lookup.
+    A name found in more than one place maps to None: picking one would hand
+    out some other video's file."""
     global _media_index
     with _media_index_lock:
         if _media_index is None:
@@ -525,7 +527,11 @@ def _basename_index():
             for root in get_media_roots():
                 for dirpath, _dirs, files in os.walk(root):
                     for f in files:
-                        idx.setdefault(f, os.path.join(dirpath, f))
+                        p = os.path.join(dirpath, f)
+                        if f not in idx:
+                            idx[f] = p
+                        elif idx[f] and os.path.realpath(idx[f]) != os.path.realpath(p):
+                            idx[f] = None
             _media_index = idx
         return _media_index
 
@@ -563,9 +569,19 @@ def resolve_media_path(stored):
             hit = _exists_norm(os.path.join(root, *comps[i:]))
             if hit:
                 return hit
-    # Last resort: the file was reorganised — match by name anywhere under a root.
+    # Last resort: the file was reorganised — match by name anywhere under a root,
+    # unless another entry already owns that file (same name, different video).
     hit = _basename_index().get(comps[-1])
-    return hit if hit and os.path.isfile(hit) else None
+    if not hit or not os.path.isfile(hit):
+        return None
+    try:
+        conn  = get_conn()
+        owned = conn.execute("SELECT 1 FROM downloaded_videos WHERE file_path = ? AND file_path != ? LIMIT 1",
+                             (hit, stored)).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        owned = None
+    return None if owned else hit
 
 # ---------------------------------------------------------------------------
 # Database
@@ -2806,11 +2822,18 @@ def data_quality_duplicates():
     watch_dir = cfg.get("watch_directory", DEFAULT_WATCH)
     from collections import defaultdict
     groups = defaultdict(list)
+    # A soundtrack carries its video's link on purpose; it's not a second copy.
+    conn = get_conn()
+    tracks = {os.path.realpath(resolve_media_path(r[0]) or r[0])
+              for r in conn.execute("SELECT file_path FROM audio_tracks")}
+    conn.close()
     for root, _dirs, files in os.walk(watch_dir):
         for fname in files:
             if not fname.lower().endswith(_LIBRARY_EXTS):
                 continue
             fpath = os.path.join(root, fname)
+            if os.path.realpath(fpath) in tracks:
+                continue
             try:
                 try:
                     meta = _meta_from_tinytag(fpath)
@@ -2872,6 +2895,10 @@ def data_quality_checks():
     ).fetchall()
     profiles = {r["channel_name"] for r in conn.execute("SELECT channel_name FROM creators")}
     marked   = {r["channel_name"] for r in conn.execute("SELECT channel_name FROM channel_status")}
+    # Soundtracks and the hidden entries behind them are files in use, not loose ones.
+    in_use   = {os.path.realpath(r[0]) for r in conn.execute(
+        "SELECT file_path FROM audio_tracks UNION SELECT file_path FROM downloaded_videos "
+        "WHERE status = 'attached' AND file_path IS NOT NULL")}
     conn.close()
 
     def item(r, detail):
@@ -2916,7 +2943,7 @@ def data_quality_checks():
 
     # Leftovers on disk: partial downloads anywhere, media loose in the root.
     watch_dir = load_config().get("watch_directory", DEFAULT_WATCH)
-    tracked   = {os.path.realpath(r["file_path"]) for r in rows if r["file_path"]}
+    tracked   = {os.path.realpath(r["file_path"]) for r in rows if r["file_path"]} | in_use
     partial, loose = [], []
     if os.path.isdir(watch_dir):
         for dirpath, _, files in os.walk(watch_dir):
@@ -2925,7 +2952,8 @@ def data_quality_checks():
                 if f.lower().endswith((".part", ".ytdl")):
                     partial.append({"title": f, "detail": p})
                 elif dirpath.rstrip(os.sep) == watch_dir.rstrip(os.sep) \
-                        and f.lower().endswith(_LIBRARY_EXTS) and os.path.realpath(p) not in tracked:
+                        and f.lower().endswith(_LIBRARY_EXTS) and not _is_temp_file(p) \
+                        and os.path.realpath(p) not in tracked:
                     loose.append({"title": f, "detail": "untracked, in the library root"})
 
     checks = [
@@ -3044,19 +3072,38 @@ def _place(src, dest, mode):
             os.remove(src)
 
 
+# What may sit next to a video as "<stem>.<ext>" or "<stem>.<lang>.<ext>".
+_SIDECAR_RE = re.compile(r"(?:[a-z0-9_-]{1,12}\.)?(?:jpe?g|webp|png|info\.json|description|vtt|srt|ass|ssa|lrc|nfo)")
+
+
 def _transfer(src, dest, mode):
     """Move or copy the video plus any companion files sharing its stem
     (thumbnail, info json). mode is 'move' or 'copy'."""
     _place(src, dest, mode)
     src_base = os.path.splitext(src)[0]
     dst_base = os.path.splitext(dest)[0]
-    for ext in (".jpg", ".jpeg", ".webp", ".png", ".info.json", ".description"):
-        s = src_base + ext
-        if os.path.exists(s):
-            try:
-                _place(s, dst_base + ext, mode)
-            except Exception:
-                pass
+    left = []
+    # Every "<stem>.<ext>" / "<stem>.<lang>.<ext>" companion: thumbnail, info
+    # json, description, subtitles, nfo. Other videos sharing the stem stay.
+    folder = os.path.dirname(src) or "."
+    stem   = os.path.basename(src_base) + "."
+    names  = os.listdir(folder)
+    videos = {os.path.splitext(n)[0] + "." for n in names if n.lower().endswith(_LIBRARY_EXTS)}
+    for name in sorted(names):
+        s = os.path.join(folder, name)
+        if not name.startswith(stem) or s == src or not os.path.isfile(s):
+            continue
+        rest = name[len(stem):]
+        if not _SIDECAR_RE.fullmatch(rest.lower()):
+            continue
+        # "A.part2.jpg" belongs to "A.part2.mp4", not to "A.mp4"
+        if "." in rest and any(name.startswith(v) and len(v) > len(stem) for v in videos):
+            continue
+        try:
+            _place(s, dst_base + name[len(stem) - 1:], mode)
+        except Exception:
+            left.append(name)               # name taken at the destination; never overwrite
+    return left
 
 
 def _file_into_library(src, watch_dir, mode="move"):
@@ -3075,7 +3122,17 @@ def _file_into_library(src, watch_dir, mode="move"):
     if not _entry_id(meta.get("url"))[0]:
         r["status"] = "no-link"; return r
 
-    dest_dir = os.path.join(watch_dir, _safe_dirname(artist))
+    folder = _safe_dirname(artist)
+    if folder in ("", ".", ".."):
+        r["status"] = "bad-artist"; return r          # "<watch>/.." is outside the library
+    # Filing a second copy would move the entry onto it and orphan the first;
+    # filing a soundtrack would bring its hidden entry back.
+    if _tracked_elsewhere(src):
+        r["status"] = "duplicate"; return r
+    if src.lower().endswith(_AUDIO_EXTS) and _is_attached_track(src):
+        r["status"] = "soundtrack"; return r
+
+    dest_dir = os.path.join(watch_dir, folder)
     dest     = os.path.join(dest_dir, os.path.basename(src))
     r["dest"] = dest
 
@@ -3086,7 +3143,7 @@ def _file_into_library(src, watch_dir, mode="move"):
     else:
         try:
             os.makedirs(dest_dir, exist_ok=True)
-            _transfer(src, dest, mode)
+            r["sidecars_left"] = _transfer(src, dest, mode)
             r["moved"] = True
         except Exception as e:
             r["status"] = f"{mode}-failed: {_clean_err(e)}"; return r
@@ -3154,6 +3211,10 @@ def organize_preview():
             dest, status = None, "no-artist"
         elif not vid:
             dest, status = None, "no-link"
+        elif _safe_dirname(artist) in ("", ".", ".."):
+            dest, status = None, "bad-artist"
+        elif src.lower().endswith(_AUDIO_EXTS) and _is_attached_track(src, conn):
+            dest, status = None, "soundtrack"
         else:
             dest = os.path.join(watch_dir, _safe_dirname(artist), fname)
             if duplicate:
@@ -3326,6 +3387,18 @@ def _ffmeta_args(fields):
     return out
 
 
+def _tracked_row_for_file(conn, path):
+    """The library row whose file is path, or None."""
+    real = os.path.realpath(path)
+    rows = conn.execute(
+        "SELECT video_id, file_path FROM downloaded_videos WHERE status = 'downloaded' "
+        "AND instr(file_path, ?) > 0", (os.path.basename(path),)).fetchall()
+    for r in rows:
+        if os.path.realpath(resolve_media_path(r["file_path"]) or r["file_path"]) == real:
+            return r
+    return None
+
+
 @app.post("/import/enrich")
 def import_enrich():
     """Write metadata tags into the file itself (ffmpeg stream copy), then verify."""
@@ -3347,6 +3420,14 @@ def import_enrich():
     metargs = _ffmeta_args(fields)
     if not metargs:
         return jsonify({"ok": False, "error": "no fields to write"}), 400
+    # A tracked file keeps its id: a new link would make the watcher add the
+    # same file again as a second entry, with none of the first one's history.
+    conn = get_conn()
+    tracked = _tracked_row_for_file(conn, path)
+    conn.close()
+    if tracked and fields.get("url") and _entry_id(fields["url"])[0] != tracked["video_id"]:
+        return jsonify({"ok": False, "error": "this file is already in the library under another link; "
+                                              "the link can't be changed here"}), 409
 
     ext = os.path.splitext(path)[1]
     tmp = path + ".enrich.temp" + ext  # ".temp." keeps the watcher off it
@@ -3375,7 +3456,23 @@ def import_enrich():
         return jsonify({"ok": False, "error": "rewritten file's length doesn't match the original; left it untouched"}), 500
 
     os.replace(tmp, path)              # atomic swap over the original
-    return jsonify({"ok": True, "meta": _meta_payload(_read_meta(path))})
+    meta = _read_meta(path)
+    if tracked:
+        # A rescan never re-reads a tracked file, so the library row follows here.
+        with _db_lock:
+            conn = get_conn()
+            conn.execute('''
+                UPDATE downloaded_videos SET title = COALESCE(?, title),
+                    channel_name = COALESCE(?, channel_name), genre = COALESCE(?, genre),
+                    description = COALESCE(?, description), recorded_date = COALESCE(?, recorded_date),
+                    file_size_bytes = ?
+                WHERE video_id = ?
+            ''', (meta.get("title"), _clean_name(meta.get("artist")), meta.get("genre"),
+                  meta.get("description"), _norm_date(meta.get("recorded_date")),
+                  os.path.getsize(path), tracked["video_id"]))
+            conn.commit()
+            conn.close()
+    return jsonify({"ok": True, "meta": _meta_payload(meta)})
 
 
 @app.get("/artist-thumb/<path:name>")
