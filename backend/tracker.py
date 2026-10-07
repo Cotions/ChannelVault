@@ -2539,9 +2539,14 @@ def get_playlist(playlist_id):
         conn.close()
         return jsonify({"ok": False, "error": "not found"}), 404
     rows = conn.execute('''
-        SELECT v.*, pi.added_at AS playlist_added_at
+        SELECT v.*, pi.added_at AS playlist_added_at,
+               COALESCE(w.watch_count, 0) AS watch_count, w.last_watched_at
         FROM playlist_items pi
         JOIN downloaded_videos v ON v.video_id = pi.video_id AND v.status = 'downloaded'
+        LEFT JOIN (
+            SELECT video_id, COUNT(*) AS watch_count, MAX(updated_at) AS last_watched_at
+            FROM watch_sessions WHERE completed = 1 GROUP BY video_id
+        ) w ON w.video_id = v.video_id
         WHERE pi.playlist_id = ?
         ORDER BY pi.added_at ASC, pi.rowid ASC
     ''', (playlist_id,)).fetchall()
