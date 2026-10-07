@@ -185,7 +185,13 @@ export default function PlayerControls({ compact = false }) {
     function onKey(e) {
       if (!activeId || e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      // Space/Enter on a focused button or link presses it; taking the key
+      // would toggle play and swallow the press.
+      if ((e.key === " " || e.key === "Enter") && t?.closest?.("button, a[href], [role=button], [role=link], [role=menuitem]")) return;
+      // In the miniplayer the page around it is what's being read: arrows
+      // up/down scroll it rather than change the volume.
+      if (compact && (e.key === "ArrowUp" || e.key === "ArrowDown")) return;
       const el = videoRef.current;
       if (!el) return;
       const step = v => setVolume(Math.min(VOL_MAX, Math.max(0, +(volume + v).toFixed(2))));
@@ -213,7 +219,7 @@ export default function PlayerControls({ compact = false }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [activeId, videoRef, volume, muted, rate, queue, togglePlay, nudge, seek,
-      setVolume, setMuted, setRate, toggleFullscreen, queueNext, queuePrev, wake]);
+      setVolume, setMuted, setRate, toggleFullscreen, queueNext, queuePrev, wake, compact]);
 
   const total    = duration || 0;
   const volPct   = Math.round((muted ? 0 : volume) * 100);
