@@ -54,7 +54,7 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
       setVideos(r.videos);
       setError(null);
     } catch (e) {
-      setError(e.message);
+      setError(e.status === 404 ? "This tag doesn't exist (it may have been deleted)." : "Could not load this tag.");
     }
   }, [id]);
   useEffect(() => { load(); }, [load, libraryVersion]);   // an edit elsewhere shows here too

@@ -12,7 +12,11 @@ const CSRF_HEADERS = { "X-ChannelVault": "1" };
 
 async function get(path) {
   const r = await fetch(`${BASE}${path}`, { headers: CSRF_HEADERS });
-  if (!r.ok) throw new Error(`GET ${path} → ${r.status}`);
+  if (!r.ok) {
+    const e = new Error(`GET ${path} → ${r.status}`);
+    e.status = r.status;              // pages tell "gone" (404) from "failed"
+    throw e;
+  }
   return r.json();
 }
 

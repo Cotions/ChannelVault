@@ -35,7 +35,7 @@ function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlayli
       setVideos(r.videos);
       setError(null);
     } catch (e) {
-      setError(e.message);
+      setError(e.status === 404 ? "This playlist doesn't exist (it may have been deleted)." : "Could not load this playlist.");
     }
   }, [id]);
 
