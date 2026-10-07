@@ -52,6 +52,9 @@ export default function PlayerProvider({ onCompleted, children }) {
   const shellRef = useRef(null);
   const dockRef  = useRef(null);   // the placeholder slot on the video page
   const watchRef = useRef(fresh());
+  // The library this tab's sessions live in, as the backend reported it. Sent back
+  // with every post so a profile switch elsewhere can't redirect them.
+  const profileRef = useRef(null);
 
   // Stable mirrors so the rAF loop / context callbacks read latest without re-subscribing.
   const activeIdRef    = useRef(null);
@@ -158,11 +161,13 @@ export default function PlayerProvider({ onCompleted, children }) {
     try {
       const r = await postWatchProgress(vid, {
         session_id:    w.sessionId,
+        profile:       profileRef.current,
         watched_secs:  sent,
         position_secs: el ? el.currentTime : 0,
         duration_secs: el && el.duration ? el.duration : null,
       });
       if (r.session_id != null) w.sessionId = r.session_id;
+      if (r.profile) profileRef.current = r.profile;
       w.reported  = sent;
       if (r.completed && !w.completed) {
         w.completed = true;
@@ -431,6 +436,7 @@ export default function PlayerProvider({ onCompleted, children }) {
       if (activeIdRef.current && w.watched >= 1 && !(w.posting && w.sessionId == null)) {
         watchBeacon(activeIdRef.current, {
           session_id:    w.sessionId,
+          profile:       profileRef.current,
           watched_secs:  w.watched,
           position_secs: el ? el.currentTime : 0,
           duration_secs: el && el.duration ? el.duration : null,
