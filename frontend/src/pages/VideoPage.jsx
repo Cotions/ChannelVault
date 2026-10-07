@@ -88,8 +88,10 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     const el = player.videoRef.current;
     if (!el) return;
     const go = () => { jumpedRef.current = key; seek(parseFloat(jumpTo)); };
-    if (el.readyState >= 1) go();
-    else el.addEventListener("loadedmetadata", go, { once: true });
+    if (el.readyState >= 1) { go(); return; }
+    // Left before the metadata came: the next video must not jump to this second.
+    el.addEventListener("loadedmetadata", go, { once: true });
+    return () => el.removeEventListener("loadedmetadata", go);
   }, [jumpTo, id, player.activeId, player.videoRef, seek]);
 
   // Every mutation reloads this page's segments and lets App refresh the cards.

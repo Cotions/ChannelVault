@@ -153,22 +153,25 @@ export default function PlayerProvider({ onCompleted, children }) {
     if (!vid || w.watched < 1) return;
     if (w.posting && w.sessionId == null) return; // avoid a 2nd session in-flight (StrictMode)
     const el = videoRef.current;
+    const sent = w.watched;             // seconds added while this is in flight go out next time
     w.posting = true;
     try {
       const r = await postWatchProgress(vid, {
         session_id:    w.sessionId,
-        watched_secs:  w.watched,
+        watched_secs:  sent,
         position_secs: el ? el.currentTime : 0,
         duration_secs: el && el.duration ? el.duration : null,
       });
-      w.sessionId = r.session_id;
-      w.reported  = w.watched;
+      if (r.session_id != null) w.sessionId = r.session_id;
+      w.reported  = sent;
       if (r.completed && !w.completed) {
         w.completed = true;
         setCompletedId(vid);
         onCompletedRef.current?.();
       }
-    } catch { /* ignore */ } finally { w.posting = false; }
+    } catch {
+      w.reported = sent;                // backend down: retry after the next 15 s, not on every tick
+    } finally { w.posting = false; }
   }, []);
 
   const clearQueue = useCallback(() => {
@@ -424,7 +427,8 @@ export default function PlayerProvider({ onCompleted, children }) {
     const onHide = () => {
       const w = watchRef.current;
       const el = videoRef.current;
-      if (activeIdRef.current && w.watched >= 1) {
+      // The first post is still out: a beacon without its session id would start a second session.
+      if (activeIdRef.current && w.watched >= 1 && !(w.posting && w.sessionId == null)) {
         watchBeacon(activeIdRef.current, {
           session_id:    w.sessionId,
           watched_secs:  w.watched,
@@ -440,6 +444,7 @@ export default function PlayerProvider({ onCompleted, children }) {
   function handleTimeUpdate(e) {
     const w = watchRef.current;
     const t = e.target.currentTime;
+    if (e.target.seeking) return;      // a drag fires timeupdate at each new spot before seeked
     if (w.lastTime != null) {
       const delta = t - w.lastTime;
       if (delta > 0 && delta < 2) w.watched += delta; // big jumps are seeks → ignore
@@ -449,6 +454,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     syncAudio();
     queueTick(t);
   }
+  function handleSeeking() { watchRef.current.lastTime = null; }
   function handleSeeked(e) { watchRef.current.lastTime = e.target.currentTime; syncAudio(true); }
   function handleError() { if (modeRef.current === "mini") stop(); else setError(true); }
 
@@ -499,6 +505,7 @@ export default function PlayerProvider({ onCompleted, children }) {
               onError={handleError}
               onPlay={() => { setError(false); gestureRef.current = true; applyAudio(); syncAudio(true); }}
               onTimeUpdate={handleTimeUpdate}
+              onSeeking={handleSeeking}
               onSeeked={handleSeeked}
               onLoadedMetadata={handleLoadedMetadata}
               onPause={() => { reportProgress(); audioRef.current?.pause(); }}

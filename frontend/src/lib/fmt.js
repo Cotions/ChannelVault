@@ -86,6 +86,6 @@ export function parseTime(text) {
   if (!t) return null;
   if (/^\d+(\.\d+)?$/.test(t)) return Number(t);
   const parts = t.split(":").map(Number);
-  if (parts.length < 2 || parts.length > 3 || parts.some(Number.isNaN)) return null;
+  if (parts.length < 2 || parts.length > 3 || parts.some(p => Number.isNaN(p) || p < 0)) return null;
   return parts.reduce((acc, p) => acc * 60 + p, 0);
 }

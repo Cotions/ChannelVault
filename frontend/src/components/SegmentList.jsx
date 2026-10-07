@@ -54,6 +54,7 @@ export default function SegmentList({
     setFormErr(null);
     const ok = await onCreate?.({ start_secs: times.start, end_secs: times.end, title: form.title.trim() || null, tags: form.tags.map(t => t.name) });
     if (ok !== false) { setForm(emptyForm()); setShowForm(false); }
+    else setFormErr("Couldn't save the segment.");
   }
 
   function startEdit(s) {
@@ -71,9 +72,13 @@ export default function SegmentList({
     if (edit.start.trim() !== fmtTime(s.start_secs)) fields.start_secs = times.start;
     if (edit.end.trim()   !== fmtTime(s.end_secs))   fields.end_secs   = times.end;
     if (title !== (s.title || null))  fields.title      = title;
+    // Keep the editor (and what was typed) until the save went through.
+    if (Object.keys(fields).length && (await onUpdate?.(s.id, fields)) === false) {
+      setEditErr("Couldn't save the change.");
+      return;
+    }
     setEditingId(null);
     setEditErr(null);
-    if (Object.keys(fields).length) await onUpdate?.(s.id, fields);
   }
 
   const sorted = [...segments].sort((a, b) => a.start_secs - b.start_secs);
