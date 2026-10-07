@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createTag, updateTag, deleteTag, addTagRule, deleteTagRule, applyTagRules, backfillSegments, getTagSegments } from "../lib/api";
 import Icon from "../components/Icon";
@@ -41,7 +41,26 @@ export default function TagsPage({ tags = [], query, onChanged }) {
   async function run(fn) {
     setBusy(true);
     try { const r = await fn(); await onChanged?.(); return r; }
+    catch { setToast("Request failed. Is the backend running?"); }
     finally { setBusy(false); }
+  }
+
+  // Dragging the picker fires on every step: show the colour at once, save
+  // it (and reload the library) only once the drag settles.
+  const [colorDraft, setColorDraft] = useState({});
+  const colorTimers = useRef({});
+  function pickColor(t, color) {
+    setColorDraft(d => ({ ...d, [t.id]: color }));
+    clearTimeout(colorTimers.current[t.id]);
+    colorTimers.current[t.id] = setTimeout(async () => {
+      await run(() => updateTag(t.id, { color }));
+      setColorDraft(d => {
+        if (d[t.id] !== color) return d;
+        const next = { ...d };
+        delete next[t.id];
+        return next;
+      });
+    }, 400);
   }
 
   async function handleCreate(e) {
@@ -92,7 +111,9 @@ export default function TagsPage({ tags = [], query, onChanged }) {
   }
 
   async function playTag(t) {
-    const r = await getTagSegments(t.id);
+    let r;
+    try { r = await getTagSegments(t.id); }
+    catch { setToast("Request failed. Is the backend running?"); return; }
     if (!r.ok || !r.items?.length) { setToast(`Nothing tagged ${t.name} to play yet.`); return; }
     playQueue(r.items, { tagId: t.id, tagName: t.name, color: t.color });
   }
@@ -130,8 +151,8 @@ export default function TagsPage({ tags = [], query, onChanged }) {
             return (
               <div key={t.id} className={`tag-row${open ? " is-open" : ""}`}>
                 <div className="tag-row-main">
-                  <label className="tag-swatch" title="Colour" style={{ background: t.color }}>
-                    <input type="color" value={t.color || "#4ade80"} onChange={e => run(() => updateTag(t.id, { color: e.target.value }))} />
+                  <label className="tag-swatch" title="Colour" style={{ background: colorDraft[t.id] || t.color }}>
+                    <input type="color" value={colorDraft[t.id] || t.color || "#4ade80"} onChange={e => pickColor(t, e.target.value)} />
                   </label>
 
                   {editId === t.id ? (

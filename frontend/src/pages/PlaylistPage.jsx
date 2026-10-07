@@ -17,7 +17,7 @@ export default function PlaylistPage(props) {
   return <PlaylistPageBody key={id} {...props} />;
 }
 
-function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta }) {
+function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlaylistsChanged }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [playlist, setPlaylist] = useState(null);
@@ -51,9 +51,12 @@ function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta }) {
   }
 
   async function handleRemove(videoId) {
-    const r = await removeFromPlaylist(id, videoId);
-    if (r && r.ok === false) return;
-    setVideos(prev => prev.filter(v => v.video_id !== videoId));
+    try {
+      const r = await removeFromPlaylist(id, videoId);
+      if (r && r.ok === false) return;
+      setVideos(prev => prev.filter(v => v.video_id !== videoId));
+      onPlaylistsChanged?.().catch(() => {});   // the Playlists page shows counts
+    } catch { /* offline: the video stays listed */ }
   }
 
   async function handleFetchMeta(videoId) {
