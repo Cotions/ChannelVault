@@ -10,6 +10,20 @@ const BASE = import.meta.env.DEV ? "http://localhost:3360" : "";
 // exception: they load via src/href and the backend exempts them.
 const CSRF_HEADERS = { "X-ChannelVault": "1" };
 
+// The library this page was loaded in. Sent with every request; the backend
+// refuses a write from a tab left open across a profile switch (409), and the
+// tab reloads into the library that is active now.
+function setPageProfile(id) {
+  if (id) CSRF_HEADERS["X-ChannelVault-Profile"] = id;
+}
+async function json(r) {
+  if (r.status === 409) {
+    const body = await r.clone().json().catch(() => null);
+    if (body?.profile_switched) window.location.assign("/");
+  }
+  return r.json();
+}
+
 async function get(path) {
   const r = await fetch(`${BASE}${path}`, { headers: CSRF_HEADERS });
   if (!r.ok) {
@@ -26,7 +40,7 @@ async function post(path, body) {
     headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
     body: JSON.stringify(body),
   });
-  return r.json();
+  return json(r);
 }
 
 async function patch(path, body) {
@@ -35,15 +49,19 @@ async function patch(path, body) {
     headers: { "Content-Type": "application/json", ...CSRF_HEADERS },
     body: JSON.stringify(body),
   });
-  return r.json();
+  return json(r);
 }
 
 async function del(path) {
   const r = await fetch(`${BASE}${path}`, { method: "DELETE", headers: CSRF_HEADERS });
-  return r.json();
+  return json(r);
 }
 
-export function getConfig()          { return get("/config"); }
+export async function getConfig() {
+  const c = await get("/config");
+  setPageProfile(c.active_profile);
+  return c;
+}
 export function saveConfig(dir)      { return post("/config", { watch_directory: dir }); }
 export function saveDataDir(dir)     { return post("/config", { data_directory: dir }); }
 export function saveMediaRoots(roots) { return post("/config", { media_roots: roots }); }
@@ -159,7 +177,10 @@ export function scan(onEvent, artist) {
 // Server-sent progress: POST, then hand each `data:` JSON line to onEvent.
 export async function stream(path, onEvent) {
   const r = await fetch(`${BASE}${path}`, { method: "POST", headers: CSRF_HEADERS });
-  if (!r.ok) throw new Error(`${path} failed`);
+  if (!r.ok) {
+    if (r.status === 409) await json(r);   // stale tab: reloads into the active library
+    throw new Error(`${path} failed`);
+  }
   const reader  = r.body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
