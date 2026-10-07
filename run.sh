@@ -114,7 +114,10 @@ if [ "$MODE" = dev ]; then
   VITE_PID=$!
   trap 'kill $VITE_PID 2>/dev/null || true' EXIT
   say "Starting backend on :$PORT (UI at the Vite URL above)"
-  CHANNELVAULT_NO_BROWSER=1 exec "$VENV/bin/python" "$ROOT/backend/tracker.py"
+  # Not exec: the shell has to outlive the backend for the trap to stop Vite
+  # (Quit in the UI ends only the backend).
+  CHANNELVAULT_NO_BROWSER=1 "$VENV/bin/python" "$ROOT/backend/tracker.py"
+  exit
 fi
 
 if [ "$MODE" = build ] || ui_is_stale; then
