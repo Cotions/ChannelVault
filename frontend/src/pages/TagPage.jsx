@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
+import { goBack } from "../lib/nav";
 import { getTagVideos, getTagSegments } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
@@ -72,7 +73,7 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
     return (
       <div className="card">
         <div className="artist-page-header">
-          <button className="btn-secondary btn-back" onClick={() => navigate(-1)}><Icon name="back" size={15} />Back</button>
+          <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}><Icon name="back" size={15} />Back</button>
           <h2 className="artist-page-title">Tag</h2>
         </div>
         <div className="empty">{error}</div>
@@ -89,7 +90,7 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}><Icon name="back" size={15} />Back</button>
+        <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}><Icon name="back" size={15} />Back</button>
         <h2 className="artist-page-title tag-page-title">
           {tag ? <TagChip tag={tag} size="lg" /> : "…"}
         </h2>

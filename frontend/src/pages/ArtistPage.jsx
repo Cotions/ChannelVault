@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
+import { goBack } from "../lib/nav";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
 import { useSortPins } from "../lib/sortPins";
@@ -130,7 +131,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   return (
     <div className="card">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => navigate(-1)}>
+        <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
           <Icon name="back" size={15} />Back
         </button>
         <h2 className="artist-page-title">
