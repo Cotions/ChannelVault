@@ -170,6 +170,12 @@ def _entry_id(url):
 
 _ALLOWED_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
 CSRF_HEADER    = "X-ChannelVault"
+# The profile a page was loaded in. A tab left open across a profile switch
+# must not edit the new library with ids from the old one.
+PROFILE_HEADER = "X-ChannelVault-Profile"
+# Writes that are fine from any tab: switching itself, quitting, and progress
+# (pinned to its session's own library).
+_PROFILE_FREE_ENDPOINTS = {"activate_profile", "shutdown_app", "watch_progress"}
 
 # Flask endpoint names (the view function names) that may be fetched by URL
 # alone. Keep this list short; add to it only for things loaded via src/href.
@@ -230,6 +236,12 @@ def _origin_guard():
     body = request.get_json(silent=True)
     if body is not None and not isinstance(body, dict):
         return jsonify({"ok": False, "error": "body must be a JSON object"}), 400
+    page_profile = request.headers.get(PROFILE_HEADER)
+    if (page_profile and request.method not in ("GET", "HEAD")
+            and request.endpoint not in _PROFILE_FREE_ENDPOINTS
+            and page_profile != load_config()["active_profile"]):
+        return jsonify({"ok": False, "error": "Another profile is active now; reload the page.",
+                        "profile_switched": True}), 409
     return None
 
 # ---------------------------------------------------------------------------
