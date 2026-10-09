@@ -18,6 +18,9 @@ import Icon from "../components/Icon";
 import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
+import ProfileEffect from "../components/ProfileEffect";
+import ProfileEffectMenu from "../components/ProfileEffectMenu";
+import { useEffectPrefs, resolveEffect } from "../lib/profileEffects";
 
 // Remount per name: the previous one's data, errors and in-flight requests
 // must never show on the next.
@@ -41,6 +44,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   const [linking, setLinking] = useState(false);
   const [creatorNames, setCreatorNames] = useState([]);
   const [channelMark, setChannelMark] = useState(null);   // { status, marked_at } or null
+  const effectPrefs = useEffectPrefs();
+  const effect = resolveEffect(effectPrefs, artist);
 
   async function handleStatus(status) {
     const prev = channelMark;
@@ -222,6 +227,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
 
       {creator && (
         <div className="creator-profile">
+          {effect && <ProfileEffect effect={effect} seed={artist} />}
+          {effectPrefs.enabled && <ProfileEffectMenu artist={artist} prefs={effectPrefs} />}
           <div className="creator-profile-top">
             <img
               className="creator-profile-avatar"

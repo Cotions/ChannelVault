@@ -4,6 +4,8 @@ import {
   PRESETS, ROLES, DEFAULT_THEME_ID, applyTheme, getActiveId, getActiveTheme,
   getCustomThemes, palette, saveCustomThemes, setActiveTheme, themeColors,
 } from "../lib/theme";
+import { useEffectPrefs, setEffectsEnabled, setFallbackEffect } from "../lib/profileEffects";
+import { EFFECTS } from "./effects";
 
 // Which palette variable each pinnable role shows when left on auto.
 const ROLE_VAR = {
@@ -112,6 +114,31 @@ function ThemeEditor({ initial, onSave, onCancel }) {
   );
 }
 
+function ProfileEffectSettings() {
+  const prefs = useEffectPrefs();
+  const picked = Object.keys(prefs.artists).length;
+  return (
+    <>
+      <div className="card-title" style={{ marginTop: "24px" }}>Profile effects</div>
+      <label className="pfx-setting">
+        <input type="checkbox" checked={prefs.enabled} onChange={e => setEffectsEnabled(e.target.checked)} />
+        Show decorative effects on creator profiles
+      </label>
+      <div className="folder-row pfx-setting">
+        <span>Default effect</span>
+        <select className="sort-select" value={prefs.fallback} disabled={!prefs.enabled} onChange={e => setFallbackEffect(e.target.value)}>
+          {EFFECTS.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+          <option value="none">None</option>
+        </select>
+      </div>
+      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "10px" }}>
+        Pick a different effect for one artist with the sparkle button on their profile.
+        {picked > 0 && ` ${picked} artist${picked === 1 ? " has" : "s have"} their own pick.`} Saved in this browser.
+      </div>
+    </>
+  );
+}
+
 export default function AppearanceSettings() {
   const [custom, setCustom] = useState(getCustomThemes);
   const [activeId, setActiveId] = useState(getActiveId);
@@ -196,6 +223,8 @@ export default function AppearanceSettings() {
           </div>
         </>
       )}
+
+      {!editing && <ProfileEffectSettings />}
     </>
   );
 }
