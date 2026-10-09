@@ -2677,6 +2677,8 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 
 .pfx-setting { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-top: 8px; }
 .pfx-menu { position: absolute; top: 10px; right: 10px; z-index: 3; }
+/* keep a long name or handle from running under the corner button */
+.creator-profile:has(.pfx-menu) .creator-profile-top { padding-right: 28px; }
 .pfx-toggle {
   display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
   border: 1px solid var(--border); border-radius: 7px; background: var(--surface);
