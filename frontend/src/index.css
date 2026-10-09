@@ -2403,6 +2403,7 @@ a.tag-chip:hover { filter: brightness(1.2); box-shadow: 0 0 0 1px currentColor i
   flex-direction: column;
   gap: 14px;
   animation: statRise 0.45s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  position: relative;
 }
 .creator-profile-top { display: flex; align-items: center; gap: 14px; }
 .creator-profile-avatar {
@@ -2634,3 +2635,54 @@ a.creator-profile-handle:hover { text-decoration: underline; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .profile-row-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+/* ---------- creator profile effect (components/ProfileEffect.jsx) ---------- */
+.pfx { position: absolute; inset: 0; pointer-events: none; z-index: 1; overflow: hidden; border-radius: inherit; }
+/* The panel's own content sits above the effect: strings hang behind the
+   name, handle, stats and links, never across them. */
+.creator-profile > :not(.pfx):not(.pfx-menu) { position: relative; z-index: 2; }
+/* A halo in the panel colour so threads fade out around each letter. */
+.creator-profile:has(.pfx) :is(.creator-profile-name, .creator-profile-handle, .creator-profile-desc) {
+  text-shadow: 0 0 2px var(--bg), 0 0 5px var(--bg), 0 0 9px var(--bg);
+}
+.pfx svg { position: absolute; inset: 0; overflow: visible; }
+.pfx svg * { transform-box: view-box; }
+.pfx-haze {
+  position: absolute; inset: 0; mix-blend-mode: screen; opacity: 0;
+  background:
+    radial-gradient(45% 60% at 25% 0%, rgba(var(--glow-rgb), 0.16), transparent 70%),
+    radial-gradient(35% 50% at 85% 10%, rgba(var(--glow-rgb), 0.12), transparent 70%);
+  animation: pfxFade 1.6s ease-out 0.1s forwards;
+}
+@keyframes pfxFade { to { opacity: 1; } }
+
+.pfx-fade { opacity: 0; animation: pfxFade 1.2s ease-out var(--delay, 0s) forwards; }
+.pfx-twinkle { animation: pfxTwinkle var(--tw, 2.4s) ease-in-out var(--td, 0s) 3; }
+@keyframes pfxTwinkle {
+  0%, 100% { transform: scale(1) rotate(0deg); opacity: 1; }
+  50%      { transform: scale(.35) rotate(45deg); opacity: .25; }
+}
+/* one shower on arrival */
+.pfx-glitter { opacity: 0; animation: pfxGlitter var(--gd, 5s) linear var(--gdelay, 0s) 1; }
+@keyframes pfxGlitter {
+  0%   { transform: translate(0, -20px); opacity: 0; }
+  10%  { opacity: 0.9; }
+  100% { transform: translate(var(--gx, 10px), var(--gy, 300px)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pfx-haze, .pfx-fade { animation: none; opacity: 1; }
+  .pfx-twinkle { animation: none; }
+  .pfx-glitter { display: none; }
+}
+
+.pfx-setting { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-top: 8px; }
+.pfx-menu { position: absolute; top: 10px; right: 10px; z-index: 3; }
+/* keep a long name or handle from running under the corner button */
+.creator-profile:has(.pfx-menu) .creator-profile-top { padding-right: 28px; }
+.pfx-toggle {
+  display: grid; place-items: center; width: 26px; height: 26px; padding: 0;
+  border: 1px solid var(--border); border-radius: 7px; background: var(--surface);
+  color: var(--muted); cursor: pointer; opacity: 0.6; transition: opacity 0.15s, color 0.15s;
+}
+.pfx-toggle:hover { opacity: 1; }
+.pfx-toggle.active { color: var(--glow); }
