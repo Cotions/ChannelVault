@@ -6,11 +6,32 @@ import Icon from "./Icon";
 
 const emptyForm = () => ({ start: "", end: "", title: "", tags: [] });
 
+/* Which rows the playhead is inside, as a string of ids. The list used to take
+   the position as a prop, which rerendered the page around it on every tick of
+   a video left playing; this answers only when a row is entered or left. */
+function useActiveSegments(videoRef, key, segments) {
+  const [active, setActive] = useState("");
+  useEffect(() => {
+    const el = videoRef?.current;
+    const update = () => {
+      const t = el ? el.currentTime || 0 : 0;
+      const ids = segments.filter(s => t >= s.start_secs && t < s.end_secs).map(s => s.id).join(",");
+      setActive(prev => (prev === ids ? prev : ids));
+    };
+    update();
+    if (!el) return;
+    const events = ["timeupdate", "seeked", "loadedmetadata", "emptied"];
+    events.forEach(ev => el.addEventListener(ev, update));
+    return () => events.forEach(ev => el.removeEventListener(ev, update));
+  }, [videoRef, key, segments]);
+  return active;
+}
+
 /* Every segment of one video as editable rows, plus the form for a new one.
    Time fields accept "12:30", "1:02:09" or plain seconds; the "now" buttons
    copy the playhead so a range can be marked while watching. */
 export default function SegmentList({
-  segments = [], allTags = [], time = 0, duration = 0,
+  segments = [], allTags = [], videoRef, playbackKey, duration = 0,
   onSeek, selectedId, onSelect,
   onCreate, onUpdate, onDelete, onAddTag, onRemoveTag, onImportChapters,
   busy = false, hasFile = true,
@@ -23,6 +44,9 @@ export default function SegmentList({
   const [editErr,    setEditErr]    = useState(null);
   const [confirmId,  setConfirmId]  = useState(null);
   const [taggingId,  setTaggingId]  = useState(null);
+  const activeIds = useActiveSegments(videoRef, playbackKey, segments);
+  // The "now" buttons read the playhead when pressed rather than on every tick.
+  const now = () => fmtTime(videoRef?.current?.currentTime || 0);
 
   useEffect(() => {
     if (confirmId == null && editingId == null && !showForm) return;
@@ -108,14 +132,14 @@ export default function SegmentList({
               Start
               <span className="seg-time-field">
                 <input value={form.start} placeholder="0:00" onChange={e => set("start", e.target.value)} autoFocus />
-                <button type="button" className="seg-now" onClick={() => set("start", fmtTime(time))} title="Use the current position">now</button>
+                <button type="button" className="seg-now" onClick={() => set("start", now())} title="Use the current position">now</button>
               </span>
             </label>
             <label>
               End
               <span className="seg-time-field">
                 <input value={form.end} placeholder={duration ? fmtTime(duration) : "0:00"} onChange={e => set("end", e.target.value)} />
-                <button type="button" className="seg-now" onClick={() => set("end", fmtTime(time))} title="Use the current position">now</button>
+                <button type="button" className="seg-now" onClick={() => set("end", now())} title="Use the current position">now</button>
               </span>
             </label>
             <label className="seg-form-title">
@@ -150,7 +174,7 @@ export default function SegmentList({
       )}
 
       {sorted.map(s => {
-        const active = time >= s.start_secs && time < s.end_secs;
+        const active = activeIds.split(",").includes(String(s.id));
         const color  = s.tags?.[0]?.color;
         return (
           <div
@@ -174,7 +198,7 @@ export default function SegmentList({
                       aria-label="Start"
                       onChange={e => setEd("start", e.target.value)}
                     />
-                    <button type="button" className="seg-now" onClick={() => setEd("start", fmtTime(time))} title="Use the current position">now</button>
+                    <button type="button" className="seg-now" onClick={() => setEd("start", now())} title="Use the current position">now</button>
                   </span>
                   <span className="seg-time-sep">→</span>
                   <span className="seg-time-field">
@@ -184,7 +208,7 @@ export default function SegmentList({
                       aria-label="End"
                       onChange={e => setEd("end", e.target.value)}
                     />
-                    <button type="button" className="seg-now" onClick={() => setEd("end", fmtTime(time))} title="Use the current position">now</button>
+                    <button type="button" className="seg-now" onClick={() => setEd("end", now())} title="Use the current position">now</button>
                   </span>
                   <input
                     className="seg-title-input"
