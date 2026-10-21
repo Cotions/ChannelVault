@@ -66,22 +66,28 @@ export default function PlayerControls({ compact = false }) {
   }, [videoRef, activeId]);
 
   // Playhead, buffer and the clock, painted straight onto the nodes.
+  // Each value is written only when it changed: a paused video, or the buffer
+  // bar between downloads, would otherwise cost a style pass every frame.
   useEffect(() => {
-    let raf, lastSec = -1;
+    let raf, lastSec = -1, lastP = "", lastBuf = "";
     const paint = () => {
       const el = videoRef.current;
       const total = el && Number.isFinite(el.duration) ? el.duration : 0;
       if (el && total) {
         const p = pct(el.currentTime, total);
-        if (fillRef.current) fillRef.current.style.width = p;
-        if (headRef.current) headRef.current.style.left  = p;
+        if (p !== lastP) {
+          lastP = p;
+          if (fillRef.current) fillRef.current.style.width = p;
+          if (headRef.current) headRef.current.style.left  = p;
+        }
         const sec = Math.floor(el.currentTime);
         if (sec !== lastSec && timeRef.current) {
           lastSec = sec;
           timeRef.current.textContent = fmtTime(el.currentTime);
         }
         if (bufRef.current && el.buffered.length) {
-          bufRef.current.style.width = pct(el.buffered.end(el.buffered.length - 1), total);
+          const b = pct(el.buffered.end(el.buffered.length - 1), total);
+          if (b !== lastBuf) { lastBuf = b; bufRef.current.style.width = b; }
         }
       }
       raf = requestAnimationFrame(paint);

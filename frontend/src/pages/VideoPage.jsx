@@ -27,7 +27,9 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
     openInline, onLeavePage, setPoster, close: closePlayer, setDock, seek, playQueue,
     setSegments: publishSegments,
   } = player;
-  const playback = usePlaybackTime(player.videoRef, player.activeId);
+  // Length only: the position is read by the segment list itself, so a playing
+  // video does not rerender this whole page on every tick.
+  const playback = usePlaybackTime(player.videoRef, player.activeId, { time: false });
   const [segments,   setSegments]   = useState([]);
   const [videoTags,  setVideoTags]  = useState([]);
   const [selectedSeg, setSelectedSeg] = useState(null);
@@ -395,7 +397,8 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
           <SegmentList
             segments={segments}
             allTags={tags}
-            time={playback.time}
+            videoRef={player.videoRef}
+            playbackKey={player.activeId}
             duration={playback.duration || video.duration_secs || 0}
             selectedId={selectedSeg}
             onSelect={setSelectedSeg}

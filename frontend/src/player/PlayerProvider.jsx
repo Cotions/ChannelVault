@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { streamUrl, thumbUrl, audioTrackUrl, postWatchProgress, watchBeacon } from "../lib/api";
 import { PlayerCtx } from "./playerContext";
@@ -9,6 +9,22 @@ import Icon from "../components/Icon";
 
 // Past this much apart, an alternate soundtrack is audibly off the picture.
 const AUDIO_DRIFT = 0.25;
+
+// Shared empty list, so "nothing published for this video" is the same value each render.
+const NONE = [];
+
+// An element leaving the page keeps its decoder, its buffered media and its
+// connection to the stream until it is collected, and one routed into the
+// WebAudio graph is never collected at all: the graph holds it. Unhook it and
+// drop its source so closing the player really lets go of the video.
+function release(el) {
+  if (!el) return;
+  graph.detach(el);
+  try {
+    el.removeAttribute("src");
+    el.load();
+  } catch { /* already torn down */ }
+}
 
 const fresh = () => ({ watched: 0, lastTime: null, sessionId: null, completed: false, reported: 0, posting: false });
 
@@ -75,6 +91,20 @@ export default function PlayerProvider({ onCompleted, children }) {
   // speed) is mirrored onto it, and drift is pulled back on the tick.
   const trackRef    = useRef(null);   // latest audioTrack, for the handlers
   const lastAudioEl = useRef(null);   // the element the graph is hooked into
+  // Callback refs: React hands them null as the element unmounts, which is the
+  // moment to release it (the shell closing, a soundtrack switched off).
+  const setVideoEl = useCallback((el) => {
+    if (el) { videoRef.current = el; return; }
+    release(videoRef.current);
+    videoRef.current = null;
+  }, []);
+  const setAudioEl = useCallback((el) => {
+    if (el) { audioRef.current = el; return; }
+    const old = audioRef.current;
+    if (lastAudioEl.current === old) lastAudioEl.current = null;
+    release(old);
+    audioRef.current = null;
+  }, []);
   useEffect(() => { trackRef.current = audioTrack; }, [audioTrack]);
 
   const syncAudio = useCallback((force = false) => {
@@ -409,17 +439,25 @@ export default function PlayerProvider({ onCompleted, children }) {
 
   // Keep the never-unmounted shell overlaying the page dock while inline.
   // The <video> stays in the shell the whole time, so it never pauses on navigation.
+  // Only a rect that moved is written: four style writes a frame for a page
+  // that sits still cost a style pass every frame for as long as it plays.
   useEffect(() => {
-    let raf;
+    let raf, last = "";
     const place = () => {
       const shell = shellRef.current;
       const dock  = dockRef.current;
       if (shell && !fsRef.current && activeIdRef.current && modeRef.current === "inline" && dock) {
         const r = dock.getBoundingClientRect();
-        shell.style.left   = `${r.left}px`;
-        shell.style.top    = `${r.top}px`;
-        shell.style.width  = `${r.width}px`;
-        shell.style.height = `${r.height}px`;
+        const key = `${r.left},${r.top},${r.width},${r.height}`;
+        // Compared against the shell's own left too: leaving inline or
+        // fullscreen clears the styles, and they must come back.
+        if (key !== last || !shell.style.left) {
+          last = key;
+          shell.style.left   = `${r.left}px`;
+          shell.style.top    = `${r.top}px`;
+          shell.style.width  = `${r.width}px`;
+          shell.style.height = `${r.height}px`;
+        }
       }
       raf = requestAnimationFrame(place);
     };
@@ -471,19 +509,30 @@ export default function PlayerProvider({ onCompleted, children }) {
   // A track that will not play is worse than no track: fall back to the original.
   function handleAudioError() { setAudioTrack(null); }
 
-  const ctx = {
+  // One object per actual change. Built fresh on every render, it made every
+  // consumer (the controls, the video page, the queue bar) rerender whenever
+  // the provider did, for nothing.
+  const ctx = useMemo(() => ({
     activeId, mode, error, completedId, title,
     openInline, onLeavePage, close: stop, setDock, setPoster: setPosterUrl,
     videoRef, seek, play, pause, togglePlay,
     queue, playQueue, queueNext, queuePrev, toggleShuffle, toggleLoop, clearQueue,
     audioTrack, selectAudioTrack,
-    audioTracks: audioTracks.id === activeId ? audioTracks.list : [],
+    audioTracks: audioTracks.id === activeId ? audioTracks.list : NONE,
     setAudioTracks: publishAudioTracks,
-    segments: segments.id === activeId ? segments.list : [],
+    segments: segments.id === activeId ? segments.list : NONE,
     setSegments: publishSegments,
     volume, setVolume, muted, setMuted, levelling, setLevelling,
     rate, setRate, fullscreen, toggleFullscreen,
-  };
+  }), [
+    activeId, mode, error, completedId, title,
+    openInline, onLeavePage, stop, setDock, setPosterUrl,
+    seek, play, pause, togglePlay,
+    queue, playQueue, queueNext, queuePrev, toggleShuffle, toggleLoop, clearQueue,
+    audioTrack, selectAudioTrack, audioTracks, publishAudioTracks, segments, publishSegments,
+    volume, setVolume, muted, levelling, setLevelling,
+    rate, setRate, fullscreen, toggleFullscreen,
+  ]);
 
   return (
     <PlayerCtx.Provider value={ctx}>
@@ -502,7 +551,7 @@ export default function PlayerProvider({ onCompleted, children }) {
           <div className="cv-stage" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
             <video
               key="cv-video"
-              ref={videoRef}
+              ref={setVideoEl}
               className="cv-video"
               playsInline
               preload="metadata"
@@ -525,7 +574,7 @@ export default function PlayerProvider({ onCompleted, children }) {
           {audioTrack && (
             <audio
               key={`cv-audio-${audioTrack.id}`}
-              ref={audioRef}
+              ref={setAudioEl}
               preload="auto"
               src={audioTrackUrl(audioTrack.id)}
               onLoadedMetadata={() => { applyAudio(); syncAudio(true); }}
