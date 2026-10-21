@@ -2536,6 +2536,33 @@ def watch_history():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+# Where "pick up where you left off" may land: not so early that the jump saves
+# nothing, not so late that the next thing is the end card.
+RESUME_MIN_SECS  = 30
+RESUME_TAIL_SECS = 30
+RESUME_MAX_FRAC  = 0.95
+
+@app.get("/videos/<vid:video_id>/resume")
+def resume_point(video_id):
+    """The spot the last session stopped at, or null when it isn't worth a jump."""
+    conn = get_conn()
+    row = conn.execute('''
+        SELECT s.position_secs, COALESCE(s.duration_secs, v.duration_secs) AS duration_secs
+        FROM watch_sessions s
+        LEFT JOIN downloaded_videos v ON v.video_id = s.video_id
+        WHERE s.video_id = ?
+        ORDER BY s.updated_at DESC, s.id DESC
+        LIMIT 1
+    ''', (video_id,)).fetchone()
+    conn.close()
+    pos = row["position_secs"] if row else None
+    dur = row["duration_secs"] if row else None
+    if not pos or pos < RESUME_MIN_SECS:
+        pos = None
+    elif dur and (pos > dur - RESUME_TAIL_SECS or pos > dur * RESUME_MAX_FRAC):
+        pos = None
+    return jsonify({"ok": True, "position_secs": pos})
+
 @app.delete("/watch-history/<vid:video_id>")
 def clear_watch_history(video_id):
     conn = get_conn()

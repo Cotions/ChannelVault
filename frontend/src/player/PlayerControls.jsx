@@ -20,6 +20,26 @@ import Icon from "../components/Icon";
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const VOL_MAX = 3;      // 300%: the point of the graph is headroom past 100%
 const HIDE_MS = 2200;   // idle pointer time before the bar fades while playing
+const OSD_MS  = 650;    // how long a key's "+5s" / "120%" stays on the picture
+// The file's real frame rate is not exposed to the page; 30 is close enough to
+// land on the next frame for most of the library and never skips more than two.
+const FRAME_SECS = 1 / 30;
+
+// What the ? overlay lists, in the order a viewer looks for them.
+const KEYS = [
+  ["Space / K", "Play / pause"],
+  ["← →",       "Back / forward 5s"],
+  ["J L",       "Back / forward 10s"],
+  [", .",       "One frame back / forward (pauses)"],
+  ["↑ ↓",       "Volume"],
+  ["M",         "Mute"],
+  ["[ ]",       "Slower / faster"],
+  ["Hold",      "Press and hold the picture for 2×"],
+  ["0 – 9",     "Jump to 0% – 90%"],
+  ["F",         "Fullscreen (or double-click)"],
+  ["N P",       "Next / previous in the queue"],
+  ["?",         "This list"],
+];
 
 const pct = (v, total) => `${Math.min(100, Math.max(0, total ? (v / total) * 100 : 0))}%`;
 
@@ -45,6 +65,9 @@ export default function PlayerControls({ compact = false }) {
   const [paused,   setPaused]   = useState(true);
   const [menu,     setMenu]     = useState(null);   // "speed" | "audio" | null
   const [idle,     setIdle]     = useState(false);
+  const [osd,      setOsd]      = useState(null);   // { text, n }: n restarts the fade
+  const [help,     setHelp]     = useState(false);
+  const osdRef   = useRef(null);
   const idleRef  = useRef(null);   // the one timer that hides the bar
   const menuRef  = useRef(null);
   useEffect(() => { menuRef.current = menu; }, [menu]);
@@ -148,10 +171,29 @@ export default function PlayerControls({ compact = false }) {
     if (el.paused) el.play().catch(() => {}); else el.pause();
   }, [videoRef]);
 
+  // A key does its thing out of sight when the bar has faded; say what it did.
+  const flash = useCallback((text) => {
+    setOsd(o => ({ text, n: (o?.n || 0) + 1 }));
+    clearTimeout(osdRef.current);
+    osdRef.current = setTimeout(() => setOsd(null), OSD_MS);
+  }, []);
+  useEffect(() => () => clearTimeout(osdRef.current), []);
+
   const nudge = useCallback((secs) => {
     const el = videoRef.current;
-    if (el) seek(el.currentTime + secs, { play: !el.paused });
-  }, [videoRef, seek]);
+    if (!el) return;
+    seek(el.currentTime + secs, { play: !el.paused });
+    flash(`${secs > 0 ? "+" : "−"}${Math.abs(secs)}s`);
+  }, [videoRef, seek, flash]);
+
+  const frameStep = useCallback((dir) => {
+    const el = videoRef.current;
+    if (!el) return;
+    el.pause();
+    const end = Number.isFinite(el.duration) ? el.duration : Infinity;
+    el.currentTime = Math.min(end, Math.max(0, el.currentTime + dir * FRAME_SECS));
+    flash(dir > 0 ? "+1 frame" : "−1 frame");
+  }, [videoRef, flash]);
 
   // ---- scrubbing ----------------------------------------------------------
   const fracAt = (e) => {
@@ -190,8 +232,12 @@ export default function PlayerControls({ compact = false }) {
   useEffect(() => {
     function onKey(e) {
       if (!activeId || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (help && e.key === "Escape") { setHelp(false); e.preventDefault(); return; }
       const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
+      // The volume slider keeps focus after a drag; arrows there would nudge
+      // the volume instead of seeking, so a range input does not count as typing.
+      const typing = t?.tagName === "INPUT" && t.type !== "range";
+      if (t && (typing || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
       // Space/Enter on a focused button or link presses it; taking the key
       // would toggle play and swallow the press.
       if ((e.key === " " || e.key === "Enter") && t?.closest?.("button, a[href], [role=button], [role=link], [role=menuitem]")) return;
@@ -200,7 +246,12 @@ export default function PlayerControls({ compact = false }) {
       if (compact && (e.key === "ArrowUp" || e.key === "ArrowDown")) return;
       const el = videoRef.current;
       if (!el) return;
-      const step = v => setVolume(Math.min(VOL_MAX, Math.max(0, +(volume + v).toFixed(2))));
+      const step = v => {
+        const next = Math.min(VOL_MAX, Math.max(0, +(volume + v).toFixed(2)));
+        setVolume(next);
+        flash(`${Math.round(next * 100)}%`);
+      };
+      const speed = r => { setRate(r); flash(`${r}×`); };
       switch (e.key) {
         case " ": case "k": togglePlay(); break;
         case "ArrowLeft":  nudge(-5);  break;
@@ -209,12 +260,16 @@ export default function PlayerControls({ compact = false }) {
         case "l": nudge(10);  break;
         case "ArrowUp":   step(0.05);  setMuted(false); break;
         case "ArrowDown": step(-0.05); break;
-        case "m": setMuted(!muted); break;
+        case "m": setMuted(!muted); flash(muted ? "Sound on" : "Muted"); break;
         case "f": toggleFullscreen(); break;
         case "n": if (queue) queueNext(); break;
         case "p": if (queue) queuePrev(); break;
-        case "[": setRate(SPEEDS[Math.max(0, SPEEDS.indexOf(rate) - 1)] || 0.5); break;
-        case "]": setRate(SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(rate) + 1)] || 2); break;
+        case "[": speed(SPEEDS[Math.max(0, SPEEDS.indexOf(rate) - 1)] || 0.5); break;
+        case "]": speed(SPEEDS[Math.min(SPEEDS.length - 1, SPEEDS.indexOf(rate) + 1)] || 2); break;
+        case ",": frameStep(-1); break;
+        case ".": frameStep(1);  break;
+        // The list needs the room of the full player; in the mini one ? is the page's.
+        case "?": if (compact) return; setHelp(h => !h); break;
         default:
           if (/^[0-9]$/.test(e.key) && el.duration) seek((+e.key / 10) * el.duration, { play: !el.paused });
           else return;
@@ -224,7 +279,7 @@ export default function PlayerControls({ compact = false }) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeId, videoRef, volume, muted, rate, queue, togglePlay, nudge, seek,
+  }, [activeId, videoRef, volume, muted, rate, queue, togglePlay, nudge, frameStep, seek, flash, help,
       setVolume, setMuted, setRate, toggleFullscreen, queueNext, queuePrev, wake, compact]);
 
   const total    = duration || 0;
@@ -233,6 +288,26 @@ export default function PlayerControls({ compact = false }) {
   const tracks   = audioTracks || [];
 
   return (
+    <>
+    {osd && <div key={osd.n} className="cv-osd">{osd.text}</div>}
+    {/* The mini player has no room for it. */}
+    {help && !compact && (
+      <div className="cv-keys" onClick={() => setHelp(false)}>
+        <div className="cv-keys-card" onClick={e => e.stopPropagation()}>
+          <div className="cv-keys-head">
+            Keyboard shortcuts
+            <button className="cv-btn" onClick={() => setHelp(false)} title="Close (Esc)">
+              <Icon name="close" size={14} />
+            </button>
+          </div>
+          <dl className="cv-keys-list">
+            {KEYS.map(([k, what]) => (
+              <div key={k}><dt>{k}</dt><dd>{what}</dd></div>
+            ))}
+          </dl>
+        </div>
+      </div>
+    )}
     <div
       ref={ctlRef}
       className={`cv-ctl${compact ? " cv-ctl-compact" : ""}${idle && !paused && !menu ? " is-idle" : ""}`}
@@ -364,7 +439,7 @@ export default function PlayerControls({ compact = false }) {
           <button
             className={`cv-btn cv-btn-text${rate !== 1 ? " is-on" : ""}${menu === "speed" ? " is-open" : ""}`}
             onClick={() => setMenu(m => (m === "speed" ? null : "speed"))}
-            title="Playback speed ([ and ])"
+            title="Playback speed ([ and ]). Hold the picture for 2×."
           >
             {rate}×
           </button>
@@ -383,10 +458,21 @@ export default function PlayerControls({ compact = false }) {
           )}
         </span>
 
+        {!compact && (
+          <button
+            className={`cv-btn cv-btn-text${help ? " is-on" : ""}`}
+            onClick={() => setHelp(h => !h)}
+            title="Keyboard shortcuts (?)"
+          >
+            ?
+          </button>
+        )}
+
         <button className="cv-btn" onClick={toggleFullscreen} title={fullscreen ? "Leave fullscreen (F)" : "Fullscreen (F)"}>
           <Icon name="expand" size={16} />
         </button>
       </div>
     </div>
+    </>
   );
 }

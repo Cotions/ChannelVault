@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { streamUrl, thumbUrl, audioTrackUrl, postWatchProgress, watchBeacon } from "../lib/api";
+import { streamUrl, thumbUrl, audioTrackUrl, postWatchProgress, watchBeacon, getResumePoint } from "../lib/api";
+import { fmtTime } from "../lib/fmt";
 import { PlayerCtx } from "./playerContext";
 import * as graph from "./audioGraph";
 import QueueBar from "./QueueBar";
@@ -9,6 +10,10 @@ import Icon from "../components/Icon";
 
 // Past this much apart, an alternate soundtrack is audibly off the picture.
 const AUDIO_DRIFT = 0.25;
+// Press and hold on the picture to run it fast until let go.
+const HOLD_MS   = 350;
+const HOLD_RATE = 2;
+const RESUME_NOTE_MS = 8000;   // how long "Resumed at…" stays up
 
 // Shared empty list, so "nothing published for this video" is the same value each render.
 const NONE = [];
@@ -60,8 +65,13 @@ export default function PlayerProvider({ onCompleted, children }) {
   const [volume,      setVolumeState]   = useState(() => readStored("cv.volume", 1));
   const [muted,       setMuted]         = useState(false);
   const [levelling,   setLevellingState] = useState(() => localStorage.getItem("cv.levelling") === "1");
-  const [rate,        setRateState]   = useState(1);
+  // Speed outlives the page too; anything stored outside the menu's range is junk.
+  const [rate,        setRateState]   = useState(() => {
+    const r = readStored("cv.rate", 1);
+    return r >= 0.25 && r <= 4 ? r : 1;
+  });
   const [fullscreen,  setFullscreen]  = useState(false);
+  const [holding,     setHolding]     = useState(false);
 
   const videoRef = useRef(null);
   const audioRef = useRef(null);
@@ -177,6 +187,9 @@ export default function PlayerProvider({ onCompleted, children }) {
     const v = videoRef.current;
     if (v) v.playbackRate = r;
     setRateState(r);
+    // Stored here, not off the state: holding for 2× moves the state too, and
+    // a hold must not become the speed the next video opens at.
+    localStorage.setItem("cv.rate", String(r));
     syncAudio(true);
   }, [syncAudio]);
 
@@ -263,14 +276,50 @@ export default function PlayerProvider({ onCompleted, children }) {
     setError(false);
   }, [reportProgress]);
 
+  // ---- resume -------------------------------------------------------------
+  // A video opened afresh picks up where its last session stopped. The point
+  // comes from the backend and the file from the stream, in either order, so
+  // whichever lands second makes the jump. Anything that already chose a spot
+  // (a segment queue, a ?t= link, the viewer) wins over it.
+  const resumeRef = useRef(null);                  // { id, secs } waiting for the file
+  const [resumed, setResumed] = useState(null);    // { id, secs } on screen
+  const resumeTimerRef = useRef(null);
+  const applyResume = useCallback(() => {
+    const r  = resumeRef.current;
+    const el = videoRef.current;
+    if (!r || !el || r.id !== activeIdRef.current || el.readyState < 1) return;
+    resumeRef.current = null;
+    if (pendingSeekRef.current != null || el.currentTime > 2) return;
+    el.currentTime = r.secs;
+    setResumed(r);
+    clearTimeout(resumeTimerRef.current);
+    resumeTimerRef.current = setTimeout(() => setResumed(null), RESUME_NOTE_MS);
+  }, []);
+  const startOver = useCallback(() => {
+    if (videoRef.current) videoRef.current.currentTime = 0;
+    setResumed(null);
+  }, []);
+  useEffect(() => () => clearTimeout(resumeTimerRef.current), []);
+
   const openInline = useCallback((id, meta = {}) => {
     // A page opening some other video by hand ends the segment queue; the queue
     // moving itself, or the page catching up with the queue, does not.
     const q = queueRef.current;
     if (q && !queueLoadRef.current && q.items[q.idx]?.video_id !== id) clearQueue();
+    if (activeIdRef.current !== id) {
+      resumeRef.current = null;
+      setResumed(null);
+      if (meta.resume !== false && !queueRef.current) {   // a queue picks its own spots
+        getResumePoint(id).then(r => {
+          if (!r.position_secs || activeIdRef.current !== id) return;
+          resumeRef.current = { id, secs: r.position_secs };
+          applyResume();
+        }).catch(() => {});
+      }
+    }
     loadVideo(id, meta.title);
     setMode("inline");
-  }, [loadVideo, clearQueue]);
+  }, [loadVideo, clearQueue, applyResume]);
 
   const onLeavePage = useCallback(() => {
     const el = videoRef.current;
@@ -297,6 +346,39 @@ export default function PlayerProvider({ onCompleted, children }) {
     if (!el) return;
     if (el.paused) el.play().catch(() => {}); else el.pause();
   }, []);
+
+  // ---- hold for speed -----------------------------------------------------
+  // A press on the picture that outlasts HOLD_MS runs it at HOLD_RATE until the
+  // press ends, then puts back whatever speed was set. The click that ends the
+  // press is swallowed, or letting go would also pause.
+  const holdRef = useRef({ timer: null, prev: null, swallow: false });
+  function onStageDown(e) {
+    if (e.button !== 0) return;
+    const el = videoRef.current;
+    const h = holdRef.current;
+    h.swallow = false;
+    clearTimeout(h.timer);
+    if (!el || el.paused) return;
+    h.timer = setTimeout(() => {
+      h.prev = el.playbackRate;
+      el.playbackRate = HOLD_RATE;
+      setHolding(true);
+    }, HOLD_MS);
+  }
+  function endHold() {
+    const h = holdRef.current;
+    clearTimeout(h.timer);
+    if (h.prev == null) return;
+    if (videoRef.current) videoRef.current.playbackRate = h.prev;
+    h.prev = null;
+    h.swallow = true;
+    setHolding(false);
+  }
+  function onStageClick() {
+    if (holdRef.current.swallow) { holdRef.current.swallow = false; return; }
+    togglePlay();
+  }
+  useEffect(() => () => clearTimeout(holdRef.current.timer), []);
 
   // ---- fullscreen ---------------------------------------------------------
   // The shell goes fullscreen, not the <video>: the controls are ours and sit
@@ -408,6 +490,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     const el = e.target;
     if (el.playbackRate !== rate) el.playbackRate = rate;
     applyAudio();
+    applyResume();
     if (pendingSeekRef.current == null) return;
     el.currentTime = pendingSeekRef.current;
     pendingSeekRef.current = null;
@@ -548,7 +631,22 @@ export default function PlayerProvider({ onCompleted, children }) {
             </div>
           )}
           {mode === "mini" && queue && <QueueBar compact />}
-          <div className="cv-stage" onClick={togglePlay} onDoubleClick={toggleFullscreen}>
+          <div
+            className="cv-stage"
+            onClick={onStageClick}
+            onDoubleClick={toggleFullscreen}
+            onPointerDown={onStageDown}
+            onPointerUp={endHold}
+            onPointerCancel={endHold}
+            onPointerLeave={endHold}
+            // A long press on touch would open the context menu over the speed-up.
+            onContextMenu={e => { if (holding) e.preventDefault(); }}
+          >
+            {holding && (
+              <div className="cv-hold-badge">
+                {HOLD_RATE}× <Icon name="skipFwd" size={13} />
+              </div>
+            )}
             <video
               key="cv-video"
               ref={setVideoEl}
@@ -570,6 +668,15 @@ export default function PlayerProvider({ onCompleted, children }) {
               onRateChange={e => { setRateState(e.target.playbackRate); syncAudio(true); }}
             />
           </div>
+          {resumed && resumed.id === activeId && mode !== "mini" && (
+            <div className="cv-resume">
+              Resumed at <b>{fmtTime(resumed.secs)}</b>
+              <button className="cv-resume-btn" onClick={startOver}>Start over</button>
+              <button className="cv-resume-x" onClick={() => setResumed(null)} title="Dismiss">
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+          )}
           <PlayerControls compact={mode === "mini"} />
           {audioTrack && (
             <audio

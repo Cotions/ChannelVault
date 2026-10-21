@@ -106,6 +106,7 @@ export function deletePlaylist(id)       { return del(`/playlists/${id}`); }
 export function getPlaylist(id)          { return get(`/playlists/${id}`); }
 export function addToPlaylist(id, videoId)      { return post(`/playlists/${id}/videos`, { video_id: videoId }); }
 export function removeFromPlaylist(id, videoId) { return del(`/playlists/${id}/videos/${videoId}`); }
+export function getResumePoint(id)  { return get(`/videos/${id}/resume`); }
 export function postWatchProgress(id, data) { return post(`/watch-progress/${id}`, data); }
 export function watchBeacon(id, data) {
   // sendBeacon cannot carry the CSRF header, so use a keepalive fetch: it also
