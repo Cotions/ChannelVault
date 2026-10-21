@@ -128,7 +128,8 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
 
   // Hand the video off to the persistent player; minimize/close on leave.
   useEffect(() => {
-    if (video) openInline(id, { title: video.title || id });
+    // A ?t= link names its own second; resuming would fight it.
+    if (video) openInline(id, { title: video.title || id, resume: jumpTo == null });
     // Re-open only when the video id or its title changes, not on every videos[] refresh.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, video?.title, openInline]);
