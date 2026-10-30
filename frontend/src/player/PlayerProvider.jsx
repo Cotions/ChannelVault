@@ -583,7 +583,13 @@ export default function PlayerProvider({ onCompleted, children }) {
   }
   function handleSeeking() { watchRef.current.lastTime = null; }
   function handleSeeked(e) { watchRef.current.lastTime = e.target.currentTime; syncAudio(true); }
-  function handleError() { if (modeRef.current === "mini") stop(); else setError(true); }
+  function handleError() {
+    // A queue skips an item whose file won't play (moved, deleted) instead of
+    // ending there. Never past the end, so a loop of broken files can't spin.
+    const q = queueRef.current;
+    if (q && q.idx < q.items.length - 1) { advancingRef.current = true; queueStep(1); return; }
+    if (modeRef.current === "mini") stop(); else setError(true);
+  }
 
   // The picture stalls on its own buffer; hold the sound until it is back.
   function handleWaiting() { if (trackRef.current) audioRef.current?.pause(); }

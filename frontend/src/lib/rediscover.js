@@ -31,7 +31,8 @@ export const MODES = [
 
 function weight(v, mode, now, artistDays) {
   const count = v.watch_count || 0;
-  const seen  = daysSince(v.last_watched_at, now);
+  // No date on a finished watch reads as long ago, not as never.
+  const seen  = daysSince(v.last_watched_at, now) ?? (count > 0 ? 365 : null);
   if (seen != null && seen < RECENT_DAYS) return 0;
   const artist = 1 + Math.min((artistDays ?? 365) / 60, 3);   // up to 4x for an artist left alone
   if (count > 0) {
@@ -42,6 +43,11 @@ function weight(v, mode, now, artistDays) {
   // Never finished: the longer it has sat there, the more it is owed a look.
   const age = daysSince(v.downloaded_at, now) ?? 0;
   return (1 + age / 90) * artist * (mode === "mix" ? 0.6 : 1);
+}
+
+// Whether a video can still be picked in this mode (not watched lately, right kind).
+export function eligible(v, mode) {
+  return weight(v, mode, Date.now(), null) > 0;
 }
 
 // Weighted sample without replacement (Efraimidis–Spirakis), one per artist.
@@ -57,7 +63,7 @@ export function pickRediscover(videos, mode, n, rand = Math.random) {
   const keyed = [];
   for (const v of videos) {
     const last = artistLast.get(artistKey(v));
-    const w = weight(v, mode, now, last == null ? null : (now - last) / DAY);
+    const w = weight(v, mode, now, last == null ? null : Math.max(0, (now - last) / DAY));
     if (w > 0) keyed.push({ v, k: Math.pow(rand(), 1 / w) });
   }
   keyed.sort((a, b) => b.k - a.k);

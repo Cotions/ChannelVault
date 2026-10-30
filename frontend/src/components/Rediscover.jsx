@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { MODES, RECENT_DAYS, pickRediscover, rediscoverReason } from "../lib/rediscover";
+import { MODES, RECENT_DAYS, pickRediscover, rediscoverReason, eligible } from "../lib/rediscover";
 import { usePlayer } from "../player/playerContext";
 import VideoCard from "./VideoCard";
 import Icon from "./Icon";
@@ -18,9 +18,9 @@ export default function Rediscover({ videos, cardProps }) {
 
   const picks = useMemo(() => {
     const byId = new Map(videos.map(v => [v.video_id, v]));
-    const kept = mem.ids?.map(id => byId.get(id)).filter(Boolean);
+    const kept = mem.ids?.map(id => byId.get(id)).filter(v => v && eligible(v, mode));
     // The remembered set stays until a reroll, a mode change, or one of its
-    // videos leaving the library.
+    // videos leaving the library or being watched since.
     if (kept?.length && kept.length === mem.ids.length && mem.roll === roll && mem.mode === mode) return kept;
     const out = pickRediscover(videos, mode, COUNT);
     Object.assign(mem, { mode, roll, ids: out.map(v => v.video_id) });
