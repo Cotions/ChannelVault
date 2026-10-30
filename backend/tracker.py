@@ -882,7 +882,8 @@ def init_db():
     # A video can carry alternate soundtracks that live in their own files: a
     # re-mixed upload, a dub, a quieter master. The video's own audio is the
     # implicit "Original" track, so only the extra ones get a row. offset_secs
-    # shifts the file against the picture when the two were not cut in sync.
+    # shifts the file against the picture when the two were not cut in sync:
+    # positive delays the sound, negative brings it earlier.
     conn.execute('''
         CREATE TABLE IF NOT EXISTS audio_tracks (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
