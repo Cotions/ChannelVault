@@ -144,6 +144,9 @@ export function getChannelIds()      { return get("/channel-ids"); }
 export function setChannelId(name, channelId) { return post("/channel-ids", { channel_name: name, channel_id: channelId }); }
 export function markWanted(v)  { return post("/want-to-download", v); }
 export function markIgnored(v) { return post("/do-not-want", v); }
+export function getArtistNameInfo(name) { return get(`/artist-name/${encodeURIComponent(name)}`); }
+export function renameArtist(from, to, dryRun = false) { return post("/artist-rename", { from, to, dry_run: dryRun }); }
+export function keepArtistName(name) { return post("/artist-rename/keep", { name }); }
 export function getChannelStatuses()  { return get("/channel-status"); }
 export function setChannelStatus(name, status) { return post("/channel-status", { channel_name: name, status }); }
 

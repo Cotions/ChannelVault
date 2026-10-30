@@ -19,6 +19,7 @@ import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
 import FeedFollow from "../components/FeedFollow";
+import ArtistRename from "../components/ArtistRename";
 import ProfileEffect from "../components/ProfileEffect";
 import ProfileEffectMenu from "../components/ProfileEffectMenu";
 import { useEffectPrefs, resolveEffect } from "../lib/profileEffects";
@@ -45,6 +46,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   const [linking, setLinking] = useState(false);
   const [creatorNames, setCreatorNames] = useState([]);
   const [channelMark, setChannelMark] = useState(null);   // { status, marked_at } or null
+  const [renaming, setRenaming] = useState(false);
   const effectPrefs = useEffectPrefs();
   const effect = resolveEffect(effectPrefs, artist);
 
@@ -150,6 +152,9 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
               {CHANNEL_STATUS[channelMark.status].label}
             </span>
           )}
+          <button className="artist-rename-btn" onClick={() => setRenaming(true)} title="Rename this artist, or merge it into another">
+            <Icon name="pencil" size={13} />
+          </button>
         </h2>
         {artistVideos.length > 0 && (
           <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>
@@ -194,6 +199,16 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
           </div>
         )}
       </div>
+      <ArtistRename
+        artist={artist}
+        editing={renaming}
+        onCloseEdit={() => setRenaming(false)}
+        onRenamed={async next => {
+          await onScanDone?.();
+          navigate(`/artist/${encodeURIComponent(next)}`, { replace: true });
+        }}
+        onAlias={next => navigate(`/artist/${encodeURIComponent(next)}`, { replace: true })}
+      />
       <div className="artist-links-row">
         {linked.length > 0 && <span className="artist-links-label">Also on</span>}
         {linked.map(n => (
