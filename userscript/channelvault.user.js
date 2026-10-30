@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.7.0
+// @version      1.8.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -40,15 +40,10 @@ function makeVaultIcon(size) {
 }
 
 GM_addStyle(`
-  a.ytLockupMetadataViewModelTitle.cv-title-downloaded,
-  a.ytLockupMetadataViewModelTitle.cv-title-downloaded:hover,
-  a.ytLockupMetadataViewModelTitle.cv-title-downloaded:visited { color: #2e7d32 !important; }
-  a.ytLockupMetadataViewModelTitle.cv-title-wanted,
-  a.ytLockupMetadataViewModelTitle.cv-title-wanted:hover,
-  a.ytLockupMetadataViewModelTitle.cv-title-wanted:visited { color: #1565c0 !important; }
-  a.ytLockupMetadataViewModelTitle.cv-title-ignored,
-  a.ytLockupMetadataViewModelTitle.cv-title-ignored:hover,
-  a.ytLockupMetadataViewModelTitle.cv-title-ignored:visited { color: #b71c1c !important; }
+  /* The title text sits in child elements that set their own color. */
+  a.cv-title-downloaded, a.cv-title-downloaded:visited, a.cv-title-downloaded * { color: #2e7d32 !important; }
+  a.cv-title-wanted, a.cv-title-wanted:visited, a.cv-title-wanted *             { color: #1565c0 !important; }
+  a.cv-title-ignored, a.cv-title-ignored:visited, a.cv-title-ignored *          { color: #b71c1c !important; }
   ytd-watch-metadata #title,
   #above-the-fold #title {
     position: relative !important;
@@ -115,7 +110,9 @@ GM_addStyle(`
 
 function getVideoId() {
   const params = new URLSearchParams(window.location.search);
-  return params.get("v") || null;
+  if (params.get("v")) return params.get("v");
+  const m = window.location.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
 }
 
 function removeBadge() {
@@ -258,18 +255,38 @@ function gmFetchIds() {
 }
 
 function extractVideoIdFromHref(href) {
-  const m = href && href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  const m = href && href.match(/(?:[?&]v=|^\/shorts\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
 }
 
+const CARD_SELECTOR =
+  "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
+  "ytd-grid-video-renderer, ytd-compact-video-renderer";
+
+// Every video tile on the page, whatever YouTube draws it with: the newer
+// lockups (home, channel pages, watch sidebar), the classic renderers (search
+// results), and Shorts tiles. Each comes as its title link plus the card.
+function findCards() {
+  const out = [];
+  document.querySelectorAll(
+    "a.ytLockupMetadataViewModelTitle[href*='watch?v='], " +
+    "a#video-title[href*='watch?v='], a#video-title-link[href*='watch?v=']"
+  ).forEach(link => {
+    // Playlist/mix tiles link to their first video: not that video's card.
+    if (link.getAttribute("href").includes("list=")) return;
+    out.push({ link, card: link.closest(CARD_SELECTOR) || link.parentElement });
+  });
+  document.querySelectorAll("ytm-shorts-lockup-view-model").forEach(card => {
+    const link = card.querySelector("a.shortsLockupViewModelHostOutsideMetadataEndpoint[href^='/shorts/']") ||
+                 card.querySelector("a[href^='/shorts/']");
+    if (link) out.push({ link, card });
+  });
+  return out;
+}
+
 function annotateCards(downloaded, wanted, ignored) {
-  document
-    .querySelectorAll("a.ytLockupMetadataViewModelTitle[href*='watch?v=']")
-    .forEach(link => {
-      const href = link.getAttribute("href");
-      // Playlist/mix tiles link to their first video: not that video's card.
-      if (href.includes("list=")) return;
-      const videoId = extractVideoIdFromHref(href);
+  findCards().forEach(({ link, card }) => {
+      const videoId = extractVideoIdFromHref(link.getAttribute("href"));
       if (!videoId) return;
 
       const isDownloaded = downloaded.has(videoId);
@@ -277,10 +294,6 @@ function annotateCards(downloaded, wanted, ignored) {
       const isIgnored    = !isDownloaded && !isWanted && ignored.has(videoId);
       const mark = isDownloaded ? "downloaded" : isWanted ? "wanted" : isIgnored ? "ignored" : "";
 
-      const card = link.closest(
-        "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
-        "ytd-grid-video-renderer, ytd-compact-video-renderer"
-      ) || link.parentElement;
       if (!card) return;
       // YouTube reuses card elements for other videos: a badge is only kept
       // when it still describes this card's video and mark.
@@ -307,7 +320,7 @@ function annotateCards(downloaded, wanted, ignored) {
 
       const thumb = card.querySelector(
         "a.ytLockupViewModelContentImage, yt-thumbnail-view-model, " +
-        "yt-lockup-thumbnail, ytd-thumbnail, yt-image, a#thumbnail"
+        "yt-lockup-thumbnail, ytd-thumbnail, a.reel-item-endpoint, yt-image, a#thumbnail"
       );
 
       if (thumb) {
@@ -646,12 +659,12 @@ function extractChannelFromCard(card) {
 function captureMenuContext(btn) {
   // Never let a previous card's context leak into this menu.
   _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
-  const card = btn.closest(
-    "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
-    "ytd-grid-video-renderer, ytd-compact-video-renderer"
-  );
+  const card = btn.closest(CARD_SELECTOR);
   if (!card) return;
-  const link = card.querySelector("a.ytLockupMetadataViewModelTitle[href*='watch?v=']");
+  const link = card.querySelector(
+    "a.ytLockupMetadataViewModelTitle[href*='watch?v='], " +
+    "a#video-title[href*='watch?v='], a#video-title-link[href*='watch?v=']"
+  );
   if (!link || link.getAttribute("href").includes("list=")) return;
   const videoId = extractVideoIdFromHref(link.getAttribute("href"));
   if (!videoId) return;
@@ -663,6 +676,10 @@ function captureMenuContext(btn) {
 
 document.addEventListener("click", (e) => {
   const cardBtn = e.target.closest(".ytLockupMetadataViewModelMenuButton button");
+  // Classic cards (search results) open the older popup menu.
+  const classicBtn = !cardBtn && e.target.closest(
+    "ytd-video-renderer #menu button, ytd-grid-video-renderer #menu button, ytd-compact-video-renderer #menu button"
+  );
   // The overflow (⋯) button under the player. Matched by position as well as
   // by its English label, so the menu works in any YouTube UI language.
   const videoBtn = e.target.closest(
@@ -675,6 +692,13 @@ document.addEventListener("click", (e) => {
     setTimeout(() => {
       const container = document.querySelector(".ytContextualSheetLayoutContentContainer");
       if (container) injectCVMenuItems(container);
+    }, 80);
+  } else if (classicBtn) {
+    captureMenuContext(classicBtn);
+    if (!_pendingMenuVideoId) return;
+    setTimeout(() => {
+      const popup = document.querySelector("ytd-menu-popup-renderer");
+      if (popup) injectCVMenuItemsPopup(popup);
     }, 80);
   } else if (videoBtn) {
     _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
