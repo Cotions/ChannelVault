@@ -41,9 +41,9 @@ function makeVaultIcon(size) {
 
 GM_addStyle(`
   /* The title text sits in child elements that set their own color. */
-  a.cv-title-downloaded, a.cv-title-downloaded:visited, a.cv-title-downloaded * { color: #2e7d32 !important; }
-  a.cv-title-wanted, a.cv-title-wanted:visited, a.cv-title-wanted *             { color: #1565c0 !important; }
-  a.cv-title-ignored, a.cv-title-ignored:visited, a.cv-title-ignored *          { color: #b71c1c !important; }
+  a.cv-title-downloaded, a.cv-title-downloaded:visited, a.cv-title-downloaded :not(.cv-card-badge) { color: #2e7d32 !important; }
+  a.cv-title-wanted, a.cv-title-wanted:visited, a.cv-title-wanted :not(.cv-card-badge)             { color: #1565c0 !important; }
+  a.cv-title-ignored, a.cv-title-ignored:visited, a.cv-title-ignored :not(.cv-card-badge)          { color: #b71c1c !important; }
   ytd-watch-metadata #title,
   #above-the-fold #title {
     position: relative !important;
@@ -115,6 +115,10 @@ function getVideoId() {
   return m ? m[1] : null;
 }
 
+function onShortsPage() {
+  return window.location.pathname.startsWith("/shorts/");
+}
+
 function removeBadge() {
   const el = document.getElementById(BADGE_ID);
   if (el) el.remove();
@@ -183,7 +187,8 @@ async function checkAndAnnotate() {
   removeBadge();
   colorTitle(false);
   const videoId = getVideoId();
-  if (!videoId) return;
+  // The Shorts player has no title to badge; its tiles elsewhere get one.
+  if (!videoId || onShortsPage()) return;
 
   let status = null;
   try {
@@ -266,44 +271,45 @@ const CARD_SELECTOR =
 // Every video tile on the page, whatever YouTube draws it with: the newer
 // lockups (home, channel pages, watch sidebar), the classic renderers (search
 // results), and Shorts tiles. Each comes as its title link plus the card.
+// A tile that isn't one video (a playlist or mix, which links to its first
+// video) comes with videoId null, so a badge left from a recycled card goes.
 function findCards() {
-  const out = [];
+  const out = [], cards = new Set();
+  const add = (link, card) => {
+    if (!card || cards.has(card)) return;     // one title per card
+    cards.add(card);
+    const href = link.getAttribute("href") || "";
+    out.push({ link, card, videoId: href.includes("list=") ? null : extractVideoIdFromHref(href) });
+  };
   document.querySelectorAll(
     "a.ytLockupMetadataViewModelTitle[href*='watch?v='], " +
     "a#video-title[href*='watch?v='], a#video-title-link[href*='watch?v=']"
-  ).forEach(link => {
-    // Playlist/mix tiles link to their first video: not that video's card.
-    if (link.getAttribute("href").includes("list=")) return;
-    out.push({ link, card: link.closest(CARD_SELECTOR) || link.parentElement });
-  });
+  ).forEach(link => add(link, link.closest(CARD_SELECTOR) || link.parentElement));
   document.querySelectorAll("ytm-shorts-lockup-view-model").forEach(card => {
     const link = card.querySelector("a.shortsLockupViewModelHostOutsideMetadataEndpoint[href^='/shorts/']") ||
                  card.querySelector("a[href^='/shorts/']");
-    if (link) out.push({ link, card });
+    if (link) add(link, card);
   });
   return out;
 }
 
 function annotateCards(downloaded, wanted, ignored) {
-  findCards().forEach(({ link, card }) => {
-      const videoId = extractVideoIdFromHref(link.getAttribute("href"));
-      if (!videoId) return;
-
+  findCards().forEach(({ link, card, videoId }) => {
       const isDownloaded = downloaded.has(videoId);
       const isWanted     = !isDownloaded && wanted.has(videoId);
       const isIgnored    = !isDownloaded && !isWanted && ignored.has(videoId);
       const mark = isDownloaded ? "downloaded" : isWanted ? "wanted" : isIgnored ? "ignored" : "";
 
-      if (!card) return;
       // YouTube reuses card elements for other videos: a badge is only kept
       // when it still describes this card's video and mark.
       const old = card.querySelector(`.${CARD_BADGE_CLASS}`);
       if (old && old.dataset.cvKey === `${videoId}:${mark}`) return;
       if (old) {
         old.remove();
-        link.classList.remove("cv-title-downloaded", "cv-title-wanted", "cv-title-ignored");
+        card.querySelectorAll(".cv-title-downloaded, .cv-title-wanted, .cv-title-ignored")
+          .forEach(a => a.classList.remove("cv-title-downloaded", "cv-title-wanted", "cv-title-ignored"));
       }
-      if (!mark) return;
+      if (!mark || !videoId) return;
 
       let color, text, textColor;
       if (isDownloaded) { color = COLOR_DOWNLOADED; text = "✓ In Vault";  textColor = "#fff"; }
@@ -700,7 +706,7 @@ document.addEventListener("click", (e) => {
       const popup = document.querySelector("ytd-menu-popup-renderer");
       if (popup) injectCVMenuItemsPopup(popup);
     }, 80);
-  } else if (videoBtn) {
+  } else if (videoBtn && !onShortsPage()) {
     _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
     const videoId = getVideoId();
     if (!videoId) return;
@@ -720,6 +726,11 @@ document.addEventListener("click", (e) => {
       const popup = document.querySelector("ytd-menu-popup-renderer");
       if (popup) injectCVMenuItemsPopup(popup);
     }, 80);
+  } else {
+    // Any other menu (comments, playlists, Shorts) may reuse the popup: it
+    // must not keep Wanted/Skipped bound to the last video's id.
+    _pendingMenuVideoId = null;
+    setTimeout(() => document.querySelectorAll("ytd-menu-popup-renderer .cv-menu-item").forEach(x => x.remove()), 80);
   }
 }, true);
 
