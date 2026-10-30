@@ -19,6 +19,7 @@ import base64
 import hashlib
 import subprocess
 import urllib.request
+import urllib.error
 import urllib.parse
 import threading
 import unicodedata
@@ -71,6 +72,11 @@ PORT            = int(os.environ.get("CHANNELVAULT_PORT", "3360"))
 __version__     = "0.0.0-dev"
 DEFAULT_WATCH   = os.path.join(os.path.expanduser("~"), "Downloads")
 DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "channelvault")
+# Upload feed poll interval, hours. A feed holds a channel's 15 latest uploads,
+# so a day between polls only misses uploads from a channel posting 15+ a day.
+FEED_INTERVAL_DEFAULT = 6
+FEED_INTERVAL_MIN     = 1
+FEED_INTERVAL_MAX     = 168
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024   # JSON only; nothing here takes uploads
@@ -382,6 +388,10 @@ def load_config():
     # "The page needs to be reloaded". Both are opt-in and empty by default.
     cfg.setdefault("ytdlp_cookies_from_browser", "")
     cfg.setdefault("ytdlp_js_runtime", "")
+    # Upload feed: poll each linked channel's public RSS feed this often.
+    cfg.setdefault("feed_enabled", True)
+    cfg.setdefault("feed_interval_hours", FEED_INTERVAL_DEFAULT)
+    cfg.setdefault("feed_shorts", False)
     return cfg
 
 def save_config(cfg):
@@ -895,6 +905,42 @@ def init_db():
             UNIQUE (video_id, file_path)
         )
     ''')
+    # A channel's YouTube id ("UC" + 22 chars), the key its upload feed needs.
+    # Display names are what everything else keys on, but they change with a
+    # rename; the id does not. Filled from pages the userscript sees, from
+    # yt-dlp fetches, or pasted by hand. found_via 'manual' is never overwritten.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS channel_ids (
+            channel_name TEXT PRIMARY KEY,
+            channel_id   TEXT NOT NULL,
+            found_via    TEXT,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_ids_id ON channel_ids(channel_id)")
+    # Upload feed: one row per channel id polled, one per upload seen. Uploads
+    # already out when a channel was first polled are `backlog`, so the inbox
+    # starts with what is new rather than every video the user skipped.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS feed_channels (
+            channel_id  TEXT PRIMARY KEY,
+            checked_at  TIMESTAMP,
+            check_error TEXT,
+            seeded      INTEGER NOT NULL DEFAULT 0
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS feed_items (
+            video_id     TEXT PRIMARY KEY,
+            channel_id   TEXT NOT NULL,
+            title        TEXT,
+            published_at TEXT,
+            is_short     INTEGER NOT NULL DEFAULT 0,
+            backlog      INTEGER NOT NULL DEFAULT 0,
+            found_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_items_channel ON feed_items(channel_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audio_tracks_video ON audio_tracks(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id)")
     # resolve_media_path asks "does another entry own this file?" on every fallback hit.
@@ -1354,7 +1400,7 @@ def _wants_html():
 for _rule in (
     "/", "/playlists", "/artists", "/data-quality", "/stats", "/tags",
     "/artist/<path:_spa_rest>", "/video/<path:_spa_rest>", "/playlist/<path:_spa_rest>",
-    "/tag/<path:_spa_rest>",
+    "/tag/<path:_spa_rest>", "/inbox",
 ):
     if _rule in ("/playlists", "/tags"):
         continue  # collide with API routes below; handled there via Accept
@@ -1473,6 +1519,16 @@ def set_config():
         if browser and not _COOKIE_BROWSER_RE.fullmatch(browser):
             return bad(f"Unknown browser: {browser}")
 
+    if "feed_enabled" in body and not isinstance(body["feed_enabled"], bool):
+        return bad("feed_enabled must be true or false")
+    if "feed_shorts" in body and not isinstance(body["feed_shorts"], bool):
+        return bad("feed_shorts must be true or false")
+    if "feed_interval_hours" in body:
+        hours = body["feed_interval_hours"]
+        if isinstance(hours, bool) or not isinstance(hours, (int, float)) \
+                or not FEED_INTERVAL_MIN <= hours <= FEED_INTERVAL_MAX:
+            return bad(f"feed_interval_hours must be {FEED_INTERVAL_MIN} to {FEED_INTERVAL_MAX}")
+
     if "data_directory" in body:
         data_dir = _body_path(body, "data_directory")
         if not data_dir:
@@ -1515,6 +1571,13 @@ def set_config():
                 conn.execute("UPDATE downloaded_videos SET availability = NULL WHERE availability = 'age'")
                 conn.commit()
                 conn.close()
+
+    feed_keys = [k for k in ("feed_enabled", "feed_shorts", "feed_interval_hours") if k in body]
+    if feed_keys:
+        for k in feed_keys:
+            cfg[k] = body[k]
+        save_config(cfg)
+        _feed_wake.set()          # a shorter interval or a re-enable takes effect now
 
     if "data_directory" in body:
         old_db = os.path.join(cfg["data_directory"], "videos.db")
@@ -3099,8 +3162,14 @@ def fetch_metadata(video_id):
             info.get("like_count") or None,
             video_id,
         ))
+        # yt-dlp names the channel's id too: the key its upload feed needs.
+        channel_id = _channel_id_from(info.get("channel_id"))
+        name = channel_id and _name_for_upload(conn, video_id, _clean_name(info.get("channel") or info.get("uploader")))
+        linked = bool(name) and _link_channel_id(conn, name, channel_id, "ytdlp")
         conn.commit()
         conn.close()
+    if linked:
+        _feed_wake.set()
 
     return jsonify({"ok": True, "video_id": video_id})
 
@@ -4487,6 +4556,334 @@ def set_channel_status():
 
 
 # ---------------------------------------------------------------------------
+# Upload feed
+#
+# YouTube publishes each channel's 15 latest uploads as a public RSS feed: no
+# account, cookie or API key. The poller reads the feed of every channel whose
+# id the library knows, one request a second, and keeps what it finds in
+# feed_items. The inbox lists the uploads that aren't in the library yet.
+#
+# Channel ids come from pages the userscript sees, from yt-dlp fetches, or are
+# pasted by hand. The backend never loads a channel page to look one up.
+# ---------------------------------------------------------------------------
+
+_CHANNEL_ID_RE  = re.compile(r"UC[A-Za-z0-9_-]{22}")
+_CHANNEL_URL_RE = re.compile(
+    r"(?:https?://)?(?:(?:www|m)\.)?youtube\.com/channel/(UC[A-Za-z0-9_-]{22})/?(?:[?#].*)?", re.I)
+_FEED_URL       = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
+_FEED_MAX_BYTES = 2 * 1024 * 1024
+_FEED_GAP_SECS  = 1.0
+# Uploads this recent count as new even on a channel's first poll, so linking
+# a channel shows what it posted this week rather than nothing.
+_FEED_FRESH_DAYS = 3
+_FEED_ATOM = "{http://www.w3.org/2005/Atom}"
+_FEED_YT   = "{http://www.youtube.com/xml/schemas/2015}"
+_feed_wake     = threading.Event()
+_feed_run_lock = threading.Lock()          # one poll pass at a time
+_feed_running  = threading.Event()
+
+
+def _channel_id_from(value):
+    """A channel id from the bare id or a /channel/ URL, else None. An @handle
+    can't be turned into an id without loading the channel page."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    m = _CHANNEL_URL_RE.fullmatch(v)
+    if m:
+        return m.group(1)
+    return v if _CHANNEL_ID_RE.fullmatch(v) else None
+
+
+def _link_channel_id(conn, channel_name, channel_id, via):
+    """Record which channel id a name is. A hand-made link is kept over anything
+    found automatically. True when the stored id changed."""
+    row = conn.execute("SELECT channel_id, found_via FROM channel_ids WHERE channel_name = ?",
+                       (channel_name,)).fetchone()
+    if row and (row["channel_id"] == channel_id
+                or (row["found_via"] == "manual" and via != "manual")):
+        return False
+    conn.execute('''
+        INSERT INTO channel_ids (channel_name, channel_id, found_via) VALUES (?, ?, ?)
+        ON CONFLICT(channel_name) DO UPDATE SET
+            channel_id = excluded.channel_id, found_via = excluded.found_via,
+            updated_at = CURRENT_TIMESTAMP
+    ''', (channel_name, channel_id, via))
+    return True
+
+
+def _name_for_upload(conn, video_id, uploader):
+    """The library name a video's channel goes by: its credit when that is one
+    artist, the matching part of a collab credit, or the uploader's own name
+    when no video is given but the library knows it. None when unsure."""
+    row = conn.execute(
+        "SELECT channel_name FROM downloaded_videos WHERE video_id = ? AND status IN ('downloaded', 'attached')",
+        (video_id,)).fetchone() if video_id else None
+    if row:
+        names = _artist_names(row["channel_name"])
+        if len(names) == 1:
+            return names[0]
+        return uploader if uploader in names else None
+    return uploader if uploader and _known_artist(conn, uploader) else None
+
+
+def _parse_feed(data):
+    import xml.etree.ElementTree as ET
+    # A feed has no reason to declare entities; refusing them keeps expansion
+    # tricks out of the parser.
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise ValueError("unexpected DTD in feed")
+    out = []
+    for e in ET.fromstring(data).findall(f"{_FEED_ATOM}entry"):
+        vid = _valid_video_id(e.findtext(f"{_FEED_YT}videoId"))
+        if not vid:
+            continue
+        link = e.find(f"{_FEED_ATOM}link[@rel='alternate']")
+        href = link.get("href", "") if link is not None else ""
+        out.append({
+            "video_id":     vid,
+            "title":        _text(e.findtext(f"{_FEED_ATOM}title")),
+            "published_at": _text(e.findtext(f"{_FEED_ATOM}published"), 40),
+            # The feed links a Short as /shorts/<id>, everything else as watch?v=.
+            "is_short":     "/shorts/" in href,
+        })
+    return out
+
+
+def _fetch_feed(channel_id):
+    req = urllib.request.Request(_FEED_URL.format(channel_id),
+                                 headers={"User-Agent": f"ChannelVault/{__version__} (feed reader)"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = r.read(_FEED_MAX_BYTES + 1)
+    if len(data) > _FEED_MAX_BYTES:
+        raise ValueError("feed too large")
+    return _parse_feed(data)
+
+
+def _due_feed_channels(hours, force):
+    """Channel ids to poll, longest-unchecked first. A channel the user marked
+    abandoned, deleted or banned is left alone."""
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT DISTINCT c.channel_id, f.checked_at FROM channel_ids c
+        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
+        WHERE c.channel_name NOT IN (SELECT channel_name FROM channel_status)
+          AND (? OR f.checked_at IS NULL OR f.checked_at <= datetime('now', ?))
+        ORDER BY f.checked_at IS NOT NULL, f.checked_at
+    ''', (1 if force else 0, f"-{round(hours * 60)} minutes")).fetchall()
+    conn.close()
+    return [r["channel_id"] for r in rows]
+
+
+def _store_feed(channel_id, items, error):
+    with _db_lock:
+        conn = get_conn()
+        with conn:
+            if items is None:
+                conn.execute('''
+                    INSERT INTO feed_channels (channel_id, checked_at, check_error)
+                    VALUES (?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        checked_at = CURRENT_TIMESTAMP, check_error = excluded.check_error
+                ''', (channel_id, error))
+            else:
+                seeded = conn.execute(
+                    "SELECT seeded FROM feed_channels WHERE channel_id = ?", (channel_id,)).fetchone()
+                first = not (seeded and seeded["seeded"])
+                for it in items:
+                    conn.execute('''
+                        INSERT INTO feed_items (video_id, channel_id, title, published_at, is_short, backlog)
+                        VALUES (?, ?, ?, ?, ?,
+                                ? AND COALESCE(julianday(?) < julianday('now', ?), 1))
+                        ON CONFLICT(video_id) DO UPDATE SET
+                            title = COALESCE(excluded.title, feed_items.title),
+                            is_short = excluded.is_short
+                    ''', (it["video_id"], channel_id, it["title"], it["published_at"],
+                          1 if it["is_short"] else 0,
+                          1 if first else 0, it["published_at"], f"-{_FEED_FRESH_DAYS} days"))
+                conn.execute('''
+                    INSERT INTO feed_channels (channel_id, checked_at, check_error, seeded)
+                    VALUES (?, CURRENT_TIMESTAMP, NULL, 1)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        checked_at = CURRENT_TIMESTAMP, check_error = NULL, seeded = 1
+                ''', (channel_id,))
+        conn.close()
+
+
+def _feed_pass(force=False):
+    """Poll every due channel of the library active when the pass starts.
+    False when a pass is already running."""
+    if not _feed_run_lock.acquire(blocking=False):
+        return False
+    _feed_running.set()
+    try:
+        cfg = load_config()
+        with _pinned_profile(cfg["active_profile"]):
+            for i, cid in enumerate(_due_feed_channels(cfg["feed_interval_hours"], force)):
+                if i:
+                    time.sleep(_FEED_GAP_SECS)
+                items, error = None, None
+                try:
+                    items = _fetch_feed(cid)
+                except urllib.error.HTTPError as e:
+                    error = "Channel not found on YouTube" if e.code == 404 else f"YouTube answered HTTP {e.code}"
+                except Exception as e:
+                    error = _clean_err(e)[:300] or "fetch failed"
+                _store_feed(cid, items, error)
+    finally:
+        _feed_running.clear()
+        _feed_run_lock.release()
+    return True
+
+
+def _feed_loop():
+    """Background poller. Wakes every few minutes (or when told) and polls the
+    channels whose interval has passed; most wakes find nothing due."""
+    time.sleep(20)                         # let startup and the first scan settle
+    while True:
+        try:
+            if load_config().get("feed_enabled", True):
+                _feed_pass()
+        except Exception as e:
+            print(f"[feed] {_clean_err(e)}")
+        _feed_wake.wait(timeout=300)
+        _feed_wake.clear()
+
+
+def _feed_artists(conn):
+    """YouTube artists in the library the feed could cover: not marked
+    abandoned, deleted or banned."""
+    marked = {r[0] for r in conn.execute("SELECT channel_name FROM channel_status")}
+    names = set()
+    for r in conn.execute(
+            "SELECT DISTINCT channel_name FROM downloaded_videos "
+            "WHERE status = 'downloaded' AND COALESCE(source, 'youtube') = 'youtube'"):
+        names.update(_artist_names(r[0]))
+    return sorted(names - marked, key=str.casefold)
+
+
+def _inbox_rows(conn, where="1"):
+    """Feed uploads not in the library under any status, newest first, each
+    with the library name of its channel."""
+    return conn.execute(f'''
+        SELECT f.*, n.channel_name FROM feed_items f
+        JOIN (SELECT channel_id, MIN(channel_name) AS channel_name FROM channel_ids
+              WHERE channel_name NOT IN (SELECT channel_name FROM channel_status)
+              GROUP BY channel_id) n ON n.channel_id = f.channel_id
+        WHERE f.video_id NOT IN (SELECT video_id FROM downloaded_videos) AND {where}
+        ORDER BY f.published_at DESC
+    ''').fetchall()
+
+
+@app.get("/feed")
+def get_feed():
+    cfg  = load_config()
+    conn = get_conn()
+    items   = [dict(r) for r in _inbox_rows(conn)]
+    artists = _feed_artists(conn)
+    linked  = {r["channel_name"]: dict(r) for r in conn.execute('''
+        SELECT c.channel_name, c.channel_id, f.checked_at, f.check_error FROM channel_ids c
+        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id''')}
+    last = conn.execute("SELECT MAX(checked_at) FROM feed_channels").fetchone()[0]
+    conn.close()
+    return jsonify({
+        "items":        items,
+        "artists":      len(artists),
+        "unlinked":     [n for n in artists if n not in linked],
+        "errors":       [{"channel_name": n, "error": linked[n]["check_error"]}
+                         for n in artists if n in linked and linked[n]["check_error"]],
+        "last_checked": last,
+        "checking":     _feed_running.is_set(),
+        "enabled":      cfg["feed_enabled"],
+        "interval_hours": cfg["feed_interval_hours"],
+        "shorts":       cfg["feed_shorts"],
+    })
+
+
+@app.get("/feed/count")
+def feed_count():
+    """New uploads waiting in the inbox: not backlog, Shorts only if shown."""
+    shorts = load_config()["feed_shorts"]
+    conn = get_conn()
+    n = len(_inbox_rows(conn, "f.backlog = 0" + ("" if shorts else " AND f.is_short = 0")))
+    conn.close()
+    return jsonify({"count": n, "checking": _feed_running.is_set()})
+
+
+@app.post("/feed/check")
+def feed_check():
+    """Poll every channel now, in the background. Works with polling switched
+    off: the user asked for this one."""
+    if _feed_running.is_set():
+        return jsonify({"ok": True, "started": False})
+    threading.Thread(target=_feed_pass, kwargs={"force": True}, daemon=True).start()
+    return jsonify({"ok": True, "started": True})
+
+
+@app.get("/channel-ids")
+def list_channel_ids():
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT c.channel_name, c.channel_id, c.found_via, f.checked_at, f.check_error
+        FROM channel_ids c LEFT JOIN feed_channels f ON f.channel_id = c.channel_id''').fetchall()
+    conn.close()
+    return jsonify({r["channel_name"]: {k: r[k] for k in ("channel_id", "found_via", "checked_at", "check_error")}
+                    for r in rows})
+
+
+@app.post("/channel-id")
+def report_channel_id():
+    """The userscript saw which channel a video or channel page belongs to.
+    Linked only when the library already knows that channel by name."""
+    body       = request.get_json(silent=True) or {}
+    channel_id = _channel_id_from(body.get("channel_id"))
+    if not channel_id:
+        return jsonify({"ok": False, "error": "valid channel_id required"}), 400
+    video_id = _valid_video_id(body.get("video_id"))
+    uploader = _body_name(body, "channel_name")
+    with _db_lock:
+        conn = get_conn()
+        name = _name_for_upload(conn, video_id, uploader)
+        changed = bool(name) and _link_channel_id(conn, name, channel_id, "userscript")
+        conn.commit()
+        conn.close()
+    if changed:
+        _feed_wake.set()                   # a newly linked channel gets its first poll now
+    return jsonify({"ok": True, "channel_name": name})
+
+
+@app.post("/channel-ids")
+def set_channel_id():
+    """Link an artist to a channel by hand: the id or a /channel/ URL. A null
+    channel_id removes the link."""
+    body = request.get_json(silent=True) or {}
+    name = _body_name(body, "channel_name")
+    if not name:
+        return jsonify({"ok": False, "error": "channel_name required"}), 400
+    raw = body.get("channel_id")
+    with _db_lock:
+        conn = get_conn()
+        if raw is None:
+            conn.execute("DELETE FROM channel_ids WHERE channel_name = ?", (name,))
+        else:
+            channel_id = _channel_id_from(raw)
+            if not channel_id:
+                conn.close()
+                return jsonify({"ok": False, "error":
+                                "Paste a channel id (UC…) or a youtube.com/channel/UC… link. "
+                                "An @handle link can't be used; open the channel on YouTube "
+                                "with the userscript installed instead."}), 400
+            if not _known_artist(conn, name):
+                conn.close()
+                return jsonify({"ok": False, "error": f"no videos from {name}"}), 404
+            _link_channel_id(conn, name, channel_id, "manual")
+        conn.commit()
+        conn.close()
+    _feed_wake.set()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Tags and segments
 #
 # A tag is a word the user invents; it lives once, library-wide, with a colour
@@ -5228,6 +5625,7 @@ if __name__ == "__main__":
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )
     watcher_thread.start()
+    threading.Thread(target=_feed_loop, daemon=True).start()
     if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"[api] ChannelVault {__version__}")

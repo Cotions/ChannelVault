@@ -18,6 +18,7 @@ import Icon from "../components/Icon";
 import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
+import FeedFollow from "../components/FeedFollow";
 import ProfileEffect from "../components/ProfileEffect";
 import ProfileEffectMenu from "../components/ProfileEffectMenu";
 import { useEffectPrefs, resolveEffect } from "../lib/profileEffects";
@@ -222,6 +223,9 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
           <button className="artist-link-add" onClick={() => setLinking(true)} title="Mark another channel as the same person">
             <Icon name="plus" size={12} />Link channel
           </button>
+        )}
+        {!channelMark && videos.some(v => isYouTube(v) && artistsOf(v).includes(artist)) && (
+          <FeedFollow key={artist} artist={artist} />
         )}
       </div>
 

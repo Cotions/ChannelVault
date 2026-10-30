@@ -136,6 +136,14 @@ export async function getCreator(name) {
 export function getArtistLinks(name) { return get(`/artist-links/${encodeURIComponent(name)}`); }
 export function linkArtists(a, b)    { return post("/artist-links", { a, b }); }
 export function unlinkArtist(name)   { return del(`/artist-links/${encodeURIComponent(name)}`); }
+export function getFeed()            { return get("/feed"); }
+export function getFeedCount()       { return get("/feed/count"); }
+export function checkFeed()          { return post("/feed/check", {}); }
+export function saveFeedSettings(opts) { return post("/config", opts); }
+export function getChannelIds()      { return get("/channel-ids"); }
+export function setChannelId(name, channelId) { return post("/channel-ids", { channel_name: name, channel_id: channelId }); }
+export function markWanted(v)  { return post("/want-to-download", v); }
+export function markIgnored(v) { return post("/do-not-want", v); }
 export function getChannelStatuses()  { return get("/channel-status"); }
 export function setChannelStatus(name, status) { return post("/channel-status", { channel_name: name, status }); }
 
