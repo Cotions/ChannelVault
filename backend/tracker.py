@@ -960,6 +960,9 @@ def _meta_from_ffprobe(file_path):
         "recorded_date": year,
         "duration":      duration,
         "filesize":      filesize,
+        # Written by "Write tags to file" (MKV/WebM only: MP4 drops custom tags).
+        "view_count":    _count(tags.get(_TAG_VIEWS)),
+        "like_count":    _count(tags.get(_TAG_LIKES)),
     }
 
 
@@ -1108,8 +1111,9 @@ def process_video_file(file_path):
             conn.execute('''
                 INSERT INTO downloaded_videos
                     (video_id, title, channel_name, url, file_path,
-                     genre, description, recorded_date, duration_secs, file_size_bytes, source, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
+                     genre, description, recorded_date, duration_secs, file_size_bytes, source,
+                     view_count, like_count, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
                 ON CONFLICT(video_id) DO UPDATE SET
                     title=excluded.title,
                     source=excluded.source,
@@ -1121,11 +1125,14 @@ def process_video_file(file_path):
                     recorded_date=excluded.recorded_date,
                     duration_secs=excluded.duration_secs,
                     file_size_bytes=excluded.file_size_bytes,
+                    view_count=COALESCE(excluded.view_count, downloaded_videos.view_count),
+                    like_count=COALESCE(excluded.like_count, downloaded_videos.like_count),
                     downloaded_at=CURRENT_TIMESTAMP,
                     status='downloaded'
                 WHERE downloaded_videos.status != 'downloaded'
             ''', (video_id, title, artist, url, file_path,
-                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source))
+                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source,
+                  meta.get("view_count"), meta.get("like_count")))
             # A tracked row whose file is gone (moved or renamed outside the app)
             # follows this copy, so it doesn't sit there as "missing" forever.
             row = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'",
@@ -3750,6 +3757,55 @@ def _tracked_row_for_file(conn, path):
     return None
 
 
+def _rewrite_tags(path, metargs):
+    """Rewrite path's tags in place: ffmpeg stream copy into a temp file next
+    to it, check it, swap it over the original. The original stays untouched
+    on any failure. Returns None, or an error message."""
+    ext = os.path.splitext(path)[1]
+    # ".temp." keeps the watcher off it; a fresh name keeps two runs on one
+    # file from writing into the same output.
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".enrich.", suffix=".temp" + ext,
+                                   dir=os.path.dirname(path) or ".")
+        os.close(fd)
+    except OSError as e:
+        return _clean_err(e)
+
+    def drop_tmp():
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+
+    # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
+    # existing tags, then the -metadata flags override only the provided fields.
+    # MP4 only keeps tags outside its fixed list with use_metadata_tags.
+    movflags = ["-movflags", "use_metadata_tags"] if ext.lower() in (".mp4", ".m4a", ".m4v", ".mov") else []
+    args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + movflags + [tmp]
+    try:
+        res = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        drop_tmp()
+        return _clean_err(e)
+
+    if res.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
+        drop_tmp()
+        return "ffmpeg failed: " + _clean_err((res.stderr or "")[-300:])
+
+    # The original is the only copy: refuse a rewrite that came out shorter.
+    old_d, new_d = _ffprobe_duration(path), _ffprobe_duration(tmp)
+    if old_d and (not new_d or abs(old_d - new_d) > 1.0):
+        drop_tmp()
+        return "rewritten file's length doesn't match the original; left it untouched"
+
+    try:
+        shutil.copymode(path, tmp)         # mkstemp made it owner-only
+        os.replace(tmp, path)              # atomic swap over the original
+    except OSError as e:
+        drop_tmp()
+        return _clean_err(e)
+    return None
+
+
 @app.post("/import/enrich")
 def import_enrich():
     """Write metadata tags into the file itself (ffmpeg stream copy), then verify."""
@@ -3780,41 +3836,9 @@ def import_enrich():
         return jsonify({"ok": False, "error": "this file is already in the library under another link; "
                                               "the link can't be changed here"}), 409
 
-    ext = os.path.splitext(path)[1]
-    # ".temp." keeps the watcher off it; a fresh name keeps two enrich runs on
-    # one file from writing into the same output.
-    try:
-        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".enrich.", suffix=".temp" + ext,
-                                   dir=os.path.dirname(path) or ".")
-        os.close(fd)
-    except OSError as e:
-        return jsonify({"ok": False, "error": _clean_err(e)}), 500
-    # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
-    # existing tags, then the -metadata flags override only the provided fields.
-    args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
-    try:
-        res = subprocess.run(args, capture_output=True, text=True, timeout=600)
-    except Exception as e:
-        if os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
-        return jsonify({"ok": False, "error": _clean_err(e)}), 500
-
-    if res.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
-        if os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
-        return jsonify({"ok": False, "error": "ffmpeg failed: " + _clean_err((res.stderr or "")[-300:])}), 500
-
-    # The original is the only copy: refuse a rewrite that came out shorter.
-    old_d, new_d = _ffprobe_duration(path), _ffprobe_duration(tmp)
-    if old_d and (not new_d or abs(old_d - new_d) > 1.0):
-        try: os.remove(tmp)
-        except OSError: pass
-        return jsonify({"ok": False, "error": "rewritten file's length doesn't match the original; left it untouched"}), 500
-
-    shutil.copymode(path, tmp)         # mkstemp made it owner-only
-    os.replace(tmp, path)              # atomic swap over the original
+    err = _rewrite_tags(path, metargs)
+    if err:
+        return jsonify({"ok": False, "error": err}), 500
     meta = _read_meta(path)
     if tracked:
         # A rescan never re-reads a tracked file, so the library row follows here.
@@ -3838,6 +3862,79 @@ def import_enrich():
         if before and after and before["channel_name"] != after["channel_name"]:
             sync_artist_folders()
     return jsonify({"ok": True, "meta": _meta_payload(meta)})
+
+
+# Library -> file. The dashboard is where titles, credits and dates get fixed
+# and where fetched data lands; this copies it into the file's own tags, so a
+# new database (or another player) reads the same thing. Only ever on request.
+_TAG_VIEWS = "channelvault_views"
+_TAG_LIKES = "channelvault_likes"
+_CUSTOM_TAG_EXTS = (".mkv", ".webm")          # containers that keep tags of any name
+
+
+def _tag_plan(row, path):
+    """[{field, tag, file, library}] for every tag the write would change."""
+    meta = _read_meta(path)
+    plan = [
+        ("Title",       "title",       meta.get("title"),               row["title"]),
+        ("Artist",      "artist",      meta.get("artist"),              row["channel_name"]),
+        ("Date",        "date",        _norm_date(meta.get("recorded_date")), _norm_date(row["recorded_date"])),
+        ("Genre",       "genre",       meta.get("genre"),               row["genre"]),
+        ("Description", "description", meta.get("description"),         row["description"]),
+    ]
+    if path.lower().endswith(_CUSTOM_TAG_EXTS):
+        plan += [
+            ("Views", _TAG_VIEWS, meta.get("view_count"), row["view_count"]),
+            ("Likes", _TAG_LIKES, meta.get("like_count"), row["like_count"]),
+        ]
+    out = []
+    for field, tag, have, want in plan:
+        if want in (None, ""):
+            continue                           # never blank a tag the library has nothing for
+        if str(have or "").strip() == str(want).strip():
+            continue
+        out.append({"field": field, "tag": tag, "file": have, "library": want})
+    return out
+
+
+@app.post("/videos/<vid:video_id>/write-tags")
+def write_tags(video_id):
+    """Write the library's title, artist, date, genre and description (and on
+    MKV/WebM the fetched views/likes) into the video file's tags. The link tag
+    the file is tracked by is never touched. dry_run lists the changes."""
+    body = request.get_json(silent=True) or {}
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM downloaded_videos WHERE video_id = ? AND status = 'downloaded'",
+                       (video_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "not in the library"}), 404
+    path = resolve_media_path(row["file_path"])
+    if not path:
+        return jsonify({"ok": False, "error": "the file is missing"}), 404
+    missing = _ffmpeg_missing()
+    if missing:
+        return jsonify({"ok": False, "error": f"{' and '.join(missing)} not found: install ffmpeg to write tags"}), 503
+    plan = _tag_plan(row, path)
+    stats_in_file = path.lower().endswith(_CUSTOM_TAG_EXTS)
+    if body.get("dry_run") or not plan:
+        return jsonify({"ok": True, "changes": plan, "stats_in_file": stats_in_file,
+                        "file": os.path.basename(path)})
+    metargs = []
+    for c in plan:
+        metargs += ["-metadata", f"{c['tag']}={c['library']}"]
+    err = _rewrite_tags(path, metargs)
+    if err:
+        return jsonify({"ok": False, "error": err}), 500
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("UPDATE downloaded_videos SET file_size_bytes = ? WHERE video_id = ?",
+                     (os.path.getsize(path), video_id))
+        conn.commit()
+        conn.close()
+    left = _tag_plan(row, path)                # what didn't take (a container without that tag)
+    return jsonify({"ok": True, "written": len(plan) - len(left), "not_kept": [c["field"] for c in left],
+                    "stats_in_file": stats_in_file, "file": os.path.basename(path)})
 
 
 @app.get("/artist-thumb/<path:name>")

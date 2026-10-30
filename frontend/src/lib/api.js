@@ -83,6 +83,7 @@ export function getIgnored()       { return get("/ignored"); }
 export function deleteVideo(id)    { return del(`/videos/${id}`); }
 export function addVideoManual(data) { return post("/videos/manual", data); }
 export function fetchMetadata(id)    { return post(`/fetch-metadata/${id}`, {}); }
+export function writeTags(id, body)  { return post(`/videos/${id}/write-tags`, body); }
 export function removeMark(id)     { return del(`/mark/${id}`); }
 export function getDuplicates()    { return get("/data-quality/duplicates"); }
 export function getMissing()       { return get("/data-quality/missing"); }

@@ -486,6 +486,19 @@ export default function PlayerProvider({ onCompleted, children }) {
     setQueue(next);
   }, []);
 
+  // The file under the stream was rewritten (tags written into it): its bytes
+  // moved, so fetch it again and carry on from the same spot, playing or not.
+  const reloadSource = useCallback((id) => {
+    const el = videoRef.current;
+    if (!el || activeIdRef.current !== id) return;
+    const at = el.currentTime, paused = el.paused;
+    el.addEventListener("loadedmetadata", () => {
+      el.currentTime = at;
+      if (paused) el.pause(); else el.play().catch(() => {});
+    }, { once: true });
+    el.load();
+  }, []);
+
   function handleLoadedMetadata(e) {
     const el = e.target;
     if (el.playbackRate !== rate) el.playbackRate = rate;
@@ -606,7 +619,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     segments: segments.id === activeId ? segments.list : NONE,
     setSegments: publishSegments,
     volume, setVolume, muted, setMuted, levelling, setLevelling,
-    rate, setRate, fullscreen, toggleFullscreen,
+    rate, setRate, fullscreen, toggleFullscreen, reloadSource,
   }), [
     activeId, mode, error, completedId, title,
     openInline, onLeavePage, stop, setDock, setPosterUrl,
@@ -614,7 +627,7 @@ export default function PlayerProvider({ onCompleted, children }) {
     queue, playQueue, queueNext, queuePrev, toggleShuffle, toggleLoop, clearQueue,
     audioTrack, selectAudioTrack, audioTracks, publishAudioTracks, segments, publishSegments,
     volume, setVolume, muted, levelling, setLevelling,
-    rate, setRate, fullscreen, toggleFullscreen,
+    rate, setRate, fullscreen, toggleFullscreen, reloadSource,
   ]);
 
   return (
