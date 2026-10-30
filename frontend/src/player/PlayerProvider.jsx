@@ -44,6 +44,9 @@ const readStored = (key, fallback) => {
 export default function PlayerProvider({ onCompleted, children }) {
   const navigate = useNavigate();
   const [activeId,    setActiveId]    = useState(null);
+  // Bumped when the file under the stream was rewritten: a new URL makes the
+  // browser fetch it again instead of reusing ranges of the old bytes.
+  const [srcRev,      setSrcRev]      = useState(0);
   const [title,       setTitle]       = useState("");
   const [mode,        setMode]        = useState("inline"); // "inline" | "mini"
   const [poster,      setPoster]      = useState(null);
@@ -492,11 +495,15 @@ export default function PlayerProvider({ onCompleted, children }) {
     const el = videoRef.current;
     if (!el || activeIdRef.current !== id) return;
     const at = el.currentTime, paused = el.paused;
+    const done = new AbortController();
     el.addEventListener("loadedmetadata", () => {
+      done.abort();
+      if (activeIdRef.current !== id) return;
       el.currentTime = at;
       if (paused) el.pause(); else el.play().catch(() => {});
-    }, { once: true });
-    el.load();
+    }, { signal: done.signal });
+    el.addEventListener("error", () => done.abort(), { signal: done.signal });
+    setSrcRev(r => r + 1);
   }, []);
 
   function handleLoadedMetadata(e) {
@@ -667,7 +674,7 @@ export default function PlayerProvider({ onCompleted, children }) {
               playsInline
               preload="metadata"
               poster={poster || thumbUrl(activeId)}
-              src={streamUrl(activeId)}
+              src={srcRev ? `${streamUrl(activeId)}?r=${srcRev}` : streamUrl(activeId)}
               onError={handleError}
               onPlay={() => { setError(false); gestureRef.current = true; applyAudio(); syncAudio(true); }}
               onTimeUpdate={handleTimeUpdate}

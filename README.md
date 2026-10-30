@@ -349,6 +349,7 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | DELETE | `/videos/<id>` | Remove from the vault |
 | POST | `/update-stats/<id>` | Store view and like counts |
 | POST | `/fetch-metadata/<id>` | Refresh title, stats and availability from YouTube |
+| POST | `/videos/<id>/write-tags` | Write the library's title, artist, date, genre and description (plus views/likes on MKV/WebM) into the file's tags. `dry_run` lists the changes; `expect` makes the write refuse if they changed since. Never automatic |
 | GET | `/ytdlp/status` | yt-dlp version, configured cookie jar and detected JS runtimes |
 | GET | `/stream/<id>` | Stream the file, with range requests |
 | GET | `/export/json`, `/export/csv` | Download the whole library, tags and segments included |

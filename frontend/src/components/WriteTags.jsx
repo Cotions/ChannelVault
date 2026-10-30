@@ -43,8 +43,9 @@ export default function WriteTags({ videoId }) {
   async function write() {
     setBusy(true);
     try {
-      const r = await writeTags(videoId, {});
-      if (r?.ok === false) { setMsg({ text: r.error || "Write failed", bad: true }); return; }
+      // The server only writes if this is still exactly what it would write.
+      const expect = plan.changes.map(c => ({ tag: c.tag, library: c.library }));
+      const r = await writeTags(videoId, { expect });
       setPlan(p => ({ ...p, changes: [] }));
       reloadSource(videoId);
       setMsg({
@@ -53,7 +54,10 @@ export default function WriteTags({ videoId }) {
         bad: false,
       });
     } catch (e) {
-      setMsg({ text: e.detail || "Write failed — the file was left as it was.", bad: true });
+      // Refused, or the answer got lost on the way: show what the file says now.
+      const now = await writeTags(videoId, { dry_run: true }).catch(() => null);
+      if (now?.ok) setPlan(now);
+      setMsg({ text: e.detail || "Write failed — the list above is what the file says now.", bad: true });
     } finally {
       setBusy(false);
     }
