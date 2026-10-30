@@ -59,7 +59,7 @@ export default function FeedFollow({ artist }) {
           spellCheck={false}
         />
         <button className="btn-secondary" type="submit" disabled={busy || !text.trim()}>Save</button>
-        {info && (
+        {info && !info.unfollowed && (
           <button className="btn-ghost" type="button" disabled={busy} onClick={() => save(null)} title="Stop following this channel's uploads">
             Unfollow
           </button>
@@ -70,11 +70,11 @@ export default function FeedFollow({ artist }) {
     );
   }
 
-  if (!info) {
+  if (!info || info.unfollowed) {
     return (
       <button
         className="artist-link-add feed-follow-add"
-        onClick={() => { setText(""); setEditing(true); }}
+        onClick={() => { setText(info?.channel_id || ""); setEditing(true); }}
         title="Show this channel's new uploads in the Inbox. Opening one of its videos on YouTube with the userscript does this too."
       >
         <Icon name="inbox" size={12} />Follow uploads

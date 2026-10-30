@@ -917,6 +917,10 @@ def init_db():
             updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Unfollow keeps the row (so the next page visit doesn't link it again)
+    # and only stops the feed.
+    if "unfollowed" not in [r[1] for r in conn.execute("PRAGMA table_info(channel_ids)")]:
+        conn.execute("ALTER TABLE channel_ids ADD COLUMN unfollowed INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_ids_id ON channel_ids(channel_id)")
     # Upload feed: one row per channel id polled, one per upload seen. Uploads
     # already out when a channel was first polled are `backlog`, so the inbox
@@ -4581,6 +4585,7 @@ _FEED_YT   = "{http://www.youtube.com/xml/schemas/2015}"
 _feed_wake     = threading.Event()
 _feed_run_lock = threading.Lock()          # one poll pass at a time
 _feed_running  = threading.Event()
+_feed_force    = threading.Event()         # "Check now" waiting for the poller
 
 
 def _channel_id_from(value):
@@ -4596,18 +4601,20 @@ def _channel_id_from(value):
 
 
 def _link_channel_id(conn, channel_name, channel_id, via):
-    """Record which channel id a name is. A hand-made link is kept over anything
-    found automatically. True when the stored id changed."""
-    row = conn.execute("SELECT channel_id, found_via FROM channel_ids WHERE channel_name = ?",
+    """Record which channel id a name is. Automatic sources only fill a name
+    that has none: one video of an artist can sit on someone else's channel (a
+    reupload, a label), and a channel keeps its id through a rename, so a
+    different id reported later is more likely wrong than new. Only a link
+    made by hand replaces one. True when the stored id changed."""
+    row = conn.execute("SELECT channel_id FROM channel_ids WHERE channel_name = ?",
                        (channel_name,)).fetchone()
-    if row and (row["channel_id"] == channel_id
-                or (row["found_via"] == "manual" and via != "manual")):
+    if row and (row["channel_id"] == channel_id or via != "manual"):
         return False
     conn.execute('''
         INSERT INTO channel_ids (channel_name, channel_id, found_via) VALUES (?, ?, ?)
         ON CONFLICT(channel_name) DO UPDATE SET
             channel_id = excluded.channel_id, found_via = excluded.found_via,
-            updated_at = CURRENT_TIMESTAMP
+            unfollowed = 0, updated_at = CURRENT_TIMESTAMP
     ''', (channel_name, channel_id, via))
     return True
 
@@ -4667,7 +4674,8 @@ def _due_feed_channels(hours, force):
     rows = conn.execute('''
         SELECT DISTINCT c.channel_id, f.checked_at FROM channel_ids c
         LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
-        WHERE c.channel_name NOT IN (SELECT channel_name FROM channel_status)
+        WHERE c.unfollowed = 0
+          AND c.channel_name NOT IN (SELECT channel_name FROM channel_status)
           AND (? OR f.checked_at IS NULL OR f.checked_at <= datetime('now', ?))
         ORDER BY f.checked_at IS NOT NULL, f.checked_at
     ''', (1 if force else 0, f"-{round(hours * 60)} minutes")).fetchall()
@@ -4741,13 +4749,16 @@ def _feed_loop():
     channels whose interval has passed; most wakes find nothing due."""
     time.sleep(20)                         # let startup and the first scan settle
     while True:
+        # Cleared before the pass, so a wake that lands during it isn't lost.
+        _feed_wake.clear()
+        force = _feed_force.is_set()
+        _feed_force.clear()
         try:
-            if load_config().get("feed_enabled", True):
-                _feed_pass()
+            if force or load_config().get("feed_enabled", True):
+                _feed_pass(force)
         except Exception as e:
             print(f"[feed] {_clean_err(e)}")
         _feed_wake.wait(timeout=300)
-        _feed_wake.clear()
 
 
 def _feed_artists(conn):
@@ -4768,7 +4779,7 @@ def _inbox_rows(conn, where="1"):
     return conn.execute(f'''
         SELECT f.*, n.channel_name FROM feed_items f
         JOIN (SELECT channel_id, MIN(channel_name) AS channel_name FROM channel_ids
-              WHERE channel_name NOT IN (SELECT channel_name FROM channel_status)
+              WHERE unfollowed = 0 AND channel_name NOT IN (SELECT channel_name FROM channel_status)
               GROUP BY channel_id) n ON n.channel_id = f.channel_id
         WHERE f.video_id NOT IN (SELECT video_id FROM downloaded_videos) AND {where}
         ORDER BY f.published_at DESC
@@ -4783,7 +4794,8 @@ def get_feed():
     artists = _feed_artists(conn)
     linked  = {r["channel_name"]: dict(r) for r in conn.execute('''
         SELECT c.channel_name, c.channel_id, f.checked_at, f.check_error FROM channel_ids c
-        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id''')}
+        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
+        WHERE c.unfollowed = 0''')}
     last = conn.execute("SELECT MAX(checked_at) FROM feed_channels").fetchone()[0]
     conn.close()
     return jsonify({
@@ -4793,7 +4805,7 @@ def get_feed():
         "errors":       [{"channel_name": n, "error": linked[n]["check_error"]}
                          for n in artists if n in linked and linked[n]["check_error"]],
         "last_checked": last,
-        "checking":     _feed_running.is_set(),
+        "checking":     _feed_running.is_set() or _feed_force.is_set(),
         "enabled":      cfg["feed_enabled"],
         "interval_hours": cfg["feed_interval_hours"],
         "shorts":       cfg["feed_shorts"],
@@ -4807,27 +4819,27 @@ def feed_count():
     conn = get_conn()
     n = len(_inbox_rows(conn, "f.backlog = 0" + ("" if shorts else " AND f.is_short = 0")))
     conn.close()
-    return jsonify({"count": n, "checking": _feed_running.is_set()})
+    return jsonify({"count": n, "checking": _feed_running.is_set() or _feed_force.is_set()})
 
 
 @app.post("/feed/check")
 def feed_check():
-    """Poll every channel now, in the background. Works with polling switched
-    off: the user asked for this one."""
-    if _feed_running.is_set():
-        return jsonify({"ok": True, "started": False})
-    threading.Thread(target=_feed_pass, kwargs={"force": True}, daemon=True).start()
-    return jsonify({"ok": True, "started": True})
+    """Poll every channel now. The poller thread runs it, right away or right
+    after the pass in progress. Works with polling switched off: the user
+    asked for this one."""
+    _feed_force.set()
+    _feed_wake.set()
+    return jsonify({"ok": True})
 
 
 @app.get("/channel-ids")
 def list_channel_ids():
     conn = get_conn()
     rows = conn.execute('''
-        SELECT c.channel_name, c.channel_id, c.found_via, f.checked_at, f.check_error
+        SELECT c.channel_name, c.channel_id, c.found_via, c.unfollowed, f.checked_at, f.check_error
         FROM channel_ids c LEFT JOIN feed_channels f ON f.channel_id = c.channel_id''').fetchall()
     conn.close()
-    return jsonify({r["channel_name"]: {k: r[k] for k in ("channel_id", "found_via", "checked_at", "check_error")}
+    return jsonify({r["channel_name"]: {k: r[k] for k in ("channel_id", "found_via", "unfollowed", "checked_at", "check_error")}
                     for r in rows})
 
 
@@ -4855,7 +4867,8 @@ def report_channel_id():
 @app.post("/channel-ids")
 def set_channel_id():
     """Link an artist to a channel by hand: the id or a /channel/ URL. A null
-    channel_id removes the link."""
+    channel_id unfollows: the id stays known, so a later page visit doesn't
+    follow it again; pasting an id follows it again."""
     body = request.get_json(silent=True) or {}
     name = _body_name(body, "channel_name")
     if not name:
@@ -4864,7 +4877,7 @@ def set_channel_id():
     with _db_lock:
         conn = get_conn()
         if raw is None:
-            conn.execute("DELETE FROM channel_ids WHERE channel_name = ?", (name,))
+            conn.execute("UPDATE channel_ids SET unfollowed = 1 WHERE channel_name = ?", (name,))
         else:
             channel_id = _channel_id_from(raw)
             if not channel_id:
@@ -4877,6 +4890,7 @@ def set_channel_id():
                 conn.close()
                 return jsonify({"ok": False, "error": f"no videos from {name}"}), 404
             _link_channel_id(conn, name, channel_id, "manual")
+            conn.execute("UPDATE channel_ids SET unfollowed = 0 WHERE channel_name = ?", (name,))
         conn.commit()
         conn.close()
     _feed_wake.set()
