@@ -1166,12 +1166,13 @@ def process_video_file(file_path):
             url = None                    # the marker isn't a link anywhere
 
         title         = meta.get("title")
-        artist        = _alias_credit(meta.get("artist"))
         description   = meta.get("description")
         recorded_date = meta.get("recorded_date")
 
         with _db_lock:
             conn = get_conn()
+            # Read under the lock so a rename can't slip in between.
+            artist = _alias_credit(meta.get("artist"), conn)
             # UPSERT: insert new, or promote wanted/ignored → downloaded
             conn.execute('''
                 INSERT INTO downloaded_videos
@@ -1872,6 +1873,9 @@ def _artist_scan_files(artist):
     any media root, plus videos tagged with this artist that sit (non-recursively)
     next to the files we already track for them."""
     files, seen = [], set()
+    conn = get_conn()
+    # Files can still carry a name the artist was renamed from.
+    credits = {artist} | {a for a, n in _aliases(conn).items() if n == artist}
 
     def add(fp):
         key = os.path.realpath(fp)
@@ -1880,12 +1884,12 @@ def _artist_scan_files(artist):
             files.append(fp)
 
     for root in get_media_roots():
-        folder = os.path.join(root, _safe_dirname(artist))
-        if os.path.isdir(folder):
-            for fp in _walk_videos(folder):
-                add(fp)
+        for name in credits:
+            folder = os.path.join(root, _safe_dirname(name))
+            if os.path.isdir(folder):
+                for fp in _walk_videos(folder):
+                    add(fp)
 
-    conn = get_conn()
     rows = conn.execute(
         "SELECT channel_name, file_path FROM downloaded_videos WHERE file_path IS NOT NULL AND channel_name LIKE ?",
         (f"%{artist}%",),
@@ -1913,7 +1917,7 @@ def _artist_scan_files(artist):
             if os.path.realpath(fp) in seen or not f.lower().endswith(_LIBRARY_EXTS) \
                     or _is_temp_file(f) or not os.path.isfile(fp):
                 continue
-            if artist in _artist_names(_read_meta(fp).get("artist")):
+            if credits & set(_artist_names(_read_meta(fp).get("artist"))):
                 add(fp)
     return files
 
@@ -2069,10 +2073,10 @@ def _text(v, limit=500):
 
 def _upsert_mark(video_id, title, channel_name, url, status):
     title, url = _text(title), _text(url, 2000)
-    channel_name = _alias_credit(channel_name)
     if url and not re.match(r"https?://", url, re.I):
         url = None
     conn = get_conn()
+    channel_name = _alias_credit(channel_name, conn)
     conn.execute('''
         INSERT INTO downloaded_videos (video_id, title, channel_name, url, status)
         VALUES (?, ?, ?, ?, ?)
@@ -4407,6 +4411,8 @@ def upsert_creator():
     )
     with _db_lock:
         conn = get_conn()
+        # A profile captured under a channel's old name belongs to its new one.
+        vals["channel_name"] = _aliases(conn).get(channel_name, channel_name)
         conn.execute(f'''
             INSERT INTO creators
                 (channel_name, handle, channel_url, description, country, joined_date,
@@ -5063,7 +5069,12 @@ def rename_artist():
                 return jsonify({"ok": False, "error": f"no videos from {src}"}), 404
             merge = _known_artist(conn, dst)
             if body.get("dry_run"):
-                return jsonify({"ok": True, "videos": len(_credit_rows(conn, src)), "merge": merge})
+                # Both names linked to different channels: only dst's link stays.
+                ids = dict(conn.execute("SELECT channel_name, channel_id FROM channel_ids WHERE channel_name IN (?, ?)",
+                                        (src, dst)).fetchall())
+                drops = ids.get(src) if ids.get(dst) and ids.get(src) != ids.get(dst) else None
+                return jsonify({"ok": True, "videos": len(_credit_rows(conn, src)), "merge": merge,
+                                "drops_channel": drops})
             with conn:
                 moved = _rename_artist(conn, src, dst)
         finally:

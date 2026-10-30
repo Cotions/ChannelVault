@@ -8,7 +8,7 @@ import Icon from "./Icon";
 export default function ArtistRename({ artist, editing, onCloseEdit, onRenamed, onAlias }) {
   const [hint,    setHint]    = useState(null);      // { to, existing } from YouTube
   const [target,  setTarget]  = useState(null);      // name being confirmed
-  const [preview, setPreview] = useState(null);      // { videos, merge }
+  const [preview, setPreview] = useState(null);      // { videos, merge, drops_channel }
   const [text,    setText]    = useState(artist);
   const [err,     setErr]     = useState(null);
   const [busy,    setBusy]    = useState(false);
@@ -81,6 +81,10 @@ export default function ArtistRename({ artist, editing, onCloseEdit, onRenamed, 
           {" "}{n} entr{n === 1 ? "y" : "ies"} move{n === 1 ? "s" : ""}
           {preview.merge ? ", plus the profile, links and status where the other has none." : ", with the profile, links and status."}
           {" "}Files on disk stay where they are.
+          {preview.drops_channel && (
+            <> Both follow a different YouTube channel; only <b>{target}</b>'s stays followed
+              ({preview.drops_channel} is dropped).</>
+          )}
         </span>
         <button className="btn-primary" disabled={busy} onClick={confirm}>{preview.merge ? "Merge" : "Rename"}</button>
         <button className="btn-ghost" disabled={busy} onClick={cancel}>Cancel</button>
