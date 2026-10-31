@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getFeed, checkFeed, saveFeedSettings, markWanted, markIgnored } from "../lib/api";
 import Icon from "../components/Icon";
+import DownloadButton from "../components/DownloadButton";
 
 const INTERVALS = [1, 3, 6, 12, 24, 48, 168];
 
@@ -194,6 +195,7 @@ export default function InboxPage({ query, onMarked }) {
                     <button className="btn-secondary inbox-want" disabled={busy[it.video_id]} onClick={() => handleMark(it, "want")} title="Add to your wanted list">
                       <Icon name="download" size={13} />Want
                     </button>
+                    <DownloadButton video={it} />
                     <button className="btn-ghost" disabled={busy[it.video_id]} onClick={() => handleMark(it, "skip")} title="Mark as skipped: it leaves the inbox and YouTube shows it as Skip">
                       <Icon name="close" size={13} />Skip
                     </button>

@@ -20,6 +20,8 @@ import Stats           from "./pages/Stats";
 import TagsPage        from "./pages/TagsPage";
 import TagPage         from "./pages/TagPage";
 import InboxPage       from "./pages/InboxPage";
+import DownloadQueue from "./components/DownloadQueue";
+import { onDownloadDone } from "./lib/downloads";
 
 // A deleted tag must leave the Home filter too, or the grid filters on an id
 // nothing carries.
@@ -102,6 +104,8 @@ export default function App() {
   }
 
   useEffect(() => { load(); loadProfiles(); }, []);
+  // A download that lands in the library shows up without a reload.
+  useEffect(() => onDownloadDone(() => { load(); loadInboxCount(); }), []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // New uploads waiting in the inbox. The poller runs on the server; checking
   // its count now and then keeps the sidebar badge current.
@@ -233,6 +237,7 @@ export default function App() {
         )}
         </div>
         <div className="header-right">
+          <DownloadQueue />
           <ProfileSwitch profiles={profiles} onManage={() => setShowWatchFolder("profiles")} />
           <span className="header-count" title="Videos in vault">{videos.length.toLocaleString()}</span>
           <span

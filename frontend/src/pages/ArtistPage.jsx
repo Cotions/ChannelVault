@@ -15,6 +15,7 @@ import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
+import DownloadButton from "../components/DownloadButton";
 import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
@@ -340,6 +341,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
                 <a href={isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url)} target="_blank" rel="noreferrer">
                   {v.title || v.video_id}
                 </a>
+                {isYouTube(v) && <DownloadButton video={v} />}
                 <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>
               </div>
             ))}

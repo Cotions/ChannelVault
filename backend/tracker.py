@@ -17,6 +17,8 @@ import tempfile
 import sqlite3
 import base64
 import hashlib
+import signal
+import atexit
 import subprocess
 import urllib.request
 import urllib.error
@@ -944,6 +946,20 @@ def init_db():
             found_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS download_jobs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id     TEXT NOT NULL UNIQUE,
+            title        TEXT,
+            channel_name TEXT,
+            status       TEXT NOT NULL DEFAULT 'queued',
+            error        TEXT,
+            file_path    TEXT,
+            added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at   TIMESTAMP,
+            finished_at  TIMESTAMP
+        )
+    ''')
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_items_channel ON feed_items(channel_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audio_tracks_video ON audio_tracks(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id)")
@@ -1790,6 +1806,7 @@ def activate_profile(profile_id):
             pass
         return jsonify({"ok": False, "error": f"Cannot open profile: {_clean_err(e)}"}), 500
     print(f"[profiles] Switched to {load_config()['profile_name']}")
+    _dl_wake.set()                     # that library's queued downloads
     return jsonify({"ok": True, "active": profile_id})
 
 
@@ -4832,6 +4849,307 @@ def feed_check():
     return jsonify({"ok": True})
 
 
+# ---------------------------------------------------------------------------
+# Download queue
+# ---------------------------------------------------------------------------
+# YouTube videos only, one at a time, with the yt-dlp already on the PATH (the
+# app never ships or updates one). Each job downloads into its own folder under
+# the data directory, out of the watcher's sight, then goes through the same
+# filing as an import: <watch>/<artist>/, tracked, thumbnail and all.
+
+_DL_FORMAT   = "bv*[vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+_DL_TEMPLATE = "%(title).180B-%(id)s.%(ext)s"
+_DL_PROGRESS = re.compile(r"cvprog\s+([\d.]+)%?\s*(\S*)\s*(\S*)")
+_DL_ANSI     = re.compile(r"\x1b\[[0-9;]*m")
+
+_dl_wake  = threading.Event()
+_dl_state = threading.Lock()                # guards _dl_live
+_dl_live  = {}                              # the running job: id, profile, proc, progress, cancel
+
+
+def _dl_folder(job_id):
+    return os.path.join(load_config()["data_directory"], "downloads", str(int(job_id)))
+
+
+def _dl_argv(video_id, folder):
+    return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + [
+        "--no-playlist", "--newline", "--progress",
+        "--progress-template", "download:cvprog %(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s",
+        "-f", _DL_FORMAT, "--merge-output-format", "mp4",
+        "--embed-metadata", "--embed-chapters", "--embed-thumbnail", "--write-thumbnail",
+        # The library files a video under its channel; yt-dlp's own artist
+        # field would put a music video under the song's artist instead.
+        "--parse-metadata", "%(channel,uploader)s:%(meta_artist)s",
+        "-P", folder, "-o", _DL_TEMPLATE,
+        "--", f"https://www.youtube.com/watch?v={video_id}",
+    ])
+
+
+def _dl_result(folder):
+    """The one finished video yt-dlp left in a job's folder, or None."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    # "<name>.f137.mp4": one stream of a download that never got merged.
+    vids = [n for n in names if n.lower().endswith(_LIBRARY_EXTS)
+            and not _is_temp_file(os.path.join(folder, n))
+            and not re.search(r"\.f\d+\.\w+$", n)]
+    return os.path.join(folder, vids[0]) if len(vids) == 1 else None
+
+
+def _dl_finish(job_id, status, error=None, file_path=None):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("UPDATE download_jobs SET status=?, error=?, file_path=?, "
+                     "finished_at=CURRENT_TIMESTAMP WHERE id=?", (status, error, file_path, job_id))
+        conn.commit()
+        conn.close()
+
+
+def _dl_run(job):
+    """Download one job and file it. Returns the columns to store."""
+    folder = _dl_folder(job["id"])
+    os.makedirs(folder, exist_ok=True)
+    tail = []
+    # Retried after a filing failure: the file is already here, and yt-dlp
+    # would only say so. File it again rather than download it again.
+    if not _dl_result(folder):
+        proc = subprocess.Popen(_dl_argv(job["video_id"], folder), stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                text=True, errors="replace", bufsize=1, start_new_session=True,
+                                preexec_fn=_die_with_parent_fn())
+        with _dl_state:
+            _dl_live["proc"] = proc
+            cancel = _dl_live.get("cancel")
+        if cancel:
+            _dl_kill(proc)
+        for line in proc.stdout:
+            line = _DL_ANSI.sub("", line).strip()
+            m = _DL_PROGRESS.match(line)
+            if m:
+                try:
+                    pct = float(m.group(1))
+                except ValueError:
+                    continue
+                with _dl_state:
+                    _dl_live["progress"] = {"percent": pct,
+                                            "speed": "" if m.group(2) in ("NA", "Unknown") else m.group(2),
+                                            "eta":   "" if m.group(3) in ("NA", "Unknown") else m.group(3)}
+            elif line:
+                tail = (tail + [line])[-30:]
+                # Streams are down; ffmpeg merges them and embeds the tags.
+                if re.match(r"\[(Merger|Metadata|EmbedThumbnail|Fixup\w*|ThumbnailsConvertor)\]", line):
+                    with _dl_state:
+                        _dl_live["progress"] = {"percent": 100.0, "speed": "", "eta": "", "finishing": True}
+        proc.wait()
+        with _dl_state:
+            if _dl_live.get("cancel"):
+                return {"status": "canceled", "error": None}
+        if proc.returncode != 0:
+            return {"status": "failed", "error": _ytdlp_error("\n".join(tail))}
+    path = _dl_result(folder)
+    if not path:
+        return {"status": "failed",
+                "error": "yt-dlp finished without leaving a video (a download archive in your yt-dlp config?)"}
+    r = _file_into_library(path, load_config()["watch_directory"])
+    if r["status"] == "filed":
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"status": "done", "error": None, "file_path": r["dest"]}
+    if r["status"] == "duplicate":
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"status": "done", "error": "Already in the library: the new copy was dropped", "file_path": None}
+    # Keep the file: Retry files it again without downloading it again.
+    return {"status": "failed", "error": f"Downloaded but not filed ({r['status']}). The file is in {folder}"}
+
+
+def _die_with_parent_fn():
+    """Linux: a preexec_fn that has yt-dlp get SIGTERM if the app dies without
+    stopping it (a kill, a closed terminal), instead of carrying on into a
+    folder the next launch downloads into again. libc is looked up here, in
+    the parent: the child of a threaded process must not import anything."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        import ctypes
+        prctl = ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:
+        return None
+    return lambda: prctl(1, signal.SIGTERM)                # PR_SET_PDEATHSIG
+
+
+def _dl_stop_live():
+    """Stop the running download, if any, without marking it: it starts over
+    on the next launch."""
+    with _dl_state:
+        if _dl_live.get("proc"):
+            _dl_kill(_dl_live["proc"])
+
+
+def _dl_kill(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)    # yt-dlp and the ffmpeg it started
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _dl_next():
+    """Run the oldest queued job of the active library. False when none is queued."""
+    pid = load_config()["active_profile"]
+    with _pinned_profile(pid):
+        with _db_lock:
+            conn = get_conn()
+            # Only this thread runs jobs, so one still "running" was cut off
+            # by a quit or crash: it goes back in line.
+            conn.execute("UPDATE download_jobs SET status='queued' WHERE status='running'")
+            row = conn.execute("SELECT * FROM download_jobs WHERE status='queued' "
+                               "ORDER BY added_at, id LIMIT 1").fetchone()
+            if row:
+                conn.execute("UPDATE download_jobs SET status='running', error=NULL, "
+                             "started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE id=?", (row["id"],))
+            conn.commit()
+            conn.close()
+        if not row:
+            return False
+        job = dict(row)
+        with _dl_state:
+            _dl_live.clear()
+            _dl_live.update({"id": job["id"], "profile": pid, "progress": None})
+        try:
+            if not shutil.which("yt-dlp"):
+                done = {"status": "failed", "error": "yt-dlp is not installed (not on the PATH)"}
+            else:
+                done = _dl_run(job)
+        except Exception as e:
+            done = {"status": "failed", "error": _clean_err(e)[:300] or "download failed"}
+        finally:
+            with _dl_state:
+                _dl_live.clear()
+        if done["status"] == "canceled":
+            shutil.rmtree(_dl_folder(job["id"]), ignore_errors=True)
+        else:
+            try:
+                os.rmdir(_dl_folder(job["id"]))     # a failure that left nothing behind
+            except OSError:
+                pass
+        _dl_finish(job["id"], **done)
+        print(f"[downloads] {job['video_id']}: {done['status']}" + (f" ({done['error']})" if done.get("error") else ""))
+    return True
+
+
+def _download_loop():
+    while True:
+        _dl_wake.clear()
+        try:
+            while _dl_next():
+                pass
+        except Exception as e:
+            print(f"[downloads] {_clean_err(e)}")
+        _dl_wake.wait(timeout=600)
+
+
+def _dl_jobs(conn):
+    rows = conn.execute('''
+        SELECT * FROM download_jobs
+        ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
+                 COALESCE(finished_at, added_at) DESC, id DESC
+        LIMIT 100''').fetchall()
+    pid = load_config()["active_profile"]
+    with _dl_state:
+        live = dict(_dl_live) if _dl_live.get("profile") == pid else {}
+    jobs = []
+    for r in rows:
+        j = dict(r)
+        j["progress"] = live.get("progress") if live.get("id") == j["id"] else None
+        jobs.append(j)
+    return jobs
+
+
+@app.get("/downloads")
+def list_downloads():
+    conn = get_conn()
+    jobs = _dl_jobs(conn)
+    conn.close()
+    return jsonify({"ok": True, "installed": bool(shutil.which("yt-dlp")), "jobs": jobs})
+
+
+@app.post("/downloads")
+def add_download():
+    body     = request.get_json(silent=True) or {}
+    video_id = str(body.get("video_id") or "").strip()
+    if not _valid_video_id(video_id) or video_id.endswith("_"):
+        return jsonify({"ok": False, "error": "Only YouTube videos can be downloaded"}), 400
+    if not shutil.which("yt-dlp"):
+        return jsonify({"ok": False, "error": "yt-dlp is not installed (not on the PATH)"}), 400
+    title, channel = _text(body.get("title")), _text(body.get("channel_name"))
+    with _db_lock:
+        conn = get_conn()
+        have = conn.execute("SELECT status FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+        if have and have["status"] in ("downloaded", "attached"):
+            conn.close()
+            return jsonify({"ok": False, "error": "Already in the library"}), 409
+        conn.execute('''
+            INSERT INTO download_jobs (video_id, title, channel_name) VALUES (?, ?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET
+                title        = COALESCE(excluded.title, download_jobs.title),
+                channel_name = COALESCE(excluded.channel_name, download_jobs.channel_name),
+                status = 'queued', error = NULL, added_at = CURRENT_TIMESTAMP, finished_at = NULL
+            WHERE download_jobs.status NOT IN ('queued', 'running')
+        ''', (video_id, title, channel))
+        conn.commit()
+        job = dict(conn.execute("SELECT * FROM download_jobs WHERE video_id=?", (video_id,)).fetchone())
+        conn.close()
+    _dl_wake.set()
+    return jsonify({"ok": True, "job": job})
+
+
+@app.post("/downloads/<int:job_id>/cancel")
+def cancel_download(job_id):
+    pid = load_config()["active_profile"]
+    with _dl_state:
+        if _dl_live.get("id") == job_id and _dl_live.get("profile") == pid:
+            _dl_live["cancel"] = True
+            if _dl_live.get("proc"):
+                _dl_kill(_dl_live["proc"])
+            return jsonify({"ok": True})
+    with _db_lock:
+        conn = get_conn()
+        n = conn.execute("UPDATE download_jobs SET status='canceled', finished_at=CURRENT_TIMESTAMP "
+                         "WHERE id=? AND status='queued'", (job_id,)).rowcount
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": bool(n)}), (200 if n else 404)
+
+
+@app.post("/downloads/<int:job_id>/retry")
+def retry_download(job_id):
+    with _db_lock:
+        conn = get_conn()
+        n = conn.execute("UPDATE download_jobs SET status='queued', error=NULL, finished_at=NULL, "
+                         "added_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('failed', 'canceled')",
+                         (job_id,)).rowcount
+        conn.commit()
+        conn.close()
+    _dl_wake.set()
+    return jsonify({"ok": bool(n)}), (200 if n else 404)
+
+
+@app.post("/downloads/clear")
+def clear_downloads():
+    """Forget finished jobs (done, canceled, and failed ones too), and the files
+    a failed job left behind."""
+    with _db_lock:
+        conn = get_conn()
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM download_jobs WHERE status IN ('done', 'canceled', 'failed')")]
+        conn.execute("DELETE FROM download_jobs WHERE status IN ('done', 'canceled', 'failed')")
+        conn.commit()
+        conn.close()
+    for i in ids:
+        shutil.rmtree(_dl_folder(i), ignore_errors=True)
+    return jsonify({"ok": True, "cleared": len(ids)})
+
+
 @app.get("/channel-ids")
 def list_channel_ids():
     conn = get_conn()
@@ -5565,6 +5883,7 @@ def shutdown_app():
         with _observer_lock:
             if _observer:
                 _observer.stop()
+        _dl_stop_live()
         for lock in (_filing_lock, _config_write_lock, _db_lock):
             lock.acquire(timeout=15)
         os._exit(0)
@@ -5640,6 +5959,8 @@ if __name__ == "__main__":
     )
     watcher_thread.start()
     threading.Thread(target=_feed_loop, daemon=True).start()
+    threading.Thread(target=_download_loop, daemon=True).start()
+    atexit.register(_dl_stop_live)       # Ctrl+C
     if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"[api] ChannelVault {__version__}")

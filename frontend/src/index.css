@@ -2909,3 +2909,21 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 }
 .feed-follow-input:focus { outline: none; box-shadow: var(--ring); }
 .feed-follow-err { flex-basis: 100%; text-align: right; font-size: 11px; color: #ffb3b5; }
+
+/* Download queue: header indicator (only while busy or failed) and buttons. */
+.dl-queue-num { font-family: var(--mono); font-weight: 800; }
+.dl-queue .tag-select-btn.is-failed, .dl-btn.is-failed { color: #ef9a9a; }
+.dl-queue-menu { width: 340px; }
+.dl-queue-list { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
+.dl-queue-empty { padding: 8px; color: var(--muted); font-size: 12px; }
+.dl-job { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; }
+.dl-job:hover { background: var(--bg); }
+.dl-job-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.dl-job-title { font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-job-status { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-job.is-failed .dl-job-status { color: #ef9a9a; }
+.dl-job.is-done .dl-job-status { color: var(--accent-text); }
+.dl-job-bar { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.dl-job-bar span { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 8px rgba(var(--glow-rgb), 0.6); transition: width 0.4s; }
+.dl-queue-clear { margin-top: 6px; align-self: flex-end; font-size: 12px; padding: 4px 9px; }
+.wanted-item .dl-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 8px; }
