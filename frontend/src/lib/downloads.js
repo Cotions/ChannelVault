@@ -2,8 +2,9 @@ import { useSyncExternalStore } from "react";
 import { getDownloads, addDownload, cancelDownload, retryDownload, clearDownloads } from "./api";
 
 /* One shared view of the download queue: the header indicator and every
-   Download button read it. It asks the backend once at start, then every
-   1.5 s only while a job is queued or running. */
+   Download button read it. It asks the backend every 1.5 s while a job is
+   queued or running, else every 30 s (the userscript queues downloads too)
+   and when the tab comes back into view. */
 
 let state = { installed: false, jobs: [], loaded: false };
 const listeners = new Set();
@@ -28,13 +29,25 @@ export async function refreshDownloads() {
     emit({ installed: !!d.installed, jobs: d.jobs || [], loaded: true });
   } catch { /* offline: keep what we had */ }
   clearTimeout(timer);
-  timer = state.jobs.some(isActive) ? setTimeout(refreshDownloads, 1500) : null;
+  timer = listeners.size ? setTimeout(refreshDownloads, state.jobs.some(isActive) ? 1500 : 30000) : null;
 }
+
+function onVisible() { if (document.visibilityState === "visible") refreshDownloads(); }
 
 function subscribe(f) {
   listeners.add(f);
-  if (!state.loaded && listeners.size === 1) refreshDownloads();
-  return () => listeners.delete(f);
+  if (listeners.size === 1) {
+    refreshDownloads();
+    document.addEventListener("visibilitychange", onVisible);
+  }
+  return () => {
+    listeners.delete(f);
+    if (!listeners.size) {
+      clearTimeout(timer);
+      timer = null;
+      document.removeEventListener("visibilitychange", onVisible);
+    }
+  };
 }
 
 export function useDownloads() {

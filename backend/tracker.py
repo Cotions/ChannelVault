@@ -4907,6 +4907,15 @@ def _dl_finish(job_id, status, error=None, file_path=None):
         conn.close()
 
 
+class _DlStopped(Exception):
+    """The app is quitting: leave the job "running" so the next launch redoes it."""
+
+
+def _dl_flag(name):
+    with _dl_state:
+        return bool(_dl_live.get(name))
+
+
 def _dl_run(job):
     """Download one job and file it. Returns the columns to store."""
     folder = _dl_folder(job["id"])
@@ -4915,39 +4924,47 @@ def _dl_run(job):
     # Retried after a filing failure: the file is already here, and yt-dlp
     # would only say so. File it again rather than download it again.
     if not _dl_result(folder):
-        proc = subprocess.Popen(_dl_argv(job["video_id"], folder), stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                text=True, errors="replace", bufsize=1, start_new_session=True,
-                                preexec_fn=_die_with_parent_fn())
+        proc = subprocess.Popen(_die_with_parent() + _dl_argv(job["video_id"], folder),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, text=True, errors="replace",
+                                bufsize=1, start_new_session=True)
         with _dl_state:
             _dl_live["proc"] = proc
-            cancel = _dl_live.get("cancel")
-        if cancel:
-            _dl_kill(proc)
-        for line in proc.stdout:
-            line = _DL_ANSI.sub("", line).strip()
-            m = _DL_PROGRESS.match(line)
-            if m:
-                try:
-                    pct = float(m.group(1))
-                except ValueError:
-                    continue
-                with _dl_state:
-                    _dl_live["progress"] = {"percent": pct,
-                                            "speed": "" if m.group(2) in ("NA", "Unknown") else m.group(2),
-                                            "eta":   "" if m.group(3) in ("NA", "Unknown") else m.group(3)}
-            elif line:
-                tail = (tail + [line])[-30:]
-                # Streams are down; ffmpeg merges them and embeds the tags.
-                if re.match(r"\[(Merger|Metadata|EmbedThumbnail|Fixup\w*|ThumbnailsConvertor)\]", line):
+            if _dl_live.get("cancel") or _dl_live.get("stopping"):
+                _dl_kill(proc)
+        try:
+            for line in proc.stdout:
+                line = _DL_ANSI.sub("", line).strip()
+                m = _DL_PROGRESS.match(line)
+                if m:
+                    try:
+                        pct = float(m.group(1))
+                    except ValueError:
+                        continue
                     with _dl_state:
-                        _dl_live["progress"] = {"percent": 100.0, "speed": "", "eta": "", "finishing": True}
-        proc.wait()
-        with _dl_state:
-            if _dl_live.get("cancel"):
-                return {"status": "canceled", "error": None}
+                        _dl_live["progress"] = {"percent": pct,
+                                                "speed": "" if m.group(2) in ("NA", "Unknown") else m.group(2),
+                                                "eta":   "" if m.group(3) in ("NA", "Unknown") else m.group(3)}
+                elif line:
+                    tail = (tail + [line])[-30:]
+                    # Streams are down; ffmpeg merges them and embeds the tags.
+                    if re.match(r"\[(Merger|Metadata|EmbedThumbnail|Fixup\w*|ThumbnailsConvertor)\]", line):
+                        with _dl_state:
+                            _dl_live["progress"] = {"percent": 100.0, "speed": "", "eta": "", "finishing": True}
+        finally:
+            with _dl_state:
+                if proc.poll() is None:
+                    _dl_kill(proc)
+                proc.wait()
+                _dl_live.pop("proc", None)     # reaped: its pid may belong to someone else now
+        if _dl_flag("stopping"):
+            raise _DlStopped()
+        if _dl_flag("cancel"):
+            return {"status": "canceled"}
         if proc.returncode != 0:
             return {"status": "failed", "error": _ytdlp_error("\n".join(tail))}
+    if _dl_flag("cancel"):
+        return {"status": "canceled"}
     path = _dl_result(folder)
     if not path:
         return {"status": "failed",
@@ -4955,38 +4972,43 @@ def _dl_run(job):
     r = _file_into_library(path, load_config()["watch_directory"])
     if r["status"] == "filed":
         shutil.rmtree(folder, ignore_errors=True)
-        return {"status": "done", "error": None, "file_path": r["dest"]}
+        return {"status": "done", "file_path": r["dest"]}
     if r["status"] == "duplicate":
         shutil.rmtree(folder, ignore_errors=True)
-        return {"status": "done", "error": "Already in the library: the new copy was dropped", "file_path": None}
+        return {"status": "done", "error": "Already in the library: the new copy was dropped"}
+    if r["moved"] or not os.path.exists(path):
+        # In the library folder but not tracked: downloading again won't help.
+        return {"status": "done", "file_path": r["dest"],
+                "error": f"Saved to {r['dest']} but not added ({r['status']}): try Scan folder on its artist page"}
+    if r["status"] == "dest-exists":
+        return {"status": "failed",
+                "error": f"{r['dest']} already exists: move or rename it, then Retry. The download is in {folder}"}
     # Keep the file: Retry files it again without downloading it again.
     return {"status": "failed", "error": f"Downloaded but not filed ({r['status']}). The file is in {folder}"}
 
 
-def _die_with_parent_fn():
-    """Linux: a preexec_fn that has yt-dlp get SIGTERM if the app dies without
-    stopping it (a kill, a closed terminal), instead of carrying on into a
-    folder the next launch downloads into again. libc is looked up here, in
-    the parent: the child of a threaded process must not import anything."""
-    if not sys.platform.startswith("linux"):
-        return None
-    try:
-        import ctypes
-        prctl = ctypes.CDLL("libc.so.6", use_errno=True).prctl
-    except Exception:
-        return None
-    return lambda: prctl(1, signal.SIGTERM)                # PR_SET_PDEATHSIG
+def _die_with_parent():
+    """Linux: run yt-dlp through setpriv so it gets SIGTERM if the app dies
+    without stopping it (kill -9, a closed terminal) instead of carrying on
+    into a folder the next launch downloads into again."""
+    if sys.platform.startswith("linux") and shutil.which("setpriv"):
+        return ["setpriv", "--pdeathsig", "TERM", "--"]
+    return []
 
 
 def _dl_stop_live():
-    """Stop the running download, if any, without marking it: it starts over
-    on the next launch."""
+    """The app is quitting: stop the running download without marking it, so
+    it starts over on the next launch."""
     with _dl_state:
+        _dl_live["stopping"] = True
         if _dl_live.get("proc"):
             _dl_kill(_dl_live["proc"])
 
 
 def _dl_kill(proc):
+    """Callers hold _dl_state; proc is never reaped while it's in _dl_live."""
+    if proc.returncode is not None:
+        return
     try:
         os.killpg(proc.pid, signal.SIGTERM)    # yt-dlp and the ffmpeg it started
     except (ProcessLookupError, PermissionError):
@@ -5007,24 +5029,30 @@ def _dl_next():
             if row:
                 conn.execute("UPDATE download_jobs SET status='running', error=NULL, "
                              "started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE id=?", (row["id"],))
+                # Live before the row reads "running", so a cancel always finds it.
+                with _dl_state:
+                    stopping = _dl_live.get("stopping")
+                    _dl_live.clear()
+                    _dl_live.update({"id": row["id"], "profile": pid, "progress": None, "stopping": stopping})
             conn.commit()
             conn.close()
         if not row:
             return False
         job = dict(row)
-        with _dl_state:
-            _dl_live.clear()
-            _dl_live.update({"id": job["id"], "profile": pid, "progress": None})
         try:
             if not shutil.which("yt-dlp"):
                 done = {"status": "failed", "error": "yt-dlp is not installed (not on the PATH)"}
             else:
                 done = _dl_run(job)
+        except _DlStopped:
+            return False
         except Exception as e:
             done = {"status": "failed", "error": _clean_err(e)[:300] or "download failed"}
         finally:
             with _dl_state:
+                stopping = _dl_live.get("stopping")
                 _dl_live.clear()
+                _dl_live["stopping"] = stopping
         if done["status"] == "canceled":
             shutil.rmtree(_dl_folder(job["id"]), ignore_errors=True)
         else:

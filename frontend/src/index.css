@@ -2923,6 +2923,7 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 .dl-job-status { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dl-job.is-failed .dl-job-status { color: #ef9a9a; }
 .dl-job.is-done .dl-job-status { color: var(--accent-text); }
+.dl-job.is-done.has-warning .dl-job-status { color: #ffcc80; }
 .dl-job-bar { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
 .dl-job-bar span { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 8px rgba(var(--glow-rgb), 0.6); transition: width 0.4s; }
 .dl-queue-clear { margin-top: 6px; align-self: flex-end; font-size: 12px; padding: 4px 9px; }

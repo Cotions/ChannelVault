@@ -56,7 +56,7 @@ export default function DownloadQueue() {
           {jobs.length === 0 ? <div className="dl-queue-empty">No downloads.</div> : (
             <div className="dl-queue-list">
               {jobs.map(j => (
-                <div key={j.id} className={`dl-job is-${j.status}`}>
+                <div key={j.id} className={`dl-job is-${j.status}${j.status === "done" && j.error ? " has-warning" : ""}`}>
                   <div className="dl-job-main">
                     <a className="dl-job-title" href={`https://www.youtube.com/watch?v=${j.video_id}`} target="_blank" rel="noreferrer">
                       {j.title || j.video_id}
