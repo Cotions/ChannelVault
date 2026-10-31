@@ -5134,13 +5134,14 @@ def add_download():
 @app.post("/downloads/<int:job_id>/cancel")
 def cancel_download(job_id):
     pid = load_config()["active_profile"]
-    with _dl_state:
-        if _dl_live.get("id") == job_id and _dl_live.get("profile") == pid:
-            _dl_live["cancel"] = True
-            if _dl_live.get("proc"):
-                _dl_kill(_dl_live["proc"])
-            return jsonify({"ok": True})
+    # Same lock order as _dl_next, so the job can't turn live between the two checks.
     with _db_lock:
+        with _dl_state:
+            if _dl_live.get("id") == job_id and _dl_live.get("profile") == pid:
+                _dl_live["cancel"] = True
+                if _dl_live.get("proc"):
+                    _dl_kill(_dl_live["proc"])
+                return jsonify({"ok": True})
         conn = get_conn()
         n = conn.execute("UPDATE download_jobs SET status='canceled', finished_at=CURRENT_TIMESTAMP "
                          "WHERE id=? AND status='queued'", (job_id,)).rowcount

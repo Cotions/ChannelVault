@@ -13,10 +13,13 @@ let timer = null;
 
 function emit(next) {
   const before = new Map(state.jobs.map(j => [j.id, j.status]));
+  const wasLoaded = state.loaded;
   state = next;
   listeners.forEach(f => f());
   // A job that just landed in the library: the pages showing videos reload.
-  if (next.jobs.some(j => j.status === "done" && before.has(j.id) && before.get(j.id) !== "done")) {
+  // One first seen already done was queued elsewhere (the userscript) and
+  // finished between two idle polls.
+  if (next.jobs.some(j => j.status === "done" && (before.has(j.id) ? before.get(j.id) !== "done" : wasLoaded))) {
     doneListeners.forEach(f => f());
   }
 }
