@@ -147,7 +147,11 @@ The first check of a channel only counts uploads from the last few days as new; 
 
 If [yt-dlp](https://github.com/yt-dlp/yt-dlp) is installed (on the PATH), Inbox items, wanted videos on an artist page and the userscript's ⋯ menu get a **Download** button. ChannelVault does not ship or update yt-dlp: it runs the one you have, with the cookies and JavaScript runtime set under **Settings → YouTube**. Keep it current yourself (`yt-dlp -U`, or your package manager); YouTube breaks old versions every few weeks.
 
-Only YouTube videos, one at a time. Each one downloads into `<data directory>/downloads/` and is then filed like an import: into `<watch folder>/<channel>/`, tagged (title, channel as artist, date, link, chapters, thumbnail embedded and saved beside it as `.webp`), mp4 with H.264 up to 1080p where YouTube has it. A video already in the vault is refused.
+Only YouTube videos, one at a time. Each one downloads into `<data directory>/downloads/` and is then filed like an import: into `<watch folder>/<channel>/`, tagged (title, channel as artist, date, link, chapters, thumbnail embedded and saved beside it as `.webp`). A video already in the vault is refused.
+
+**Quality.** By default you get the best H.264 mp4 YouTube has (usually 1080p). The arrow next to **Download** picks another one for that video: 4K, 1440p, 1080p, 720p, 480p (each one takes the biggest picture up to that size; above 1080p YouTube only has VP9/AV1), or **Audio only** (an `.m4a` with the cover, filed as an audio entry). **Check sizes** in that menu asks yt-dlp what the video really has, and lists each height with its codec and file size.
+
+**Per creator.** On an artist page, **Download quality** sets the quality their Download buttons use by default, the userscript's included. The same menu has **Download new uploads automatically**. It is off unless you turn it on, and works only for channels the Inbox follows. When the feed finds a new upload from that creator, it is queued at their quality. Shorts are skipped, and so is anything you already downloaded, canceled or cleared once.
 
 While something is queued, downloading or has failed, a small indicator shows in the header; click it for progress, **Cancel**, **Retry** and **Clear finished**. With nothing going on it is not shown. A download cut off by quitting starts again on the next launch. Members-only or age-gated videos need the browser cookies under Settings → YouTube; without them they fail with YouTube's reason.
 
@@ -474,7 +478,10 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/downloads` | Recent jobs with live progress, and whether yt-dlp is installed |
-| POST | `/downloads` | Queue a YouTube video (`video_id`, optional `title`, `channel_name`); 409 if it's in the vault |
+| POST | `/downloads` | Queue a YouTube video (`video_id`, optional `title`, `channel_name`, `quality`: `best`, `audio` or a height like `1080`; left out, the creator's default); 409 if it's in the vault |
+| GET | `/downloads/formats/<video_id>` | Ask yt-dlp which heights the video has, with codec and size, plus the audio-only size |
+| GET | `/download-prefs` | Every creator's download quality and auto-download setting |
+| POST | `/download-prefs` | Set one (`channel_name`, `quality`, `auto`) |
 | POST | `/downloads/<id>/cancel` | Stop a queued or running download |
 | POST | `/downloads/<id>/retry` | Queue a failed or canceled download again |
 | POST | `/downloads/clear` | Forget finished, canceled and failed jobs |

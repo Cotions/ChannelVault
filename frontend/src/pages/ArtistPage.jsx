@@ -16,6 +16,7 @@ import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 import DownloadButton from "../components/DownloadButton";
+import DownloadPrefs from "../components/DownloadPrefs";
 import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
@@ -227,6 +228,9 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
         )}
         {!channelMark && videos.some(v => isYouTube(v) && artistsOf(v).includes(artist)) && (
           <FeedFollow key={artist} artist={artist} />
+        )}
+        {!channelMark && videos.some(v => isYouTube(v) && artistsOf(v).includes(artist)) && (
+          <DownloadPrefs artist={artist} />
         )}
       </div>
 

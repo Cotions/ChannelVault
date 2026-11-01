@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { useDownloads, isActive, cancelJob, retryJob, clearJobs } from "../lib/downloads";
+import { useDownloads, isActive, cancelJob, retryJob, clearJobs, qualityLabel } from "../lib/downloads";
 import Icon from "./Icon";
 
 function statusLine(j) {
+  const line = status(j);
+  // What it asked for, while that still matters; "auto": the feed queued it.
+  return isActive(j) ? [line, qualityLabel(j.quality || "best"), j.auto && "auto"].filter(Boolean).join("  ·  ") : line;
+}
+
+function status(j) {
   if (j.status === "running") {
     const p = j.progress;
     if (!p) return "Starting…";

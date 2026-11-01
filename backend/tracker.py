@@ -26,6 +26,7 @@ import urllib.parse
 import threading
 import unicodedata
 import uuid
+from datetime import datetime, timedelta, timezone
 import difflib
 import math
 import glob
@@ -958,6 +959,22 @@ def init_db():
             added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             started_at   TIMESTAMP,
             finished_at  TIMESTAMP
+        )
+    ''')
+    # What a download asked for: 'best' (best H.264, the library's usual),
+    # a height cap like '1080', or 'audio'. auto: queued by the feed, not by hand.
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(download_jobs)")]
+    if "quality" not in cols:
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN quality TEXT NOT NULL DEFAULT 'best'")
+    if "auto" not in cols:
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+    # Per creator: the quality a Download uses unless another is picked, and
+    # whether new uploads from the feed download on their own (off unless set).
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS download_prefs (
+            channel_name TEXT PRIMARY KEY,
+            quality      TEXT NOT NULL DEFAULT 'best',
+            auto         INTEGER NOT NULL DEFAULT 0
         )
     ''')
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_items_channel ON feed_items(channel_id)")
@@ -4700,6 +4717,18 @@ def _due_feed_channels(hours, force):
     return [r["channel_id"] for r in rows]
 
 
+def _feed_fresh(published_at):
+    """Published in the last few days (an old video turning up in a feed,
+    made public late, is not a new upload)."""
+    try:
+        when = datetime.fromisoformat((published_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - when < timedelta(days=_FEED_FRESH_DAYS)
+
+
 def _store_feed(channel_id, items, error):
     with _db_lock:
         conn = get_conn()
@@ -4715,7 +4744,10 @@ def _store_feed(channel_id, items, error):
                 seeded = conn.execute(
                     "SELECT seeded FROM feed_channels WHERE channel_id = ?", (channel_id,)).fetchone()
                 first = not (seeded and seeded["seeded"])
+                queued = False
                 for it in items:
+                    new = not conn.execute("SELECT 1 FROM feed_items WHERE video_id = ?",
+                                           (it["video_id"],)).fetchone()
                     conn.execute('''
                         INSERT INTO feed_items (video_id, channel_id, title, published_at, is_short, backlog)
                         VALUES (?, ?, ?, ?, ?,
@@ -4726,12 +4758,18 @@ def _store_feed(channel_id, items, error):
                     ''', (it["video_id"], channel_id, it["title"], it["published_at"],
                           1 if it["is_short"] else 0,
                           1 if first else 0, it["published_at"], f"-{_FEED_FRESH_DAYS} days"))
+                    # Auto-download (off unless turned on for this creator):
+                    # fresh uploads new since the last check, never Shorts.
+                    if not first and not it["is_short"] and _feed_fresh(it["published_at"]):
+                        queued = _dl_auto_queue(conn, channel_id, it["video_id"], it["title"], new) or queued
                 conn.execute('''
                     INSERT INTO feed_channels (channel_id, checked_at, check_error, seeded)
                     VALUES (?, CURRENT_TIMESTAMP, NULL, 1)
                     ON CONFLICT(channel_id) DO UPDATE SET
                         checked_at = CURRENT_TIMESTAMP, check_error = NULL, seeded = 1
                 ''', (channel_id,))
+                if queued:
+                    _dl_wake.set()
         conn.close()
 
 
@@ -4858,6 +4896,11 @@ def feed_check():
 # filing as an import: <watch>/<artist>/, tracked, thumbnail and all.
 
 _DL_FORMAT   = "bv*[vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+
+
+def _dl_quality_ok(q):
+    """'best', 'audio', or a height cap ('1080'; any height the size list offers)."""
+    return q in ("best", "audio") or (q.isdigit() and 100 <= int(q) <= 4320)
 _DL_TEMPLATE = "%(title).180B-%(id)s.%(ext)s"
 _DL_PROGRESS = re.compile(r"cvprog\s+([\d.]+)%?\s*(\S*)\s*(\S*)")
 _DL_ANSI     = re.compile(r"\x1b\[[0-9;]*m")
@@ -4871,11 +4914,26 @@ def _dl_folder(job_id):
     return os.path.join(load_config()["data_directory"], "downloads", str(int(job_id)))
 
 
-def _dl_argv(video_id, folder):
-    return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + [
+def _dl_quality_args(quality):
+    if quality == "audio":
+        # The m4a stream as is (no re-encode); the library files it as an audio entry.
+        return ["-f", "ba[ext=m4a]/ba", "-x", "--audio-format", "m4a"]
+    if quality.isdigit():
+        # The biggest picture up to the cap, H.264 when that size has it.
+        # Above 1080p YouTube has only VP9/AV1, still muxed into an mp4.
+        return ["-f", "bv*+ba/b", "-S", f"res:{quality},vcodec:h264,acodec:aac",
+                "--merge-output-format", "mp4"]
+    return ["-f", _DL_FORMAT, "--merge-output-format", "mp4"]
+
+
+def _dl_argv(video_id, folder, quality="best", auto=False):
+    # Queued by the feed: a stream still live or a premiere not out yet is
+    # skipped (and tried again later) rather than recorded for hours.
+    wait = ["--match-filters", "!is_live & live_status != is_upcoming"] if auto else []
+    return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + wait + [
         "--no-playlist", "--newline", "--progress",
         "--progress-template", "download:cvprog %(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s",
-        "-f", _DL_FORMAT, "--merge-output-format", "mp4",
+    ] + _dl_quality_args(quality) + [
         "--embed-metadata", "--embed-chapters", "--embed-thumbnail", "--write-thumbnail",
         # The library files a video under its channel; yt-dlp's own artist
         # field would put a music video under the song's artist instead.
@@ -4918,13 +4976,24 @@ def _dl_flag(name):
 
 def _dl_run(job):
     """Download one job and file it. Returns the columns to store."""
-    folder = _dl_folder(job["id"])
+    folder  = _dl_folder(job["id"])
+    quality = job.get("quality") or "best"
+    marker  = os.path.join(folder, ".quality")
+    try:
+        with open(marker) as f:
+            kept = f.read().strip()
+    except OSError:
+        kept = None
+    if kept != quality:
+        shutil.rmtree(folder, ignore_errors=True)    # a file kept from a try at another quality
     os.makedirs(folder, exist_ok=True)
+    with open(marker, "w") as f:
+        f.write(quality)
     tail = []
     # Retried after a filing failure: the file is already here, and yt-dlp
     # would only say so. File it again rather than download it again.
     if not _dl_result(folder):
-        proc = subprocess.Popen(_die_with_parent() + _dl_argv(job["video_id"], folder),
+        proc = subprocess.Popen(_die_with_parent() + _dl_argv(job["video_id"], folder, quality, bool(job.get("auto"))),
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, text=True, errors="replace",
                                 bufsize=1, start_new_session=True)
@@ -4961,8 +5030,12 @@ def _dl_run(job):
             raise _DlStopped()
         if _dl_flag("cancel"):
             return {"status": "canceled"}
+        text = "\n".join(tail)
+        if job.get("auto") and ("does not pass filter" in text
+                                or re.search(r"Premieres in|live event will begin|is_upcoming", text)):
+            return {"status": "failed", "error": _DL_NOT_OUT}
         if proc.returncode != 0:
-            return {"status": "failed", "error": _ytdlp_error("\n".join(tail))}
+            return {"status": "failed", "error": _ytdlp_error(text)}
     if _dl_flag("cancel"):
         return {"status": "canceled"}
     path = _dl_result(folder)
@@ -5056,8 +5129,10 @@ def _dl_next():
         if done["status"] == "canceled":
             shutil.rmtree(_dl_folder(job["id"]), ignore_errors=True)
         else:
+            folder = _dl_folder(job["id"])
             try:
-                os.rmdir(_dl_folder(job["id"]))     # a failure that left nothing behind
+                if set(os.listdir(folder)) <= {".quality"}:
+                    shutil.rmtree(folder)           # a failure that left nothing behind
             except OSError:
                 pass
         _dl_finish(job["id"], **done)
@@ -5110,25 +5185,180 @@ def add_download():
     if not shutil.which("yt-dlp"):
         return jsonify({"ok": False, "error": "yt-dlp is not installed (not on the PATH)"}), 400
     title, channel = _text(body.get("title")), _text(body.get("channel_name"))
+    quality = str(body.get("quality") or "")
+    if quality and not _dl_quality_ok(quality):
+        return jsonify({"ok": False, "error": "Unknown quality"}), 400
     with _db_lock:
         conn = get_conn()
-        have = conn.execute("SELECT status FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
-        if have and have["status"] in ("downloaded", "attached"):
+        if _dl_in_library(conn, video_id):
             conn.close()
             return jsonify({"ok": False, "error": "Already in the library"}), 409
-        conn.execute('''
-            INSERT INTO download_jobs (video_id, title, channel_name) VALUES (?, ?, ?)
-            ON CONFLICT(video_id) DO UPDATE SET
-                title        = COALESCE(excluded.title, download_jobs.title),
-                channel_name = COALESCE(excluded.channel_name, download_jobs.channel_name),
-                status = 'queued', error = NULL, added_at = CURRENT_TIMESTAMP, finished_at = NULL
-            WHERE download_jobs.status NOT IN ('queued', 'running')
-        ''', (video_id, title, channel))
+        # No quality picked: the creator's own default, else the library's usual.
+        _dl_queue(conn, video_id, title, channel, quality or _dl_pref(conn, channel)["quality"])
         conn.commit()
         job = dict(conn.execute("SELECT * FROM download_jobs WHERE video_id=?", (video_id,)).fetchone())
         conn.close()
     _dl_wake.set()
     return jsonify({"ok": True, "job": job})
+
+
+def _dl_in_library(conn, video_id):
+    have = conn.execute("SELECT status FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+    return bool(have and have["status"] in ("downloaded", "attached"))
+
+
+def _dl_pref(conn, channel_name):
+    """The creator's settings; for a collab credit ("A, B"), the first one who has any."""
+    for name in [channel_name or ""] + _artist_names(channel_name):
+        row = conn.execute("SELECT quality, auto FROM download_prefs WHERE channel_name=?", (name,)).fetchone()
+        if row:
+            return {"quality": row["quality"], "auto": bool(row["auto"])}
+    return {"quality": "best", "auto": False}
+
+
+def _dl_queue(conn, video_id, title, channel, quality, auto=False):
+    """Queue a job, or requeue a finished one. One already waiting or running
+    is left as it is."""
+    conn.execute('''
+        INSERT INTO download_jobs (video_id, title, channel_name, quality, auto) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+            title        = COALESCE(excluded.title, download_jobs.title),
+            channel_name = COALESCE(excluded.channel_name, download_jobs.channel_name),
+            quality      = excluded.quality,
+            auto         = excluded.auto,
+            status = 'queued', error = NULL, added_at = CURRENT_TIMESTAMP, finished_at = NULL
+        WHERE download_jobs.status NOT IN ('queued', 'running')
+    ''', (video_id, title, channel, quality, 1 if auto else 0))
+
+
+_DL_NOT_OUT = "Not out yet (a premiere or a live stream): tried again on the next feed check"
+
+
+def _dl_auto_queue(conn, channel_id, video_id, title, new):
+    """An upload in the feed: queue it if its creator has auto-download on and
+    it is new, or try again one that wasn't out yet the last time."""
+    row = conn.execute('''
+        SELECT p.channel_name, p.quality FROM channel_ids c
+        JOIN download_prefs p ON p.channel_name = c.channel_name
+        WHERE c.channel_id = ? AND p.auto = 1 AND c.unfollowed = 0
+          AND c.channel_name NOT IN (SELECT channel_name FROM channel_status)
+        LIMIT 1
+    ''', (channel_id,)).fetchone()
+    if not row or _dl_in_library(conn, video_id):
+        return False
+    job = conn.execute("SELECT status, auto, error FROM download_jobs WHERE video_id=?", (video_id,)).fetchone()
+    if job:
+        # Downloaded, canceled or failed once: not again on its own, except an
+        # automatic one that was only waiting for the premiere or stream to end.
+        if not (job["auto"] and job["status"] == "failed" and job["error"] == _DL_NOT_OUT):
+            return False
+    elif not new:
+        return False
+    _dl_queue(conn, video_id, title, row["channel_name"], row["quality"], auto=True)
+    return True
+
+
+@app.get("/download-prefs")
+def list_download_prefs():
+    conn = get_conn()
+    rows = conn.execute("SELECT channel_name, quality, auto FROM download_prefs").fetchall()
+    conn.close()
+    return jsonify({"ok": True, "prefs": {r["channel_name"]: {"quality": r["quality"], "auto": bool(r["auto"])}
+                                          for r in rows}})
+
+
+@app.post("/download-prefs")
+def set_download_prefs():
+    body    = request.get_json(silent=True) or {}
+    name    = _text(body.get("channel_name"))
+    quality = str(body.get("quality") or "best")
+    auto    = bool(body.get("auto"))
+    if not name:
+        return jsonify({"ok": False, "error": "channel_name is required"}), 400
+    if not _dl_quality_ok(quality):
+        return jsonify({"ok": False, "error": "Unknown quality"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if quality == "best" and not auto:
+            conn.execute("DELETE FROM download_prefs WHERE channel_name=?", (name,))
+        else:
+            conn.execute('''
+                INSERT INTO download_prefs (channel_name, quality, auto) VALUES (?, ?, ?)
+                ON CONFLICT(channel_name) DO UPDATE SET quality = excluded.quality, auto = excluded.auto
+            ''', (name, quality, 1 if auto else 0))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, "quality": quality, "auto": auto})
+
+
+_dl_formats_cache = {}                      # video_id -> (fetched at, answer)
+
+
+@app.get("/downloads/formats/<vid:video_id>")
+def download_formats(video_id):
+    """What YouTube has for one video, per height, with the size each choice
+    would download. One yt-dlp lookup, only when the user asks for it."""
+    if video_id.endswith("_"):
+        return jsonify({"ok": False, "error": "Only YouTube videos can be downloaded"}), 400
+    if not shutil.which("yt-dlp"):
+        return jsonify({"ok": False, "error": "yt-dlp is not installed (not on the PATH)"}), 400
+    hit = _dl_formats_cache.get(video_id)
+    if hit and time.time() - hit[0] < 600:
+        return jsonify(hit[1])
+    try:
+        r = _ytdlp("-J", "--no-playlist", "--", f"https://www.youtube.com/watch?v={video_id}", timeout=60)
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "yt-dlp took too long to answer"}), 504
+    if r.returncode != 0:
+        return jsonify({"ok": False, "error": _ytdlp_error(r.stderr)}), 502
+    try:
+        info = json.loads(r.stdout)
+    except ValueError:
+        return jsonify({"ok": False, "error": "yt-dlp gave an unreadable answer"}), 502
+    answer = {"ok": True, **_dl_summarize_formats(info)}
+    _dl_formats_cache[video_id] = (time.time(), answer)
+    if len(_dl_formats_cache) > 200:
+        _dl_formats_cache.pop(next(iter(_dl_formats_cache), None), None)
+    return jsonify(answer)
+
+
+def _dl_size(f, duration):
+    size = f.get("filesize") or f.get("filesize_approx")
+    if not size and f.get("tbr") and duration:
+        size = f["tbr"] * 1000 / 8 * duration
+    return int(size) if size else None
+
+
+def _dl_summarize_formats(info):
+    """Per height, the stream a capped download picks (H.264 when there is
+    one) plus the m4a audio it is merged with; and the audio-only choice."""
+    duration = info.get("duration")
+    fmts  = [f for f in info.get("formats") or [] if str(f.get("protocol") or "https").startswith("http")]
+    audio = [f for f in fmts if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
+    m4a   = [f for f in audio if f.get("ext") == "m4a"] or audio
+    best_audio = max(m4a, key=lambda f: f.get("abr") or f.get("tbr") or 0, default=None)
+    audio_size = _dl_size(best_audio, duration) if best_audio else None
+    by_height = {}
+    for f in fmts:
+        h = f.get("height")
+        if not h or f.get("vcodec") in (None, "none") or f.get("acodec") not in (None, "none"):
+            continue
+        key = (str(f.get("vcodec") or "").startswith("avc1"), f.get("fps") or 0, f.get("tbr") or 0)
+        if h not in by_height or key > by_height[h][0]:
+            by_height[h] = (key, f)
+    heights = []
+    for h, (_, f) in sorted(by_height.items(), reverse=True):
+        v  = _dl_size(f, duration)
+        vc = str(f.get("vcodec") or "").split(".")[0]
+        heights.append({
+            "height": h,
+            "fps":    round(f["fps"]) if f.get("fps") else None,
+            "codec":  {"avc1": "H.264", "vp9": "VP9", "vp09": "VP9", "av01": "AV1"}.get(vc, vc),
+            "size":   v + (audio_size or 0) if v else None,
+        })
+    return {"duration": duration, "heights": heights,
+            "audio": {"size": audio_size, "abr": round(best_audio["abr"]) if best_audio.get("abr") else None}
+                     if best_audio else None}
 
 
 @app.post("/downloads/<int:job_id>/cancel")
