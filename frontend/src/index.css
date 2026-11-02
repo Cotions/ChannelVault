@@ -2959,3 +2959,37 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 }
 .rename-input:focus { outline: none; box-shadow: var(--ring); }
 .rename-err { flex-basis: 100%; color: #ffb3b5; }
+
+/* Download queue: header indicator (only while busy or failed) and buttons. */
+.dl-queue-num { font-family: var(--mono); font-weight: 800; }
+.dl-queue .tag-select-btn.is-failed, .dl-btn.is-failed { color: #ef9a9a; }
+.dl-queue-menu { width: 340px; }
+.dl-queue-list { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
+.dl-queue-empty { padding: 8px; color: var(--muted); font-size: 12px; }
+.dl-job { display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: 8px; }
+.dl-job:hover { background: var(--bg); }
+.dl-job-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.dl-job-title { font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-job-status { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-job.is-failed .dl-job-status { color: #ef9a9a; }
+.dl-job.is-done .dl-job-status { color: var(--accent-text); }
+.dl-job.is-done.has-warning .dl-job-status { color: #ffcc80; }
+.dl-job-bar { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.dl-job-bar span { display: block; height: 100%; background: var(--accent); box-shadow: 0 0 8px rgba(var(--glow-rgb), 0.6); transition: width 0.4s; }
+.dl-queue-clear { margin-top: 6px; align-self: flex-end; font-size: 12px; padding: 4px 9px; }
+.dl-split { position: relative; display: inline-flex; align-items: stretch; }
+.dl-split.can-pick > .dl-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; padding-right: 8px; }
+.dl-pick { border-top-left-radius: 0; border-bottom-left-radius: 0; padding: 0 7px; margin-left: 1px; display: inline-flex; align-items: center; }
+.dl-pick.is-open { color: var(--text); }
+.dl-caret { width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor; }
+.dl-menu { width: 250px; }
+.dl-menu .tag-select-clear:disabled { opacity: 0.6; cursor: default; }
+.dl-menu-def { font-family: var(--mono); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--glow); }
+.dl-menu-err { padding: 6px 8px 0; font-size: 11px; color: #ffb3b5; }
+.dl-menu-head { padding: 2px 8px 6px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.dl-prefs-chip { display: inline-flex; align-items: center; gap: 6px; }
+.dl-prefs-auto { display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 8px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); cursor: pointer; }
+.dl-prefs-auto input { accent-color: var(--accent); }
+.wanted-item .dl-split { margin-left: auto; }
+.wanted-item .dl-pick { font-size: 12px; padding: 3px 7px; }
+.wanted-item .dl-btn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 8px; }

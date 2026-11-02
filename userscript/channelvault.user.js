@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.7.0
+// @version      1.9.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -40,15 +40,10 @@ function makeVaultIcon(size) {
 }
 
 GM_addStyle(`
-  a.ytLockupMetadataViewModelTitle.cv-title-downloaded,
-  a.ytLockupMetadataViewModelTitle.cv-title-downloaded:hover,
-  a.ytLockupMetadataViewModelTitle.cv-title-downloaded:visited { color: #2e7d32 !important; }
-  a.ytLockupMetadataViewModelTitle.cv-title-wanted,
-  a.ytLockupMetadataViewModelTitle.cv-title-wanted:hover,
-  a.ytLockupMetadataViewModelTitle.cv-title-wanted:visited { color: #1565c0 !important; }
-  a.ytLockupMetadataViewModelTitle.cv-title-ignored,
-  a.ytLockupMetadataViewModelTitle.cv-title-ignored:hover,
-  a.ytLockupMetadataViewModelTitle.cv-title-ignored:visited { color: #b71c1c !important; }
+  /* The title text sits in child elements that set their own color. */
+  a.cv-title-downloaded, a.cv-title-downloaded:visited, a.cv-title-downloaded :not(.cv-card-badge) { color: #2e7d32 !important; }
+  a.cv-title-wanted, a.cv-title-wanted:visited, a.cv-title-wanted :not(.cv-card-badge)             { color: #1565c0 !important; }
+  a.cv-title-ignored, a.cv-title-ignored:visited, a.cv-title-ignored :not(.cv-card-badge)          { color: #b71c1c !important; }
   ytd-watch-metadata #title,
   #above-the-fold #title {
     position: relative !important;
@@ -115,7 +110,13 @@ GM_addStyle(`
 
 function getVideoId() {
   const params = new URLSearchParams(window.location.search);
-  return params.get("v") || null;
+  if (params.get("v")) return params.get("v");
+  const m = window.location.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]{11})/);
+  return m ? m[1] : null;
+}
+
+function onShortsPage() {
+  return window.location.pathname.startsWith("/shorts/");
 }
 
 function removeBadge() {
@@ -186,7 +187,8 @@ async function checkAndAnnotate() {
   removeBadge();
   colorTitle(false);
   const videoId = getVideoId();
-  if (!videoId) return;
+  // The Shorts player has no title to badge; its tiles elsewhere get one.
+  if (!videoId || onShortsPage()) return;
 
   let status = null;
   try {
@@ -258,39 +260,56 @@ function gmFetchIds() {
 }
 
 function extractVideoIdFromHref(href) {
-  const m = href && href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  const m = href && href.match(/(?:[?&]v=|^\/shorts\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
 }
 
-function annotateCards(downloaded, wanted, ignored) {
-  document
-    .querySelectorAll("a.ytLockupMetadataViewModelTitle[href*='watch?v=']")
-    .forEach(link => {
-      const href = link.getAttribute("href");
-      // Playlist/mix tiles link to their first video: not that video's card.
-      if (href.includes("list=")) return;
-      const videoId = extractVideoIdFromHref(href);
-      if (!videoId) return;
+const CARD_SELECTOR =
+  "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
+  "ytd-grid-video-renderer, ytd-compact-video-renderer";
 
+// Every video tile on the page, whatever YouTube draws it with: the newer
+// lockups (home, channel pages, watch sidebar), the classic renderers (search
+// results), and Shorts tiles. Each comes as its title link plus the card.
+// A tile that isn't one video (a playlist or mix, which links to its first
+// video) comes with videoId null, so a badge left from a recycled card goes.
+function findCards() {
+  const out = [], cards = new Set();
+  const add = (link, card) => {
+    if (!card || cards.has(card)) return;     // one title per card
+    cards.add(card);
+    const href = link.getAttribute("href") || "";
+    out.push({ link, card, videoId: href.includes("list=") ? null : extractVideoIdFromHref(href) });
+  };
+  document.querySelectorAll(
+    "a.ytLockupMetadataViewModelTitle[href*='watch?v='], " +
+    "a#video-title[href*='watch?v='], a#video-title-link[href*='watch?v=']"
+  ).forEach(link => add(link, link.closest(CARD_SELECTOR) || link.parentElement));
+  document.querySelectorAll("ytm-shorts-lockup-view-model").forEach(card => {
+    const link = card.querySelector("a.shortsLockupViewModelHostOutsideMetadataEndpoint[href^='/shorts/']") ||
+                 card.querySelector("a[href^='/shorts/']");
+    if (link) add(link, card);
+  });
+  return out;
+}
+
+function annotateCards(downloaded, wanted, ignored) {
+  findCards().forEach(({ link, card, videoId }) => {
       const isDownloaded = downloaded.has(videoId);
       const isWanted     = !isDownloaded && wanted.has(videoId);
       const isIgnored    = !isDownloaded && !isWanted && ignored.has(videoId);
       const mark = isDownloaded ? "downloaded" : isWanted ? "wanted" : isIgnored ? "ignored" : "";
 
-      const card = link.closest(
-        "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
-        "ytd-grid-video-renderer, ytd-compact-video-renderer"
-      ) || link.parentElement;
-      if (!card) return;
       // YouTube reuses card elements for other videos: a badge is only kept
       // when it still describes this card's video and mark.
       const old = card.querySelector(`.${CARD_BADGE_CLASS}`);
       if (old && old.dataset.cvKey === `${videoId}:${mark}`) return;
       if (old) {
         old.remove();
-        link.classList.remove("cv-title-downloaded", "cv-title-wanted", "cv-title-ignored");
+        card.querySelectorAll(".cv-title-downloaded, .cv-title-wanted, .cv-title-ignored")
+          .forEach(a => a.classList.remove("cv-title-downloaded", "cv-title-wanted", "cv-title-ignored"));
       }
-      if (!mark) return;
+      if (!mark || !videoId) return;
 
       let color, text, textColor;
       if (isDownloaded) { color = COLOR_DOWNLOADED; text = "✓ In Vault";  textColor = "#fff"; }
@@ -307,7 +326,7 @@ function annotateCards(downloaded, wanted, ignored) {
 
       const thumb = card.querySelector(
         "a.ytLockupViewModelContentImage, yt-thumbnail-view-model, " +
-        "yt-lockup-thumbnail, ytd-thumbnail, yt-image, a#thumbnail"
+        "yt-lockup-thumbnail, ytd-thumbnail, a.reel-item-endpoint, yt-image, a#thumbnail"
       );
 
       if (thumb) {
@@ -523,6 +542,39 @@ function injectCVMenuItems(container) {
 
   listView.appendChild(wantItem);
   listView.appendChild(skipItem);
+  if (!_downloadedIds?.has(videoId)) {
+    listView.appendChild(makeCVMenuItemPopup("Download", DOWNLOAD_PATH, downloadAction(videoId, title, channel)));
+  }
+}
+
+// Queue the video in ChannelVault's download queue (yt-dlp on the user's own
+// machine). The app shows the progress; here the badge turns Wanted→In Vault
+// on the next refresh once it lands.
+const DOWNLOAD_PATH = "M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z";
+
+function cvToast(text, bad) {
+  document.querySelectorAll(".cv-toast").forEach(t => t.remove());
+  const t = el("div", "cv-toast");
+  t.textContent = text;
+  t.style.cssText = "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99999;"
+    + "padding:9px 16px;border-radius:8px;font:500 13px/1.3 Roboto,Arial,sans-serif;"
+    + "box-shadow:0 6px 20px rgba(0,0,0,.4);pointer-events:none;"
+    + (bad ? "background:#3a1416;color:#ffb3b5;" : "background:#0f2a1c;color:#9ff0bf;");
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function downloadAction(videoId, title, channel) {
+  return async (e) => {
+    e.stopPropagation();
+    closeMenu();
+    try {
+      await gmPost(`${API_BASE}/downloads`, { video_id: videoId, title, channel_name: channel });
+      cvToast("ChannelVault: download queued");
+    } catch (err) {
+      cvToast(`ChannelVault: ${err.message || "could not queue the download"}`, true);
+    }
+  };
 }
 
 const VAULT_PATH = "M20 3H4C2.9 3 2 3.9 2 5v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zm-8-2c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0-6c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm5-4h2v2h-2zm0 8h2v2h-2z";
@@ -598,6 +650,9 @@ function injectCVMenuItemsPopup(popup) {
   );
   target.appendChild(wantItem);
   target.appendChild(skipItem);
+  if (!_downloadedIds?.has(videoId)) {
+    target.appendChild(makeCVMenuItemPopup("Download", DOWNLOAD_PATH, downloadAction(videoId, title, channel)));
+  }
 
   setTimeout(() => {
     popup.style.setProperty("max-width", "220px", "important");
@@ -646,12 +701,12 @@ function extractChannelFromCard(card) {
 function captureMenuContext(btn) {
   // Never let a previous card's context leak into this menu.
   _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
-  const card = btn.closest(
-    "yt-lockup-view-model, ytd-rich-item-renderer, ytd-video-renderer, " +
-    "ytd-grid-video-renderer, ytd-compact-video-renderer"
-  );
+  const card = btn.closest(CARD_SELECTOR);
   if (!card) return;
-  const link = card.querySelector("a.ytLockupMetadataViewModelTitle[href*='watch?v=']");
+  const link = card.querySelector(
+    "a.ytLockupMetadataViewModelTitle[href*='watch?v='], " +
+    "a#video-title[href*='watch?v='], a#video-title-link[href*='watch?v=']"
+  );
   if (!link || link.getAttribute("href").includes("list=")) return;
   const videoId = extractVideoIdFromHref(link.getAttribute("href"));
   if (!videoId) return;
@@ -663,6 +718,10 @@ function captureMenuContext(btn) {
 
 document.addEventListener("click", (e) => {
   const cardBtn = e.target.closest(".ytLockupMetadataViewModelMenuButton button");
+  // Classic cards (search results) open the older popup menu.
+  const classicBtn = !cardBtn && e.target.closest(
+    "ytd-video-renderer #menu button, ytd-grid-video-renderer #menu button, ytd-compact-video-renderer #menu button"
+  );
   // The overflow (⋯) button under the player. Matched by position as well as
   // by its English label, so the menu works in any YouTube UI language.
   const videoBtn = e.target.closest(
@@ -676,7 +735,14 @@ document.addEventListener("click", (e) => {
       const container = document.querySelector(".ytContextualSheetLayoutContentContainer");
       if (container) injectCVMenuItems(container);
     }, 80);
-  } else if (videoBtn) {
+  } else if (classicBtn) {
+    captureMenuContext(classicBtn);
+    if (!_pendingMenuVideoId) return;
+    setTimeout(() => {
+      const popup = document.querySelector("ytd-menu-popup-renderer");
+      if (popup) injectCVMenuItemsPopup(popup);
+    }, 80);
+  } else if (videoBtn && !onShortsPage()) {
     _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
     const videoId = getVideoId();
     if (!videoId) return;
@@ -696,6 +762,11 @@ document.addEventListener("click", (e) => {
       const popup = document.querySelector("ytd-menu-popup-renderer");
       if (popup) injectCVMenuItemsPopup(popup);
     }, 80);
+  } else {
+    // Any other menu (comments, playlists, Shorts) may reuse the popup: it
+    // must not keep Wanted/Skipped bound to the last video's id.
+    _pendingMenuVideoId = null;
+    setTimeout(() => document.querySelectorAll("ytd-menu-popup-renderer .cv-menu-item").forEach(x => x.remove()), 80);
   }
 }, true);
 
