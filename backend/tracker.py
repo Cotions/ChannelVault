@@ -1062,6 +1062,9 @@ def _meta_from_ffprobe(file_path):
         "recorded_date": year,
         "duration":      duration,
         "filesize":      filesize,
+        # Written by "Write tags to file" (MKV/WebM only: MP4 drops custom tags).
+        "view_count":    _count(tags.get(_TAG_VIEWS)),
+        "like_count":    _count(tags.get(_TAG_LIKES)),
     }
 
 
@@ -1211,8 +1214,9 @@ def process_video_file(file_path):
             conn.execute('''
                 INSERT INTO downloaded_videos
                     (video_id, title, channel_name, url, file_path,
-                     genre, description, recorded_date, duration_secs, file_size_bytes, source, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
+                     genre, description, recorded_date, duration_secs, file_size_bytes, source,
+                     view_count, like_count, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'downloaded')
                 ON CONFLICT(video_id) DO UPDATE SET
                     title=excluded.title,
                     source=excluded.source,
@@ -1224,11 +1228,14 @@ def process_video_file(file_path):
                     recorded_date=excluded.recorded_date,
                     duration_secs=excluded.duration_secs,
                     file_size_bytes=excluded.file_size_bytes,
+                    view_count=COALESCE(downloaded_videos.view_count, excluded.view_count),
+                    like_count=COALESCE(downloaded_videos.like_count, excluded.like_count),
                     downloaded_at=CURRENT_TIMESTAMP,
                     status='downloaded'
                 WHERE downloaded_videos.status != 'downloaded'
             ''', (video_id, title, artist, url, file_path,
-                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source))
+                  meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source,
+                  meta.get("view_count"), meta.get("like_count")))
             # A tracked row whose file is gone (moved or renamed outside the app)
             # follows this copy, so it doesn't sit there as "missing" forever.
             row = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'",
@@ -1353,7 +1360,7 @@ def _handle_new_path(path, stop=None):
     # is tracked where it sits.
     watch_dir = load_config().get("watch_directory", DEFAULT_WATCH)
     if os.path.realpath(os.path.dirname(path)) == os.path.realpath(watch_dir) \
-            and not _tracked_elsewhere(path):
+            and not _tracked_elsewhere(path, here_too=True):
         r = _file_into_library(path, watch_dir)
         if r["status"] == "filed":
             clear_media_index()
@@ -1362,8 +1369,10 @@ def _handle_new_path(path, stop=None):
     process_video_file(path)
 
 
-def _tracked_elsewhere(path):
-    """True when this file's video is already tracked at a different path that still exists."""
+def _tracked_elsewhere(path, here_too=False):
+    """True when this file's video is already tracked at a different path that
+    still exists. here_too: at this very path as well (a tracked file whose
+    tags were just rewritten in place is not a new download to file away)."""
     vid, _src = _entry_id(_read_meta(path).get("url"))
     if not vid:
         return False
@@ -1373,7 +1382,7 @@ def _tracked_elsewhere(path):
     ).fetchone()
     conn.close()
     tracked = resolve_media_path(row["file_path"]) if row else None
-    return bool(tracked and os.path.abspath(tracked) != os.path.abspath(path))
+    return bool(tracked and (here_too or os.path.abspath(tracked) != os.path.abspath(path)))
 
 
 class VideoDownloadHandler(FileSystemEventHandler):
@@ -3882,6 +3891,143 @@ def _tracked_row_for_file(conn, path):
     return None
 
 
+_rewrite_lock = threading.Lock()              # one tag rewrite at a time, whichever route
+
+
+_MP4_EXTS = (".mp4", ".m4v", ".m4a", ".mov")
+
+
+def _stream_layout(path):
+    """(signature, chapter count, chapter-track indices) or None. The signature
+    lists every stream's kind, codec and cover-art flag, so a rewrite that
+    drops a stream or turns cover art into a plain video track shows. MP4's
+    chapter text track is rebuilt by the muxer from the chapters, so it is
+    listed apart: copying it too would leave two."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams",
+                              "-show_chapters", path], capture_output=True, text=True, timeout=60)
+        data = json.loads(out.stdout or "{}")
+    except Exception:
+        return None
+    streams  = data.get("streams") or []
+    chapters = len(data.get("chapters") or [])
+    sig = [(s.get("codec_type"), s.get("codec_name"), (s.get("disposition") or {}).get("attached_pic", 0))
+           for s in streams]
+    chapter_tracks = [s["index"] for s in streams
+                      if chapters and path.lower().endswith(_MP4_EXTS) and s.get("codec_type") == "data"
+                      and s.get("codec_tag_string") == "text" and isinstance(s.get("index"), int)]
+    return sig, chapters, chapter_tracks
+
+
+def _rewrite_tags(path, metargs):
+    """Rewrite path's tags in place: ffmpeg stream copy into a temp file next
+    to it, check it, swap it over the original. The original stays untouched
+    on any failure. Returns None, or an error message."""
+    if not _rewrite_lock.acquire(blocking=False):
+        return "another tag write is still running; try again when it's done"
+    try:
+        return _rewrite_tags_locked(path, metargs)
+    finally:
+        _rewrite_lock.release()
+
+
+def _rewrite_tags_locked(path, metargs):
+    # Swapping a new file over a link would cut it from what it points at, and
+    # over one of several hard links would split the copies apart.
+    if os.path.islink(path):
+        return "the file is a symlink; write tags on the file it points to"
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        return _clean_err(e)
+    if st.st_nlink > 1:
+        return "the file has other hard links, which would keep the old tags; left it untouched"
+    folder = os.path.dirname(path) or "."
+    try:
+        if shutil.disk_usage(folder).free < st.st_size + 64 * 1024 * 1024:
+            return "not enough free space next to the file for the rewritten copy"
+    except OSError:
+        pass
+    old_d, old_layout = _ffprobe_duration(path), _stream_layout(path)
+    if not old_d or not old_layout or not old_layout[0]:
+        return "couldn't read the file's length or streams, so the result couldn't be checked; left it untouched"
+
+    # Only one rewrite runs at a time, so any copy left here is from a run that
+    # died midway (killed, power cut): it's a stale duplicate, not the file.
+    try:
+        for f in os.listdir(folder):
+            if f.startswith(".cv-tags.") and ".temp." in f:
+                try: os.remove(os.path.join(folder, f))
+                except OSError: pass
+    except OSError:
+        pass
+
+    ext = os.path.splitext(path)[1]
+    # ".temp." keeps the watcher and scans off it. A short prefix keeps the
+    # name under the 255-byte limit whatever the original is called.
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".cv-tags.", suffix=".temp" + ext, dir=folder)
+        os.close(fd)
+    except OSError as e:
+        return _clean_err(e)
+
+    def drop_tmp():
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+
+    # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
+    # existing tags, then the -metadata flags override only the provided fields.
+    # (No -movflags use_metadata_tags: it moves MP4's standard tags where
+    # TinyTag and most players don't look.)
+    # MP4's chapter text track is left out: the muxer writes a fresh one from
+    # the chapters, and copying the old one as well would leave two.
+    skip = [a for i in old_layout[2] for a in ("-map", f"-0:{i}")]
+    args = ["ffmpeg", "-y", "-i", path, "-map", "0"] + skip + ["-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
+    try:
+        res = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    except Exception as e:
+        drop_tmp()
+        return _clean_err(e)
+
+    if res.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
+        drop_tmp()
+        return "ffmpeg failed: " + _clean_err((res.stderr or "")[-300:])
+
+    # The original is the only copy: refuse a rewrite that came out shorter or
+    # lost a stream.
+    new_d, new_layout = _ffprobe_duration(tmp), _stream_layout(tmp)
+    if not new_d or abs(old_d - new_d) > 1.0 or not new_layout or new_layout[:2] != old_layout[:2]:
+        drop_tmp()
+        if new_layout and new_layout[1] == old_layout[1] and len(new_layout[0]) == len(old_layout[0]) \
+                and any(a[2] for a in old_layout[0]):
+            return ("ffmpeg can't keep this file's cover art as cover art when rewriting it "
+                    "(it would become a second video track); left it untouched")
+        return "rewritten file doesn't match the original (length, streams or chapters); left it untouched"
+    # The link tag is what the library tracks the file by: unless this write
+    # sets it, the rewritten file must still carry the same one.
+    if not any(a.startswith(("comment=", "purl=")) for a in metargs):
+        if _entry_id(_read_meta(path).get("url"))[0] != _entry_id(_read_meta(tmp).get("url"))[0]:
+            drop_tmp()
+            return "the rewritten file lost its link tag; left it untouched"
+
+    try:
+        shutil.copymode(path, tmp)         # mkstemp made it owner-only
+        with open(tmp, "rb") as f:         # on disk before it takes the original's place
+            os.fsync(f.fileno())
+        os.replace(tmp, path)              # atomic swap over the original
+        try:
+            dfd = os.open(folder, os.O_RDONLY)
+            try: os.fsync(dfd)
+            finally: os.close(dfd)
+        except OSError:
+            pass
+    except OSError as e:
+        drop_tmp()
+        return _clean_err(e)
+    return None
+
+
 @app.post("/import/enrich")
 def import_enrich():
     """Write metadata tags into the file itself (ffmpeg stream copy), then verify."""
@@ -3912,41 +4058,9 @@ def import_enrich():
         return jsonify({"ok": False, "error": "this file is already in the library under another link; "
                                               "the link can't be changed here"}), 409
 
-    ext = os.path.splitext(path)[1]
-    # ".temp." keeps the watcher off it; a fresh name keeps two enrich runs on
-    # one file from writing into the same output.
-    try:
-        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".enrich.", suffix=".temp" + ext,
-                                   dir=os.path.dirname(path) or ".")
-        os.close(fd)
-    except OSError as e:
-        return jsonify({"ok": False, "error": _clean_err(e)}), 500
-    # -map 0 -c copy: keep every stream, no re-encode. -map_metadata 0: preserve
-    # existing tags, then the -metadata flags override only the provided fields.
-    args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
-    try:
-        res = subprocess.run(args, capture_output=True, text=True, timeout=600)
-    except Exception as e:
-        if os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
-        return jsonify({"ok": False, "error": _clean_err(e)}), 500
-
-    if res.returncode != 0 or not os.path.isfile(tmp) or os.path.getsize(tmp) < 1024:
-        if os.path.exists(tmp):
-            try: os.remove(tmp)
-            except OSError: pass
-        return jsonify({"ok": False, "error": "ffmpeg failed: " + _clean_err((res.stderr or "")[-300:])}), 500
-
-    # The original is the only copy: refuse a rewrite that came out shorter.
-    old_d, new_d = _ffprobe_duration(path), _ffprobe_duration(tmp)
-    if old_d and (not new_d or abs(old_d - new_d) > 1.0):
-        try: os.remove(tmp)
-        except OSError: pass
-        return jsonify({"ok": False, "error": "rewritten file's length doesn't match the original; left it untouched"}), 500
-
-    shutil.copymode(path, tmp)         # mkstemp made it owner-only
-    os.replace(tmp, path)              # atomic swap over the original
+    err = _rewrite_tags(path, metargs)
+    if err:
+        return jsonify({"ok": False, "error": err}), 500
     meta = _read_meta(path)
     if tracked:
         # A rescan never re-reads a tracked file, so the library row follows here.
@@ -3970,6 +4084,93 @@ def import_enrich():
         if before and after and before["channel_name"] != after["channel_name"]:
             sync_artist_folders()
     return jsonify({"ok": True, "meta": _meta_payload(meta)})
+
+
+# Library -> file. The dashboard is where titles, credits and dates get fixed
+# and where fetched data lands; this copies it into the file's own tags, so a
+# new database (or another player) reads the same thing. Only ever on request.
+_TAG_VIEWS = "channelvault_views"
+_TAG_LIKES = "channelvault_likes"
+_CUSTOM_TAG_EXTS = (".mkv", ".webm")          # containers that keep tags of any name
+
+
+def _tag_plan(row, path):
+    """[{field, tag, file, library}] for every tag the write would change."""
+    meta = _read_meta(path)
+    plan = [
+        ("Title",       "title",       meta.get("title"),               row["title"]),
+        ("Artist",      "artist",      meta.get("artist"),              row["channel_name"]),
+        ("Date",        "date",        _norm_date(meta.get("recorded_date")), _norm_date(row["recorded_date"])),
+        ("Genre",       "genre",       meta.get("genre"),               row["genre"]),
+        ("Description", "description", meta.get("description"),         row["description"]),
+    ]
+    if path.lower().endswith(_CUSTOM_TAG_EXTS):
+        plan += [
+            ("Views", _TAG_VIEWS, meta.get("view_count"), row["view_count"]),
+            ("Likes", _TAG_LIKES, meta.get("like_count"), row["like_count"]),
+        ]
+    out = []
+    for field, tag, have, want in plan:
+        if want in (None, ""):
+            continue                           # never blank a tag the library has nothing for
+        if str(have or "").strip() == str(want).strip():
+            continue
+        # A library date that only knows the year doesn't overwrite a full date.
+        if tag == "date" and have and str(have).startswith(str(want)):
+            continue
+        out.append({"field": field, "tag": tag, "file": have, "library": want})
+    return out
+
+
+@app.post("/videos/<vid:video_id>/write-tags")
+def write_tags(video_id):
+    """Write the library's title, artist, date, genre and description (and on
+    MKV/WebM the fetched views/likes) into the video file's tags. The link tag
+    the file is tracked by is never touched. dry_run lists the changes."""
+    body = request.get_json(silent=True) or {}
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM downloaded_videos WHERE video_id = ? AND status = 'downloaded'",
+                       (video_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"ok": False, "error": "not in the library"}), 404
+    path = resolve_media_path(row["file_path"])
+    if not path:
+        return jsonify({"ok": False, "error": "the file is missing"}), 404
+    # The path can come from a name match after a move: only write into a file
+    # whose own link says it is this entry.
+    if _entry_id(_read_meta(path).get("url"))[0] != video_id:
+        return jsonify({"ok": False, "error": "the file found for this entry carries another link; left it untouched"}), 409
+    missing = _ffmpeg_missing()
+    if missing:
+        return jsonify({"ok": False, "error": f"{' and '.join(missing)} not found: install ffmpeg to write tags"}), 503
+    plan = _tag_plan(row, path)
+    stats_in_file = path.lower().endswith(_CUSTOM_TAG_EXTS)
+    if body.get("dry_run") or not plan:
+        return jsonify({"ok": True, "changes": plan, "stats_in_file": stats_in_file,
+                        "file": os.path.basename(path)})
+    # Write exactly what the user reviewed: an edit or rescan since then makes
+    # them look again.
+    expect = body.get("expect")
+    if isinstance(expect, list) and sorted((str(e.get("tag")), str(e.get("library"))) for e in expect if isinstance(e, dict)) \
+            != sorted((c["tag"], str(c["library"])) for c in plan):
+        return jsonify({"ok": False, "error": "the library changed since you looked; check the list again",
+                        "changes": plan}), 409
+    metargs = []
+    for c in plan:
+        metargs += ["-metadata", f"{c['tag']}={c['library']}"]
+    err = _rewrite_tags(path, metargs)
+    if err:
+        return jsonify({"ok": False, "error": err}), 500
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("UPDATE downloaded_videos SET file_size_bytes = ? WHERE video_id = ?",
+                     (os.path.getsize(path), video_id))
+        conn.commit()
+        conn.close()
+    left = _tag_plan(row, path)                # what didn't take (a container without that tag)
+    return jsonify({"ok": True, "written": len(plan) - len(left), "not_kept": [c["field"] for c in left],
+                    "stats_in_file": stats_in_file, "file": os.path.basename(path)})
 
 
 @app.get("/artist-thumb/<path:name>")

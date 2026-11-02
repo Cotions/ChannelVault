@@ -12,6 +12,7 @@ import { fmt, fmtBytes, fmtDuration, fmtRecordedDate, safeUrl } from "../lib/fmt
 import { usePlayer } from "../player/playerContext";
 import { usePlaybackTime } from "../player/usePlaybackTime";
 import QueueBar from "../player/QueueBar";
+import WriteTags from "../components/WriteTags";
 import Icon from "../components/Icon";
 import TagPicker from "../components/TagPicker";
 import SegmentList from "../components/SegmentList";
@@ -286,6 +287,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
           <button className="icon-btn" onClick={() => onEdit(video)} title="Edit metadata">
             <Icon name="pencil" size={16} />
           </button>
+          {video.file_path && <WriteTags key={video.video_id} videoId={video.video_id} />}
           {confirming ? (
             <>
               <span className="del-confirm-label">Remove from vault?</span>

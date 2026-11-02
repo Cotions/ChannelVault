@@ -2761,6 +2761,20 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 .pfx-toggle:hover { opacity: 1; }
 .pfx-toggle.active { color: var(--glow); }
 
+/* Write to file tags: what the file says now, and what it will say. */
+.write-tags-list { display: flex; flex-direction: column; gap: 4px; }
+.write-tags-row {
+  display: grid; grid-template-columns: 88px minmax(0, 1fr) 12px minmax(0, 1fr); align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--bg-soft); border: 1px solid var(--border-soft); border-radius: 8px; font-size: 12px;
+}
+.write-tags-row svg { color: var(--muted); }
+.write-tags-old, .write-tags-new { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+.write-tags-field { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 700; }
+.write-tags-old { color: var(--muted); text-decoration: line-through; text-decoration-color: rgba(255,255,255,0.18); }
+.write-tags-new { color: var(--glow); }
+.write-tags-note { font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.write-tags-note b { color: var(--text); font-weight: 600; word-break: break-all; }
+
 /* Rediscover: a few old favorites and forgotten downloads above Home's grid. */
 .rediscover { margin-bottom: 20px; }
 .rediscover .page-title { display: inline-flex; align-items: center; gap: 8px; }
