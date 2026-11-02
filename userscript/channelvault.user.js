@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.8.0
+// @version      1.9.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -542,6 +542,39 @@ function injectCVMenuItems(container) {
 
   listView.appendChild(wantItem);
   listView.appendChild(skipItem);
+  if (!_downloadedIds?.has(videoId)) {
+    listView.appendChild(makeCVMenuItemPopup("Download", DOWNLOAD_PATH, downloadAction(videoId, title, channel)));
+  }
+}
+
+// Queue the video in ChannelVault's download queue (yt-dlp on the user's own
+// machine). The app shows the progress; here the badge turns Wanted→In Vault
+// on the next refresh once it lands.
+const DOWNLOAD_PATH = "M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z";
+
+function cvToast(text, bad) {
+  document.querySelectorAll(".cv-toast").forEach(t => t.remove());
+  const t = el("div", "cv-toast");
+  t.textContent = text;
+  t.style.cssText = "position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99999;"
+    + "padding:9px 16px;border-radius:8px;font:500 13px/1.3 Roboto,Arial,sans-serif;"
+    + "box-shadow:0 6px 20px rgba(0,0,0,.4);pointer-events:none;"
+    + (bad ? "background:#3a1416;color:#ffb3b5;" : "background:#0f2a1c;color:#9ff0bf;");
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function downloadAction(videoId, title, channel) {
+  return async (e) => {
+    e.stopPropagation();
+    closeMenu();
+    try {
+      await gmPost(`${API_BASE}/downloads`, { video_id: videoId, title, channel_name: channel });
+      cvToast("ChannelVault: download queued");
+    } catch (err) {
+      cvToast(`ChannelVault: ${err.message || "could not queue the download"}`, true);
+    }
+  };
 }
 
 const VAULT_PATH = "M20 3H4C2.9 3 2 3.9 2 5v14c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H4V5h16v14zm-8-2c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0-6c1.1 0 2 .9 2 2s-.9 2-2 2-2-.9-2-2 .9-2 2-2zm5-4h2v2h-2zm0 8h2v2h-2z";
@@ -617,6 +650,9 @@ function injectCVMenuItemsPopup(popup) {
   );
   target.appendChild(wantItem);
   target.appendChild(skipItem);
+  if (!_downloadedIds?.has(videoId)) {
+    target.appendChild(makeCVMenuItemPopup("Download", DOWNLOAD_PATH, downloadAction(videoId, title, channel)));
+  }
 
   setTimeout(() => {
     popup.style.setProperty("max-width", "220px", "important");

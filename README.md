@@ -125,7 +125,7 @@ https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channel
 
 3. Allow `localhost` connections when Tampermonkey prompts.
 
-A badge appears on YouTube video pages and on video thumbnails everywhere: home, channel pages, the watch-page sidebar, search results and Shorts tiles. Green **In Vault** means downloaded, blue **Wanted** means on your wanted list, red **Skip** means skipped, and the title takes the same color. Each card's ⋯ menu gets **Wanted** and **Skipped** entries (search results included).
+A badge appears on YouTube video pages and on video thumbnails everywhere: home, channel pages, the watch-page sidebar, search results and Shorts tiles. Green **In Vault** means downloaded, blue **Wanted** means on your wanted list, red **Skip** means skipped, and the title takes the same color. Each card's ⋯ menu gets **Wanted** and **Skipped** entries (search results included), and **Download** when the video isn't in the vault yet (see [Downloading from the app](#3c--downloading-from-the-app)).
 
 The script also tells the dashboard which YouTube channel id a video or channel page belongs to, so the Inbox can follow that channel (see below). It only reads the page you already have open.
 
@@ -133,13 +133,27 @@ The script also tells the dashboard which YouTube channel id a video or channel 
 
 ## 3b — Inbox: new uploads from your channels
 
-The **Inbox** lists videos your channels posted that aren't in the vault yet. Click **Want** to put one on your wanted list (then download it with whatever you use), **Skip** to mark it skipped, or **Copy link**.
+The **Inbox** lists videos your channels posted that aren't in the vault yet. Click **Want** to put one on your wanted list (then download it with whatever you use), **Download** to have the app fetch it (below), **Skip** to mark it skipped, or **Copy link**.
 
 It reads each channel's public RSS feed (`youtube.com/feeds/videos.xml`), the one YouTube publishes for feed readers: no account, cookie or API key, one request per channel every few hours (change the interval or turn it off on the Inbox page). Channels marked abandoned, deleted or banned are not checked.
 
 A channel is followed once the app knows its YouTube id. It learns it when you open one of the channel's videos (or its page) on YouTube with the userscript, when you use **Fetch metadata** on one of its videos, or when you paste the id on the artist page. The app never loads YouTube pages to look ids up.
 
 The first check of a channel only counts uploads from the last few days as new; anything older sits under **Show older uploads**. Shorts are hidden unless you tick **Show Shorts**.
+
+---
+
+## 3c — Downloading from the app
+
+If [yt-dlp](https://github.com/yt-dlp/yt-dlp) is installed (on the PATH), Inbox items, wanted videos on an artist page and the userscript's ⋯ menu get a **Download** button. ChannelVault does not ship or update yt-dlp: it runs the one you have, with the cookies and JavaScript runtime set under **Settings → YouTube**. Keep it current yourself (`yt-dlp -U`, or your package manager); YouTube breaks old versions every few weeks.
+
+Only YouTube videos, one at a time. Each one downloads into `<data directory>/downloads/` and is then filed like an import: into `<watch folder>/<channel>/`, tagged (title, channel as artist, date, link, chapters, thumbnail embedded and saved beside it as `.webp`). A video already in the vault is refused.
+
+**Quality.** By default you get the best H.264 mp4 YouTube has (usually 1080p). The arrow next to **Download** picks another one for that video: 4K, 1440p, 1080p, 720p, 480p (each one takes the biggest picture up to that size; above 1080p YouTube only has VP9/AV1), or **Audio only** (an `.m4a` with the cover, filed as an audio entry). **Check sizes** in that menu asks yt-dlp what the video really has, and lists each height with its codec and file size.
+
+**Per creator.** On an artist page, **Download quality** sets the quality their Download buttons use by default, the userscript's included. The same menu has **Download new uploads automatically**. It is off unless you turn it on, and works only for channels the Inbox follows. When the feed finds a new upload from that creator, it is queued at their quality. Shorts are skipped, and so is anything you already downloaded, canceled or cleared once.
+
+While something is queued, downloading or has failed, a small indicator shows in the header; click it for progress, **Cancel**, **Retry** and **Clear finished**. With nothing going on it is not shown. A download cut off by quitting starts again on the next launch. Members-only or age-gated videos need the browser cookies under Settings → YouTube; without them they fail with YouTube's reason.
 
 ---
 
@@ -458,6 +472,19 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | GET | `/channel-ids` | Which channel id each artist is followed by |
 | POST | `/channel-ids` | Set an artist's channel id by hand (`null` unfollows) |
 | POST | `/channel-id` | The userscript reports the channel of the page it is on |
+
+**Download queue**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/downloads` | Recent jobs with live progress, and whether yt-dlp is installed |
+| POST | `/downloads` | Queue a YouTube video (`video_id`, optional `title`, `channel_name`, `quality`: `best`, `audio` or a height like `1080`; left out, the creator's default); 409 if it's in the vault |
+| GET | `/downloads/formats/<video_id>` | Ask yt-dlp which heights the video has, with codec and size, plus the audio-only size |
+| GET | `/download-prefs` | Every creator's download quality and auto-download setting |
+| POST | `/download-prefs` | Set one (`channel_name`, `quality`, `auto`) |
+| POST | `/downloads/<id>/cancel` | Stop a queued or running download |
+| POST | `/downloads/<id>/retry` | Queue a failed or canceled download again |
+| POST | `/downloads/clear` | Forget finished, canceled and failed jobs |
 
 **Files, importing and housekeeping**
 
