@@ -17,12 +17,16 @@ import tempfile
 import sqlite3
 import base64
 import hashlib
+import signal
+import atexit
 import subprocess
 import urllib.request
+import urllib.error
 import urllib.parse
 import threading
 import unicodedata
 import uuid
+from datetime import datetime, timedelta, timezone
 import difflib
 import math
 import glob
@@ -71,6 +75,11 @@ PORT            = int(os.environ.get("CHANNELVAULT_PORT", "3360"))
 __version__     = "0.0.0-dev"
 DEFAULT_WATCH   = os.path.join(os.path.expanduser("~"), "Downloads")
 DEFAULT_DATA    = os.path.join(os.path.expanduser("~"), ".local", "share", "channelvault")
+# Upload feed poll interval, hours. A feed holds a channel's 15 latest uploads,
+# so a day between polls only misses uploads from a channel posting 15+ a day.
+FEED_INTERVAL_DEFAULT = 6
+FEED_INTERVAL_MIN     = 1
+FEED_INTERVAL_MAX     = 168
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024   # JSON only; nothing here takes uploads
@@ -382,6 +391,10 @@ def load_config():
     # "The page needs to be reloaded". Both are opt-in and empty by default.
     cfg.setdefault("ytdlp_cookies_from_browser", "")
     cfg.setdefault("ytdlp_js_runtime", "")
+    # Upload feed: poll each linked channel's public RSS feed this often.
+    cfg.setdefault("feed_enabled", True)
+    cfg.setdefault("feed_interval_hours", FEED_INTERVAL_DEFAULT)
+    cfg.setdefault("feed_shorts", False)
     return cfg
 
 def save_config(cfg):
@@ -895,6 +908,76 @@ def init_db():
             UNIQUE (video_id, file_path)
         )
     ''')
+    # A channel's YouTube id ("UC" + 22 chars), the key its upload feed needs.
+    # Display names are what everything else keys on, but they change with a
+    # rename; the id does not. Filled from pages the userscript sees, from
+    # yt-dlp fetches, or pasted by hand. found_via 'manual' is never overwritten.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS channel_ids (
+            channel_name TEXT PRIMARY KEY,
+            channel_id   TEXT NOT NULL,
+            found_via    TEXT,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # Unfollow keeps the row (so the next page visit doesn't link it again)
+    # and only stops the feed.
+    if "unfollowed" not in [r[1] for r in conn.execute("PRAGMA table_info(channel_ids)")]:
+        conn.execute("ALTER TABLE channel_ids ADD COLUMN unfollowed INTEGER NOT NULL DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_ids_id ON channel_ids(channel_id)")
+    # Upload feed: one row per channel id polled, one per upload seen. Uploads
+    # already out when a channel was first polled are `backlog`, so the inbox
+    # starts with what is new rather than every video the user skipped.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS feed_channels (
+            channel_id  TEXT PRIMARY KEY,
+            checked_at  TIMESTAMP,
+            check_error TEXT,
+            seeded      INTEGER NOT NULL DEFAULT 0
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS feed_items (
+            video_id     TEXT PRIMARY KEY,
+            channel_id   TEXT NOT NULL,
+            title        TEXT,
+            published_at TEXT,
+            is_short     INTEGER NOT NULL DEFAULT 0,
+            backlog      INTEGER NOT NULL DEFAULT 0,
+            found_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS download_jobs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id     TEXT NOT NULL UNIQUE,
+            title        TEXT,
+            channel_name TEXT,
+            status       TEXT NOT NULL DEFAULT 'queued',
+            error        TEXT,
+            file_path    TEXT,
+            added_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            started_at   TIMESTAMP,
+            finished_at  TIMESTAMP
+        )
+    ''')
+    # What a download asked for: 'best' (best H.264, the library's usual),
+    # a height cap like '1080', or 'audio'. auto: queued by the feed, not by hand.
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(download_jobs)")]
+    if "quality" not in cols:
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN quality TEXT NOT NULL DEFAULT 'best'")
+    if "auto" not in cols:
+        conn.execute("ALTER TABLE download_jobs ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+    # Per creator: the quality a Download uses unless another is picked, and
+    # whether new uploads from the feed download on their own (off unless set).
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS download_prefs (
+            channel_name TEXT PRIMARY KEY,
+            quality      TEXT NOT NULL DEFAULT 'best',
+            auto         INTEGER NOT NULL DEFAULT 0
+        )
+    ''')
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_items_channel ON feed_items(channel_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audio_tracks_video ON audio_tracks(video_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_segments_video ON segments(video_id)")
     # resolve_media_path asks "does another entry own this file?" on every fallback hit.
@@ -1354,7 +1437,7 @@ def _wants_html():
 for _rule in (
     "/", "/playlists", "/artists", "/data-quality", "/stats", "/tags",
     "/artist/<path:_spa_rest>", "/video/<path:_spa_rest>", "/playlist/<path:_spa_rest>",
-    "/tag/<path:_spa_rest>",
+    "/tag/<path:_spa_rest>", "/inbox",
 ):
     if _rule in ("/playlists", "/tags"):
         continue  # collide with API routes below; handled there via Accept
@@ -1473,6 +1556,16 @@ def set_config():
         if browser and not _COOKIE_BROWSER_RE.fullmatch(browser):
             return bad(f"Unknown browser: {browser}")
 
+    if "feed_enabled" in body and not isinstance(body["feed_enabled"], bool):
+        return bad("feed_enabled must be true or false")
+    if "feed_shorts" in body and not isinstance(body["feed_shorts"], bool):
+        return bad("feed_shorts must be true or false")
+    if "feed_interval_hours" in body:
+        hours = body["feed_interval_hours"]
+        if isinstance(hours, bool) or not isinstance(hours, (int, float)) \
+                or not FEED_INTERVAL_MIN <= hours <= FEED_INTERVAL_MAX:
+            return bad(f"feed_interval_hours must be {FEED_INTERVAL_MIN} to {FEED_INTERVAL_MAX}")
+
     if "data_directory" in body:
         data_dir = _body_path(body, "data_directory")
         if not data_dir:
@@ -1515,6 +1608,13 @@ def set_config():
                 conn.execute("UPDATE downloaded_videos SET availability = NULL WHERE availability = 'age'")
                 conn.commit()
                 conn.close()
+
+    feed_keys = [k for k in ("feed_enabled", "feed_shorts", "feed_interval_hours") if k in body]
+    if feed_keys:
+        for k in feed_keys:
+            cfg[k] = body[k]
+        save_config(cfg)
+        _feed_wake.set()          # a shorter interval or a re-enable takes effect now
 
     if "data_directory" in body:
         old_db = os.path.join(cfg["data_directory"], "videos.db")
@@ -1723,6 +1823,7 @@ def activate_profile(profile_id):
             pass
         return jsonify({"ok": False, "error": f"Cannot open profile: {_clean_err(e)}"}), 500
     print(f"[profiles] Switched to {load_config()['profile_name']}")
+    _dl_wake.set()                     # that library's queued downloads
     return jsonify({"ok": True, "active": profile_id})
 
 
@@ -3099,8 +3200,14 @@ def fetch_metadata(video_id):
             info.get("like_count") or None,
             video_id,
         ))
+        # yt-dlp names the channel's id too: the key its upload feed needs.
+        channel_id = _channel_id_from(info.get("channel_id"))
+        name = channel_id and _name_for_upload(conn, video_id, _clean_name(info.get("channel") or info.get("uploader")))
+        linked = bool(name) and _link_channel_id(conn, name, channel_id, "ytdlp")
         conn.commit()
         conn.close()
+    if linked:
+        _feed_wake.set()
 
     return jsonify({"ok": True, "video_id": video_id})
 
@@ -4487,6 +4594,894 @@ def set_channel_status():
 
 
 # ---------------------------------------------------------------------------
+# Upload feed
+#
+# YouTube publishes each channel's 15 latest uploads as a public RSS feed: no
+# account, cookie or API key. The poller reads the feed of every channel whose
+# id the library knows, one request a second, and keeps what it finds in
+# feed_items. The inbox lists the uploads that aren't in the library yet.
+#
+# Channel ids come from pages the userscript sees, from yt-dlp fetches, or are
+# pasted by hand. The backend never loads a channel page to look one up.
+# ---------------------------------------------------------------------------
+
+_CHANNEL_ID_RE  = re.compile(r"UC[A-Za-z0-9_-]{22}")
+_CHANNEL_URL_RE = re.compile(
+    r"(?:https?://)?(?:(?:www|m)\.)?youtube\.com/channel/(UC[A-Za-z0-9_-]{22})/?(?:[?#].*)?", re.I)
+_FEED_URL       = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
+_FEED_MAX_BYTES = 2 * 1024 * 1024
+_FEED_GAP_SECS  = 1.0
+# Uploads this recent count as new even on a channel's first poll, so linking
+# a channel shows what it posted this week rather than nothing.
+_FEED_FRESH_DAYS = 3
+_FEED_ATOM = "{http://www.w3.org/2005/Atom}"
+_FEED_YT   = "{http://www.youtube.com/xml/schemas/2015}"
+_feed_wake     = threading.Event()
+_feed_run_lock = threading.Lock()          # one poll pass at a time
+_feed_running  = threading.Event()
+_feed_force    = threading.Event()         # "Check now" waiting for the poller
+
+
+def _channel_id_from(value):
+    """A channel id from the bare id or a /channel/ URL, else None. An @handle
+    can't be turned into an id without loading the channel page."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    m = _CHANNEL_URL_RE.fullmatch(v)
+    if m:
+        return m.group(1)
+    return v if _CHANNEL_ID_RE.fullmatch(v) else None
+
+
+def _link_channel_id(conn, channel_name, channel_id, via):
+    """Record which channel id a name is. Automatic sources only fill a name
+    that has none: one video of an artist can sit on someone else's channel (a
+    reupload, a label), and a channel keeps its id through a rename, so a
+    different id reported later is more likely wrong than new. Only a link
+    made by hand replaces one. True when the stored id changed."""
+    row = conn.execute("SELECT channel_id FROM channel_ids WHERE channel_name = ?",
+                       (channel_name,)).fetchone()
+    if row and (row["channel_id"] == channel_id or via != "manual"):
+        return False
+    conn.execute('''
+        INSERT INTO channel_ids (channel_name, channel_id, found_via) VALUES (?, ?, ?)
+        ON CONFLICT(channel_name) DO UPDATE SET
+            channel_id = excluded.channel_id, found_via = excluded.found_via,
+            unfollowed = 0, updated_at = CURRENT_TIMESTAMP
+    ''', (channel_name, channel_id, via))
+    return True
+
+
+def _name_for_upload(conn, video_id, uploader):
+    """The library name a video's channel goes by: its credit when that is one
+    artist, the matching part of a collab credit, or the uploader's own name
+    when no video is given but the library knows it. None when unsure."""
+    row = conn.execute(
+        "SELECT channel_name FROM downloaded_videos WHERE video_id = ? AND status IN ('downloaded', 'attached')",
+        (video_id,)).fetchone() if video_id else None
+    if row:
+        names = _artist_names(row["channel_name"])
+        if len(names) == 1:
+            return names[0]
+        return uploader if uploader in names else None
+    return uploader if uploader and _known_artist(conn, uploader) else None
+
+
+def _parse_feed(data):
+    import xml.etree.ElementTree as ET
+    # A feed has no reason to declare entities; refusing them keeps expansion
+    # tricks out of the parser.
+    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+        raise ValueError("unexpected DTD in feed")
+    out = []
+    for e in ET.fromstring(data).findall(f"{_FEED_ATOM}entry"):
+        vid = _valid_video_id(e.findtext(f"{_FEED_YT}videoId"))
+        if not vid:
+            continue
+        link = e.find(f"{_FEED_ATOM}link[@rel='alternate']")
+        href = link.get("href", "") if link is not None else ""
+        out.append({
+            "video_id":     vid,
+            "title":        _text(e.findtext(f"{_FEED_ATOM}title")),
+            "published_at": _text(e.findtext(f"{_FEED_ATOM}published"), 40),
+            # The feed links a Short as /shorts/<id>, everything else as watch?v=.
+            "is_short":     "/shorts/" in href,
+        })
+    return out
+
+
+def _fetch_feed(channel_id):
+    req = urllib.request.Request(_FEED_URL.format(channel_id),
+                                 headers={"User-Agent": f"ChannelVault/{__version__} (feed reader)"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = r.read(_FEED_MAX_BYTES + 1)
+    if len(data) > _FEED_MAX_BYTES:
+        raise ValueError("feed too large")
+    return _parse_feed(data)
+
+
+def _due_feed_channels(hours, force):
+    """Channel ids to poll, longest-unchecked first. A channel the user marked
+    abandoned, deleted or banned is left alone."""
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT DISTINCT c.channel_id, f.checked_at FROM channel_ids c
+        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
+        WHERE c.unfollowed = 0
+          AND c.channel_name NOT IN (SELECT channel_name FROM channel_status)
+          AND (? OR f.checked_at IS NULL OR f.checked_at <= datetime('now', ?))
+        ORDER BY f.checked_at IS NOT NULL, f.checked_at
+    ''', (1 if force else 0, f"-{round(hours * 60)} minutes")).fetchall()
+    conn.close()
+    return [r["channel_id"] for r in rows]
+
+
+def _feed_fresh(published_at):
+    """Published in the last few days (an old video turning up in a feed,
+    made public late, is not a new upload)."""
+    try:
+        when = datetime.fromisoformat((published_at or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - when < timedelta(days=_FEED_FRESH_DAYS)
+
+
+def _store_feed(channel_id, items, error):
+    with _db_lock:
+        conn = get_conn()
+        with conn:
+            if items is None:
+                conn.execute('''
+                    INSERT INTO feed_channels (channel_id, checked_at, check_error)
+                    VALUES (?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        checked_at = CURRENT_TIMESTAMP, check_error = excluded.check_error
+                ''', (channel_id, error))
+            else:
+                seeded = conn.execute(
+                    "SELECT seeded FROM feed_channels WHERE channel_id = ?", (channel_id,)).fetchone()
+                first = not (seeded and seeded["seeded"])
+                queued = False
+                for it in items:
+                    new = not conn.execute("SELECT 1 FROM feed_items WHERE video_id = ?",
+                                           (it["video_id"],)).fetchone()
+                    conn.execute('''
+                        INSERT INTO feed_items (video_id, channel_id, title, published_at, is_short, backlog)
+                        VALUES (?, ?, ?, ?, ?,
+                                ? AND COALESCE(julianday(?) < julianday('now', ?), 1))
+                        ON CONFLICT(video_id) DO UPDATE SET
+                            title = COALESCE(excluded.title, feed_items.title),
+                            is_short = excluded.is_short
+                    ''', (it["video_id"], channel_id, it["title"], it["published_at"],
+                          1 if it["is_short"] else 0,
+                          1 if first else 0, it["published_at"], f"-{_FEED_FRESH_DAYS} days"))
+                    # Auto-download (off unless turned on for this creator):
+                    # fresh uploads new since the last check, never Shorts.
+                    if not first and not it["is_short"] and _feed_fresh(it["published_at"]):
+                        queued = _dl_auto_queue(conn, channel_id, it["video_id"], it["title"], new) or queued
+                conn.execute('''
+                    INSERT INTO feed_channels (channel_id, checked_at, check_error, seeded)
+                    VALUES (?, CURRENT_TIMESTAMP, NULL, 1)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        checked_at = CURRENT_TIMESTAMP, check_error = NULL, seeded = 1
+                ''', (channel_id,))
+                if queued:
+                    _dl_wake.set()
+        conn.close()
+
+
+def _feed_pass(force=False):
+    """Poll every due channel of the library active when the pass starts.
+    False when a pass is already running."""
+    if not _feed_run_lock.acquire(blocking=False):
+        return False
+    _feed_running.set()
+    try:
+        cfg = load_config()
+        with _pinned_profile(cfg["active_profile"]):
+            for i, cid in enumerate(_due_feed_channels(cfg["feed_interval_hours"], force)):
+                if i:
+                    time.sleep(_FEED_GAP_SECS)
+                items, error = None, None
+                try:
+                    items = _fetch_feed(cid)
+                except urllib.error.HTTPError as e:
+                    error = "Channel not found on YouTube" if e.code == 404 else f"YouTube answered HTTP {e.code}"
+                except Exception as e:
+                    error = _clean_err(e)[:300] or "fetch failed"
+                _store_feed(cid, items, error)
+    finally:
+        _feed_running.clear()
+        _feed_run_lock.release()
+    return True
+
+
+def _feed_loop():
+    """Background poller. Wakes every few minutes (or when told) and polls the
+    channels whose interval has passed; most wakes find nothing due."""
+    time.sleep(20)                         # let startup and the first scan settle
+    while True:
+        # Cleared before the pass, so a wake that lands during it isn't lost.
+        _feed_wake.clear()
+        force = _feed_force.is_set()
+        _feed_force.clear()
+        try:
+            if force or load_config().get("feed_enabled", True):
+                _feed_pass(force)
+        except Exception as e:
+            print(f"[feed] {_clean_err(e)}")
+        _feed_wake.wait(timeout=300)
+
+
+def _feed_artists(conn):
+    """YouTube artists in the library the feed could cover: not marked
+    abandoned, deleted or banned."""
+    marked = {r[0] for r in conn.execute("SELECT channel_name FROM channel_status")}
+    names = set()
+    for r in conn.execute(
+            "SELECT DISTINCT channel_name FROM downloaded_videos "
+            "WHERE status = 'downloaded' AND COALESCE(source, 'youtube') = 'youtube'"):
+        names.update(_artist_names(r[0]))
+    return sorted(names - marked, key=str.casefold)
+
+
+def _inbox_rows(conn, where="1"):
+    """Feed uploads not in the library under any status, newest first, each
+    with the library name of its channel."""
+    return conn.execute(f'''
+        SELECT f.*, n.channel_name FROM feed_items f
+        JOIN (SELECT channel_id, MIN(channel_name) AS channel_name FROM channel_ids
+              WHERE unfollowed = 0 AND channel_name NOT IN (SELECT channel_name FROM channel_status)
+              GROUP BY channel_id) n ON n.channel_id = f.channel_id
+        WHERE f.video_id NOT IN (SELECT video_id FROM downloaded_videos) AND {where}
+        ORDER BY f.published_at DESC
+    ''').fetchall()
+
+
+@app.get("/feed")
+def get_feed():
+    cfg  = load_config()
+    conn = get_conn()
+    items   = [dict(r) for r in _inbox_rows(conn)]
+    artists = _feed_artists(conn)
+    linked  = {r["channel_name"]: dict(r) for r in conn.execute('''
+        SELECT c.channel_name, c.channel_id, f.checked_at, f.check_error FROM channel_ids c
+        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
+        WHERE c.unfollowed = 0''')}
+    last = conn.execute("SELECT MAX(checked_at) FROM feed_channels").fetchone()[0]
+    conn.close()
+    return jsonify({
+        "items":        items,
+        "artists":      len(artists),
+        "unlinked":     [n for n in artists if n not in linked],
+        "errors":       [{"channel_name": n, "error": linked[n]["check_error"]}
+                         for n in artists if n in linked and linked[n]["check_error"]],
+        "last_checked": last,
+        "checking":     _feed_running.is_set() or _feed_force.is_set(),
+        "enabled":      cfg["feed_enabled"],
+        "interval_hours": cfg["feed_interval_hours"],
+        "shorts":       cfg["feed_shorts"],
+    })
+
+
+@app.get("/feed/count")
+def feed_count():
+    """New uploads waiting in the inbox: not backlog, Shorts only if shown."""
+    shorts = load_config()["feed_shorts"]
+    conn = get_conn()
+    n = len(_inbox_rows(conn, "f.backlog = 0" + ("" if shorts else " AND f.is_short = 0")))
+    conn.close()
+    return jsonify({"count": n, "checking": _feed_running.is_set() or _feed_force.is_set()})
+
+
+@app.post("/feed/check")
+def feed_check():
+    """Poll every channel now. The poller thread runs it, right away or right
+    after the pass in progress. Works with polling switched off: the user
+    asked for this one."""
+    _feed_force.set()
+    _feed_wake.set()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Download queue
+# ---------------------------------------------------------------------------
+# YouTube videos only, one at a time, with the yt-dlp already on the PATH (the
+# app never ships or updates one). Each job downloads into its own folder under
+# the data directory, out of the watcher's sight, then goes through the same
+# filing as an import: <watch>/<artist>/, tracked, thumbnail and all.
+
+_DL_FORMAT   = "bv*[vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
+
+
+def _dl_quality_ok(q):
+    """'best', 'audio', or a height cap ('1080'; any height the size list offers)."""
+    # ASCII digits only: str.isdigit() also takes "²" (int() then raises) and
+    # other scripts' digits, which would reach yt-dlp's -S as is.
+    return q in ("best", "audio") or (re.fullmatch(r"[0-9]{3,4}", q) is not None and 100 <= int(q) <= 4320)
+_DL_TEMPLATE = "%(title).180B-%(id)s.%(ext)s"
+_DL_PROGRESS = re.compile(r"cvprog\s+([\d.]+)%?\s*(\S*)\s*(\S*)")
+_DL_ANSI     = re.compile(r"\x1b\[[0-9;]*m")
+
+_dl_wake  = threading.Event()
+_dl_state = threading.Lock()                # guards _dl_live
+_dl_live  = {}                              # the running job: id, profile, proc, progress, cancel
+
+
+def _dl_folder(job_id):
+    return os.path.join(load_config()["data_directory"], "downloads", str(int(job_id)))
+
+
+def _dl_quality_args(quality):
+    if quality == "audio":
+        # The m4a stream as is (no re-encode); the library files it as an audio entry.
+        return ["-f", "ba[ext=m4a]/ba", "-x", "--audio-format", "m4a"]
+    if quality.isdigit():
+        # The biggest picture up to the cap, H.264 when that size has it.
+        # Above 1080p YouTube has only VP9/AV1, still muxed into an mp4.
+        return ["-f", "bv*+ba/b", "-S", f"res:{quality},vcodec:h264,acodec:aac",
+                "--merge-output-format", "mp4"]
+    return ["-f", _DL_FORMAT, "--merge-output-format", "mp4"]
+
+
+def _dl_argv(video_id, folder, quality="best", auto=False):
+    # Queued by the feed: a stream still live or a premiere not out yet is
+    # skipped (and tried again later) rather than recorded for hours.
+    wait = ["--match-filters", "!is_live & live_status != is_upcoming"] if auto else []
+    return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + wait + [
+        "--no-playlist", "--newline", "--progress",
+        "--progress-template", "download:cvprog %(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s",
+    ] + _dl_quality_args(quality) + [
+        "--embed-metadata", "--embed-chapters", "--embed-thumbnail", "--write-thumbnail",
+        # The library files a video under its channel; yt-dlp's own artist
+        # field would put a music video under the song's artist instead.
+        "--parse-metadata", "%(channel,uploader)s:%(meta_artist)s",
+        "-P", folder, "-o", _DL_TEMPLATE,
+        "--", f"https://www.youtube.com/watch?v={video_id}",
+    ])
+
+
+def _dl_result(folder):
+    """The one finished video yt-dlp left in a job's folder, or None."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    # "<name>.f137.mp4": one stream of a download that never got merged.
+    vids = [n for n in names if n.lower().endswith(_LIBRARY_EXTS)
+            and not _is_temp_file(os.path.join(folder, n))
+            and not re.search(r"\.f\d+\.\w+$", n)]
+    return os.path.join(folder, vids[0]) if len(vids) == 1 else None
+
+
+def _dl_finish(job_id, status, error=None, file_path=None):
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("UPDATE download_jobs SET status=?, error=?, file_path=?, "
+                     "finished_at=CURRENT_TIMESTAMP WHERE id=?", (status, error, file_path, job_id))
+        conn.commit()
+        conn.close()
+
+
+class _DlStopped(Exception):
+    """The app is quitting: leave the job "running" so the next launch redoes it."""
+
+
+def _dl_flag(name):
+    with _dl_state:
+        return bool(_dl_live.get(name))
+
+
+def _dl_run(job):
+    """Download one job and file it. Returns the columns to store."""
+    folder  = _dl_folder(job["id"])
+    quality = job.get("quality") or "best"
+    marker  = os.path.join(folder, ".quality")
+    try:
+        with open(marker) as f:
+            kept = f.read().strip()
+    except OSError:
+        kept = None
+    if kept != quality:
+        shutil.rmtree(folder, ignore_errors=True)    # a file kept from a try at another quality
+    os.makedirs(folder, exist_ok=True)
+    with open(marker, "w") as f:
+        f.write(quality)
+    tail = []
+    # Retried after a filing failure: the file is already here, and yt-dlp
+    # would only say so. File it again rather than download it again.
+    if not _dl_result(folder):
+        proc = subprocess.Popen(_die_with_parent() + _dl_argv(job["video_id"], folder, quality, bool(job.get("auto"))),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, text=True, errors="replace",
+                                bufsize=1, start_new_session=True)
+        with _dl_state:
+            _dl_live["proc"] = proc
+            if _dl_live.get("cancel") or _dl_live.get("stopping"):
+                _dl_kill(proc)
+        try:
+            for line in proc.stdout:
+                line = _DL_ANSI.sub("", line).strip()
+                m = _DL_PROGRESS.match(line)
+                if m:
+                    try:
+                        pct = float(m.group(1))
+                    except ValueError:
+                        continue
+                    with _dl_state:
+                        _dl_live["progress"] = {"percent": pct,
+                                                "speed": "" if m.group(2) in ("NA", "Unknown") else m.group(2),
+                                                "eta":   "" if m.group(3) in ("NA", "Unknown") else m.group(3)}
+                elif line:
+                    tail = (tail + [line])[-30:]
+                    # Streams are down; ffmpeg merges them and embeds the tags.
+                    if re.match(r"\[(Merger|Metadata|EmbedThumbnail|Fixup\w*|ThumbnailsConvertor)\]", line):
+                        with _dl_state:
+                            _dl_live["progress"] = {"percent": 100.0, "speed": "", "eta": "", "finishing": True}
+        finally:
+            with _dl_state:
+                if proc.poll() is None:
+                    _dl_kill(proc)
+                proc.wait()
+                _dl_live.pop("proc", None)     # reaped: its pid may belong to someone else now
+        if _dl_flag("stopping"):
+            raise _DlStopped()
+        if _dl_flag("cancel"):
+            return {"status": "canceled"}
+        text = "\n".join(tail)
+        if job.get("auto") and ("does not pass filter" in text
+                                or re.search(r"Premieres in|live event will begin|is_upcoming", text)):
+            return {"status": "failed", "error": _DL_NOT_OUT}
+        if proc.returncode != 0:
+            return {"status": "failed", "error": _ytdlp_error(text)}
+    if _dl_flag("cancel"):
+        return {"status": "canceled"}
+    path = _dl_result(folder)
+    if not path:
+        return {"status": "failed",
+                "error": "yt-dlp finished without leaving a video (a download archive in your yt-dlp config?)"}
+    r = _file_into_library(path, load_config()["watch_directory"])
+    if r["status"] == "filed":
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"status": "done", "file_path": r["dest"]}
+    if r["status"] == "duplicate":
+        shutil.rmtree(folder, ignore_errors=True)
+        return {"status": "done", "error": "Already in the library: the new copy was dropped"}
+    if r["moved"] or not os.path.exists(path):
+        # In the library folder but not tracked: downloading again won't help.
+        return {"status": "done", "file_path": r["dest"],
+                "error": f"Saved to {r['dest']} but not added ({r['status']}): try Scan folder on its artist page"}
+    if r["status"] == "dest-exists":
+        return {"status": "failed",
+                "error": f"{r['dest']} already exists: move or rename it, then Retry. The download is in {folder}"}
+    # Keep the file: Retry files it again without downloading it again.
+    return {"status": "failed", "error": f"Downloaded but not filed ({r['status']}). The file is in {folder}"}
+
+
+def _die_with_parent():
+    """Linux: run yt-dlp through setpriv so it gets SIGTERM if the app dies
+    without stopping it (kill -9, a closed terminal) instead of carrying on
+    into a folder the next launch downloads into again."""
+    if sys.platform.startswith("linux") and shutil.which("setpriv"):
+        return ["setpriv", "--pdeathsig", "TERM", "--"]
+    return []
+
+
+def _dl_stop_live():
+    """The app is quitting: stop the running download without marking it, so
+    it starts over on the next launch."""
+    with _dl_state:
+        _dl_live["stopping"] = True
+        if _dl_live.get("proc"):
+            _dl_kill(_dl_live["proc"])
+
+
+def _dl_kill(proc):
+    """Callers hold _dl_state; proc is never reaped while it's in _dl_live."""
+    if proc.returncode is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)    # yt-dlp and the ffmpeg it started
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _dl_next():
+    """Run the oldest queued job of the active library. False when none is queued."""
+    pid = load_config()["active_profile"]
+    with _pinned_profile(pid):
+        with _db_lock:
+            conn = get_conn()
+            # Only this thread runs jobs, so one still "running" was cut off
+            # by a quit or crash: it goes back in line.
+            conn.execute("UPDATE download_jobs SET status='queued' WHERE status='running'")
+            row = conn.execute("SELECT * FROM download_jobs WHERE status='queued' "
+                               "ORDER BY added_at, id LIMIT 1").fetchone()
+            if row:
+                conn.execute("UPDATE download_jobs SET status='running', error=NULL, "
+                             "started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE id=?", (row["id"],))
+                # Live before the row reads "running", so a cancel always finds it.
+                with _dl_state:
+                    stopping = _dl_live.get("stopping")
+                    _dl_live.clear()
+                    _dl_live.update({"id": row["id"], "profile": pid, "progress": None, "stopping": stopping})
+            conn.commit()
+            conn.close()
+        if not row:
+            return False
+        job = dict(row)
+        try:
+            if not shutil.which("yt-dlp"):
+                done = {"status": "failed", "error": "yt-dlp is not installed (not on the PATH)"}
+            else:
+                done = _dl_run(job)
+        except _DlStopped:
+            return False
+        except Exception as e:
+            done = {"status": "failed", "error": _clean_err(e)[:300] or "download failed"}
+        finally:
+            with _dl_state:
+                stopping = _dl_live.get("stopping")
+                _dl_live.clear()
+                _dl_live["stopping"] = stopping
+        if done["status"] == "canceled":
+            shutil.rmtree(_dl_folder(job["id"]), ignore_errors=True)
+        else:
+            folder = _dl_folder(job["id"])
+            try:
+                if set(os.listdir(folder)) <= {".quality"}:
+                    shutil.rmtree(folder)           # a failure that left nothing behind
+            except OSError:
+                pass
+        _dl_finish(job["id"], **done)
+        print(f"[downloads] {job['video_id']}: {done['status']}" + (f" ({done['error']})" if done.get("error") else ""))
+    return True
+
+
+def _download_loop():
+    while True:
+        _dl_wake.clear()
+        try:
+            while _dl_next():
+                pass
+        except Exception as e:
+            print(f"[downloads] {_clean_err(e)}")
+        _dl_wake.wait(timeout=600)
+
+
+def _dl_jobs(conn):
+    rows = conn.execute('''
+        SELECT * FROM download_jobs
+        ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END,
+                 COALESCE(finished_at, added_at) DESC, id DESC
+        LIMIT 100''').fetchall()
+    pid = load_config()["active_profile"]
+    with _dl_state:
+        live = dict(_dl_live) if _dl_live.get("profile") == pid else {}
+    jobs = []
+    for r in rows:
+        j = dict(r)
+        j["progress"] = live.get("progress") if live.get("id") == j["id"] else None
+        jobs.append(j)
+    return jobs
+
+
+@app.get("/downloads")
+def list_downloads():
+    conn = get_conn()
+    jobs = _dl_jobs(conn)
+    conn.close()
+    return jsonify({"ok": True, "installed": bool(shutil.which("yt-dlp")), "jobs": jobs})
+
+
+@app.post("/downloads")
+def add_download():
+    body     = request.get_json(silent=True) or {}
+    video_id = str(body.get("video_id") or "").strip()
+    if not _valid_video_id(video_id) or video_id.endswith("_"):
+        return jsonify({"ok": False, "error": "Only YouTube videos can be downloaded"}), 400
+    if not shutil.which("yt-dlp"):
+        return jsonify({"ok": False, "error": "yt-dlp is not installed (not on the PATH)"}), 400
+    title, channel = _text(body.get("title")), _text(body.get("channel_name"))
+    quality = str(body.get("quality") or "")
+    if quality and not _dl_quality_ok(quality):
+        return jsonify({"ok": False, "error": "Unknown quality"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if _dl_in_library(conn, video_id):
+            conn.close()
+            return jsonify({"ok": False, "error": "Already in the library"}), 409
+        # No quality picked: the creator's own default, else the library's usual.
+        _dl_queue(conn, video_id, title, channel, quality or _dl_pref(conn, channel)["quality"])
+        conn.commit()
+        job = dict(conn.execute("SELECT * FROM download_jobs WHERE video_id=?", (video_id,)).fetchone())
+        conn.close()
+    _dl_wake.set()
+    return jsonify({"ok": True, "job": job})
+
+
+def _dl_in_library(conn, video_id):
+    have = conn.execute("SELECT status FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+    return bool(have and have["status"] in ("downloaded", "attached"))
+
+
+def _dl_pref(conn, channel_name):
+    """The creator's settings; for a collab credit ("A, B"), the first one who has any."""
+    for name in [channel_name or ""] + _artist_names(channel_name):
+        row = conn.execute("SELECT quality, auto FROM download_prefs WHERE channel_name=?", (name,)).fetchone()
+        if row:
+            return {"quality": row["quality"], "auto": bool(row["auto"])}
+    return {"quality": "best", "auto": False}
+
+
+def _dl_queue(conn, video_id, title, channel, quality, auto=False):
+    """Queue a job, or requeue a finished one. One already waiting or running
+    is left as it is."""
+    conn.execute('''
+        INSERT INTO download_jobs (video_id, title, channel_name, quality, auto) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(video_id) DO UPDATE SET
+            title        = COALESCE(excluded.title, download_jobs.title),
+            channel_name = COALESCE(excluded.channel_name, download_jobs.channel_name),
+            quality      = excluded.quality,
+            auto         = excluded.auto,
+            status = 'queued', error = NULL, added_at = CURRENT_TIMESTAMP, finished_at = NULL
+        WHERE download_jobs.status NOT IN ('queued', 'running')
+    ''', (video_id, title, channel, quality, 1 if auto else 0))
+
+
+_DL_NOT_OUT = "Not out yet (a premiere or a live stream): tried again on the next feed check"
+
+
+def _dl_auto_queue(conn, channel_id, video_id, title, new):
+    """An upload in the feed: queue it if its creator has auto-download on and
+    it is new, or try again one that wasn't out yet the last time."""
+    row = conn.execute('''
+        SELECT p.channel_name, p.quality FROM channel_ids c
+        JOIN download_prefs p ON p.channel_name = c.channel_name
+        WHERE c.channel_id = ? AND p.auto = 1 AND c.unfollowed = 0
+          AND c.channel_name NOT IN (SELECT channel_name FROM channel_status)
+        LIMIT 1
+    ''', (channel_id,)).fetchone()
+    if not row:
+        return False
+    # In the library, or marked Skip (from the userscript, before the feed saw
+    # it): never on its own. A wanted one is exactly what this is for.
+    have = conn.execute("SELECT status FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+    if have and have["status"] != "wanted":
+        return False
+    job = conn.execute("SELECT status, auto, error FROM download_jobs WHERE video_id=?", (video_id,)).fetchone()
+    if job:
+        # Downloaded, canceled or failed once: not again on its own, except an
+        # automatic one that was only waiting for the premiere or stream to end.
+        if not (job["auto"] and job["status"] == "failed" and job["error"] == _DL_NOT_OUT):
+            return False
+    elif not new:
+        return False
+    _dl_queue(conn, video_id, title, row["channel_name"], row["quality"], auto=True)
+    return True
+
+
+@app.get("/download-prefs")
+def list_download_prefs():
+    conn = get_conn()
+    rows = conn.execute("SELECT channel_name, quality, auto FROM download_prefs").fetchall()
+    conn.close()
+    return jsonify({"ok": True, "prefs": {r["channel_name"]: {"quality": r["quality"], "auto": bool(r["auto"])}
+                                          for r in rows}})
+
+
+@app.post("/download-prefs")
+def set_download_prefs():
+    body    = request.get_json(silent=True) or {}
+    name    = _text(body.get("channel_name"))
+    quality = str(body.get("quality") or "best")
+    auto    = bool(body.get("auto"))
+    if not name:
+        return jsonify({"ok": False, "error": "channel_name is required"}), 400
+    if not _dl_quality_ok(quality):
+        return jsonify({"ok": False, "error": "Unknown quality"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if quality == "best" and not auto:
+            conn.execute("DELETE FROM download_prefs WHERE channel_name=?", (name,))
+        else:
+            conn.execute('''
+                INSERT INTO download_prefs (channel_name, quality, auto) VALUES (?, ?, ?)
+                ON CONFLICT(channel_name) DO UPDATE SET quality = excluded.quality, auto = excluded.auto
+            ''', (name, quality, 1 if auto else 0))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, "quality": quality, "auto": auto})
+
+
+_dl_formats_cache = {}                      # video_id -> (fetched at, answer)
+
+
+@app.get("/downloads/formats/<vid:video_id>")
+def download_formats(video_id):
+    """What YouTube has for one video, per height, with the size each choice
+    would download. One yt-dlp lookup, only when the user asks for it."""
+    if video_id.endswith("_"):
+        return jsonify({"ok": False, "error": "Only YouTube videos can be downloaded"}), 400
+    if not shutil.which("yt-dlp"):
+        return jsonify({"ok": False, "error": "yt-dlp is not installed (not on the PATH)"}), 400
+    hit = _dl_formats_cache.get(video_id)
+    if hit and time.time() - hit[0] < 600:
+        return jsonify(hit[1])
+    try:
+        r = _ytdlp("-J", "--no-playlist", "--", f"https://www.youtube.com/watch?v={video_id}", timeout=60)
+    except subprocess.TimeoutExpired:
+        return jsonify({"ok": False, "error": "yt-dlp took too long to answer"}), 504
+    if r.returncode != 0:
+        return jsonify({"ok": False, "error": _ytdlp_error(r.stderr)}), 502
+    try:
+        info = json.loads(r.stdout)
+    except ValueError:
+        return jsonify({"ok": False, "error": "yt-dlp gave an unreadable answer"}), 502
+    answer = {"ok": True, **_dl_summarize_formats(info)}
+    _dl_formats_cache[video_id] = (time.time(), answer)
+    if len(_dl_formats_cache) > 200:
+        _dl_formats_cache.pop(next(iter(_dl_formats_cache), None), None)
+    return jsonify(answer)
+
+
+def _dl_size(f, duration):
+    size = f.get("filesize") or f.get("filesize_approx")
+    if not size and f.get("tbr") and duration:
+        size = f["tbr"] * 1000 / 8 * duration
+    return int(size) if size else None
+
+
+def _dl_summarize_formats(info):
+    """Per height, the stream a capped download picks (H.264 when there is
+    one) plus the m4a audio it is merged with; and the audio-only choice."""
+    duration = info.get("duration")
+    fmts  = [f for f in info.get("formats") or [] if str(f.get("protocol") or "https").startswith("http")]
+    audio = [f for f in fmts if f.get("vcodec") == "none" and f.get("acodec") not in (None, "none")]
+    m4a   = [f for f in audio if f.get("ext") == "m4a"] or audio
+    best_audio = max(m4a, key=lambda f: f.get("abr") or f.get("tbr") or 0, default=None)
+    audio_size = _dl_size(best_audio, duration) if best_audio else None
+    by_height = {}
+    for f in fmts:
+        h = f.get("height")
+        if not h or f.get("vcodec") in (None, "none") or f.get("acodec") not in (None, "none"):
+            continue
+        key = (str(f.get("vcodec") or "").startswith("avc1"), f.get("fps") or 0, f.get("tbr") or 0)
+        if h not in by_height or key > by_height[h][0]:
+            by_height[h] = (key, f)
+    heights = []
+    for h, (_, f) in sorted(by_height.items(), reverse=True):
+        v  = _dl_size(f, duration)
+        vc = str(f.get("vcodec") or "").split(".")[0]
+        heights.append({
+            "height": h,
+            "fps":    round(f["fps"]) if f.get("fps") else None,
+            "codec":  {"avc1": "H.264", "vp9": "VP9", "vp09": "VP9", "av01": "AV1"}.get(vc, vc),
+            "size":   v + (audio_size or 0) if v else None,
+        })
+    return {"duration": duration, "heights": heights,
+            "audio": {"size": audio_size, "abr": round(best_audio["abr"]) if best_audio.get("abr") else None}
+                     if best_audio else None}
+
+
+@app.post("/downloads/<int:job_id>/cancel")
+def cancel_download(job_id):
+    pid = load_config()["active_profile"]
+    # Same lock order as _dl_next, so the job can't turn live between the two checks.
+    with _db_lock:
+        with _dl_state:
+            if _dl_live.get("id") == job_id and _dl_live.get("profile") == pid:
+                _dl_live["cancel"] = True
+                if _dl_live.get("proc"):
+                    _dl_kill(_dl_live["proc"])
+                return jsonify({"ok": True})
+        conn = get_conn()
+        n = conn.execute("UPDATE download_jobs SET status='canceled', finished_at=CURRENT_TIMESTAMP "
+                         "WHERE id=? AND status='queued'", (job_id,)).rowcount
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": bool(n)}), (200 if n else 404)
+
+
+@app.post("/downloads/<int:job_id>/retry")
+def retry_download(job_id):
+    with _db_lock:
+        conn = get_conn()
+        n = conn.execute("UPDATE download_jobs SET status='queued', error=NULL, finished_at=NULL, "
+                         "added_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('failed', 'canceled')",
+                         (job_id,)).rowcount
+        conn.commit()
+        conn.close()
+    _dl_wake.set()
+    return jsonify({"ok": bool(n)}), (200 if n else 404)
+
+
+@app.post("/downloads/clear")
+def clear_downloads():
+    """Forget finished jobs (done, canceled, and failed ones too), and the files
+    a failed job left behind."""
+    with _db_lock:
+        conn = get_conn()
+        ids = [r[0] for r in conn.execute(
+            "SELECT id FROM download_jobs WHERE status IN ('done', 'canceled', 'failed')")]
+        conn.execute("DELETE FROM download_jobs WHERE status IN ('done', 'canceled', 'failed')")
+        conn.commit()
+        conn.close()
+    for i in ids:
+        shutil.rmtree(_dl_folder(i), ignore_errors=True)
+    return jsonify({"ok": True, "cleared": len(ids)})
+
+
+@app.get("/channel-ids")
+def list_channel_ids():
+    conn = get_conn()
+    rows = conn.execute('''
+        SELECT c.channel_name, c.channel_id, c.found_via, c.unfollowed, f.checked_at, f.check_error
+        FROM channel_ids c LEFT JOIN feed_channels f ON f.channel_id = c.channel_id''').fetchall()
+    conn.close()
+    return jsonify({r["channel_name"]: {k: r[k] for k in ("channel_id", "found_via", "unfollowed", "checked_at", "check_error")}
+                    for r in rows})
+
+
+@app.post("/channel-id")
+def report_channel_id():
+    """The userscript saw which channel a video or channel page belongs to.
+    Linked only when the library already knows that channel by name."""
+    body       = request.get_json(silent=True) or {}
+    channel_id = _channel_id_from(body.get("channel_id"))
+    if not channel_id:
+        return jsonify({"ok": False, "error": "valid channel_id required"}), 400
+    video_id = _valid_video_id(body.get("video_id"))
+    uploader = _body_name(body, "channel_name")
+    with _db_lock:
+        conn = get_conn()
+        name = _name_for_upload(conn, video_id, uploader)
+        changed = bool(name) and _link_channel_id(conn, name, channel_id, "userscript")
+        conn.commit()
+        conn.close()
+    if changed:
+        _feed_wake.set()                   # a newly linked channel gets its first poll now
+    return jsonify({"ok": True, "channel_name": name})
+
+
+@app.post("/channel-ids")
+def set_channel_id():
+    """Link an artist to a channel by hand: the id or a /channel/ URL. A null
+    channel_id unfollows: the id stays known, so a later page visit doesn't
+    follow it again; pasting an id follows it again."""
+    body = request.get_json(silent=True) or {}
+    name = _body_name(body, "channel_name")
+    if not name:
+        return jsonify({"ok": False, "error": "channel_name required"}), 400
+    raw = body.get("channel_id")
+    with _db_lock:
+        conn = get_conn()
+        if raw is None:
+            conn.execute("UPDATE channel_ids SET unfollowed = 1 WHERE channel_name = ?", (name,))
+        else:
+            channel_id = _channel_id_from(raw)
+            if not channel_id:
+                conn.close()
+                return jsonify({"ok": False, "error":
+                                "Paste a channel id (UC…) or a youtube.com/channel/UC… link. "
+                                "An @handle link can't be used; open the channel on YouTube "
+                                "with the userscript installed instead."}), 400
+            if not _known_artist(conn, name):
+                conn.close()
+                return jsonify({"ok": False, "error": f"no videos from {name}"}), 404
+            _link_channel_id(conn, name, channel_id, "manual")
+            conn.execute("UPDATE channel_ids SET unfollowed = 0 WHERE channel_name = ?", (name,))
+        conn.commit()
+        conn.close()
+    _feed_wake.set()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
 # Tags and segments
 #
 # A tag is a word the user invents; it lives once, library-wide, with a colour
@@ -5154,6 +6149,7 @@ def shutdown_app():
         with _observer_lock:
             if _observer:
                 _observer.stop()
+        _dl_stop_live()
         for lock in (_filing_lock, _config_write_lock, _db_lock):
             lock.acquire(timeout=15)
         os._exit(0)
@@ -5228,6 +6224,9 @@ if __name__ == "__main__":
         target=start_observer, args=(cfg["watch_directory"],), daemon=True
     )
     watcher_thread.start()
+    threading.Thread(target=_feed_loop, daemon=True).start()
+    threading.Thread(target=_download_loop, daemon=True).start()
+    atexit.register(_dl_stop_live)       # Ctrl+C
     if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"[api] ChannelVault {__version__}")
