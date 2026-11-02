@@ -3869,13 +3869,29 @@ def _tracked_row_for_file(conn, path):
 _rewrite_lock = threading.Lock()              # one tag rewrite at a time, whichever route
 
 
-def _stream_count(path):
+_MP4_EXTS = (".mp4", ".m4v", ".m4a", ".mov")
+
+
+def _stream_layout(path):
+    """(signature, chapter count, chapter-track indices) or None. The signature
+    lists every stream's kind, codec and cover-art flag, so a rewrite that
+    drops a stream or turns cover art into a plain video track shows. MP4's
+    chapter text track is rebuilt by the muxer from the chapters, so it is
+    listed apart: copying it too would leave two."""
     try:
-        out = subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", path],
-                             capture_output=True, text=True, timeout=60)
-        return len((json.loads(out.stdout or "{}")).get("streams") or [])
+        out = subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams",
+                              "-show_chapters", path], capture_output=True, text=True, timeout=60)
+        data = json.loads(out.stdout or "{}")
     except Exception:
         return None
+    streams  = data.get("streams") or []
+    chapters = len(data.get("chapters") or [])
+    sig = [(s.get("codec_type"), s.get("codec_name"), (s.get("disposition") or {}).get("attached_pic", 0))
+           for s in streams]
+    chapter_tracks = [s["index"] for s in streams
+                      if chapters and path.lower().endswith(_MP4_EXTS) and s.get("codec_type") == "data"
+                      and s.get("codec_tag_string") == "text" and isinstance(s.get("index"), int)]
+    return sig, chapters, chapter_tracks
 
 
 def _rewrite_tags(path, metargs):
@@ -3907,8 +3923,8 @@ def _rewrite_tags_locked(path, metargs):
             return "not enough free space next to the file for the rewritten copy"
     except OSError:
         pass
-    old_d, old_n = _ffprobe_duration(path), _stream_count(path)
-    if not old_d or not old_n:
+    old_d, old_layout = _ffprobe_duration(path), _stream_layout(path)
+    if not old_d or not old_layout or not old_layout[0]:
         return "couldn't read the file's length or streams, so the result couldn't be checked; left it untouched"
 
     # Only one rewrite runs at a time, so any copy left here is from a run that
@@ -3939,7 +3955,10 @@ def _rewrite_tags_locked(path, metargs):
     # existing tags, then the -metadata flags override only the provided fields.
     # (No -movflags use_metadata_tags: it moves MP4's standard tags where
     # TinyTag and most players don't look.)
-    args = ["ffmpeg", "-y", "-i", path, "-map", "0", "-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
+    # MP4's chapter text track is left out: the muxer writes a fresh one from
+    # the chapters, and copying the old one as well would leave two.
+    skip = [a for i in old_layout[2] for a in ("-map", f"-0:{i}")]
+    args = ["ffmpeg", "-y", "-i", path, "-map", "0"] + skip + ["-c", "copy", "-map_metadata", "0"] + metargs + [tmp]
     try:
         res = subprocess.run(args, capture_output=True, text=True, timeout=600)
     except Exception as e:
@@ -3952,10 +3971,20 @@ def _rewrite_tags_locked(path, metargs):
 
     # The original is the only copy: refuse a rewrite that came out shorter or
     # lost a stream.
-    new_d, new_n = _ffprobe_duration(tmp), _stream_count(tmp)
-    if not new_d or abs(old_d - new_d) > 1.0 or new_n != old_n:
+    new_d, new_layout = _ffprobe_duration(tmp), _stream_layout(tmp)
+    if not new_d or abs(old_d - new_d) > 1.0 or not new_layout or new_layout[:2] != old_layout[:2]:
         drop_tmp()
-        return "rewritten file doesn't match the original (length or streams); left it untouched"
+        if new_layout and new_layout[1] == old_layout[1] and len(new_layout[0]) == len(old_layout[0]) \
+                and any(a[2] for a in old_layout[0]):
+            return ("ffmpeg can't keep this file's cover art as cover art when rewriting it "
+                    "(it would become a second video track); left it untouched")
+        return "rewritten file doesn't match the original (length, streams or chapters); left it untouched"
+    # The link tag is what the library tracks the file by: unless this write
+    # sets it, the rewritten file must still carry the same one.
+    if not any(a.startswith(("comment=", "purl=")) for a in metargs):
+        if _entry_id(_read_meta(path).get("url"))[0] != _entry_id(_read_meta(tmp).get("url"))[0]:
+            drop_tmp()
+            return "the rewritten file lost its link tag; left it untouched"
 
     try:
         shutil.copymode(path, tmp)         # mkstemp made it owner-only
