@@ -6,6 +6,7 @@ import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import TagChip from "../components/TagChip";
+import Rediscover from "../components/Rediscover";
 
 export default function Overview({ videos, playlists, tags = [], tagIds = [], onTagIds, query, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
   const [browseSort, setBrowseSort] = useRememberedState("home:sort", "upload");
@@ -32,6 +33,8 @@ export default function Overview({ videos, playlists, tags = [], tagIds = [], on
   const cardProps = { onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist };
 
   return (
+    <>
+    {!q && !tagIds.length && <Rediscover videos={videos} cardProps={cardProps} />}
     <div className="card">
       <div className="page-head">
         <h2 className="page-title">{q ? "Results" : "Videos"}</h2>
@@ -67,5 +70,6 @@ export default function Overview({ videos, playlists, tags = [], tagIds = [], on
         </>
       )}
     </div>
+    </>
   );
 }
