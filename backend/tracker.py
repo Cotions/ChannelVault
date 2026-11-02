@@ -4900,7 +4900,9 @@ _DL_FORMAT   = "bv*[vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b"
 
 def _dl_quality_ok(q):
     """'best', 'audio', or a height cap ('1080'; any height the size list offers)."""
-    return q in ("best", "audio") or (q.isdigit() and 100 <= int(q) <= 4320)
+    # ASCII digits only: str.isdigit() also takes "²" (int() then raises) and
+    # other scripts' digits, which would reach yt-dlp's -S as is.
+    return q in ("best", "audio") or (re.fullmatch(r"[0-9]{3,4}", q) is not None and 100 <= int(q) <= 4320)
 _DL_TEMPLATE = "%(title).180B-%(id)s.%(ext)s"
 _DL_PROGRESS = re.compile(r"cvprog\s+([\d.]+)%?\s*(\S*)\s*(\S*)")
 _DL_ANSI     = re.compile(r"\x1b\[[0-9;]*m")
@@ -5244,7 +5246,12 @@ def _dl_auto_queue(conn, channel_id, video_id, title, new):
           AND c.channel_name NOT IN (SELECT channel_name FROM channel_status)
         LIMIT 1
     ''', (channel_id,)).fetchone()
-    if not row or _dl_in_library(conn, video_id):
+    if not row:
+        return False
+    # In the library, or marked Skip (from the userscript, before the feed saw
+    # it): never on its own. A wanted one is exactly what this is for.
+    have = conn.execute("SELECT status FROM downloaded_videos WHERE video_id=?", (video_id,)).fetchone()
+    if have and have["status"] != "wanted":
         return False
     job = conn.execute("SELECT status, auto, error FROM download_jobs WHERE video_id=?", (video_id,)).fetchone()
     if job:
