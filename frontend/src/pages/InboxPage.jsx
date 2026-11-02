@@ -1,0 +1,247 @@
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { getFeed, checkFeed, saveFeedSettings, markWanted, markIgnored } from "../lib/api";
+import Icon from "../components/Icon";
+
+const INTERVALS = [1, 3, 6, 12, 24, 48, 168];
+
+// checked_at is SQLite's CURRENT_TIMESTAMP (UTC, no zone); published_at is ISO.
+function toDate(ts) {
+  if (!ts) return null;
+  const d = new Date(ts.includes("T") ? ts : `${ts.replace(" ", "T")}Z`);
+  return isNaN(d) ? null : d;
+}
+
+function ago(ts) {
+  const d = toDate(ts);
+  if (!d) return "never";
+  const s = Math.max(0, (Date.now() - d) / 1000);
+  if (s < 60)     return "just now";
+  if (s < 3600)   return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400)  return `${Math.floor(s / 3600)} h ago`;
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)} d ago`;
+  return d.toLocaleDateString();
+}
+
+function watchUrl(it) {
+  return it.is_short ? `https://www.youtube.com/shorts/${it.video_id}` : `https://www.youtube.com/watch?v=${it.video_id}`;
+}
+
+export default function InboxPage({ query, onMarked }) {
+  const [data,      setData]      = useState(null);
+  const [error,     setError]     = useState(false);
+  const [showOlder, setShowOlder] = useState(false);
+  const [busy,      setBusy]      = useState({});       // video_id -> true while marking
+  const [copied,    setCopied]    = useState(null);
+  const [failed,    setFailed]    = useState(null);     // { id, msg } of the last refused mark
+
+  function load() {
+    return getFeed().then(d => { setData(d); setError(false); }, () => setError(true));
+  }
+
+  useEffect(() => { load(); }, []);
+
+  // A check runs in the background on the server: follow it until it ends.
+  const checking = !!data?.checking;
+  useEffect(() => {
+    if (!checking) return;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [checking]);
+  useEffect(() => { if (data && !checking) onMarked?.("count"); }, [checking]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleCheck() {
+    await checkFeed().catch(() => {});
+    setData(d => d && { ...d, checking: true });
+  }
+
+  async function handleSetting(opts) {
+    const r = await saveFeedSettings(opts).catch(() => null);
+    if (r?.ok) {
+      setData(d => d && {
+        ...d,
+        enabled:        r.feed_enabled,
+        interval_hours: r.feed_interval_hours,
+        shorts:         r.feed_shorts,
+      });
+      onMarked?.("count");
+    }
+  }
+
+  async function handleMark(it, kind) {
+    setBusy(b => ({ ...b, [it.video_id]: true }));
+    setFailed(null);
+    const body = { video_id: it.video_id, title: it.title, channel_name: it.channel_name, url: watchUrl(it) };
+    const r = await (kind === "want" ? markWanted(body) : markIgnored(body)).catch(() => null);
+    setBusy(b => { const n = { ...b }; delete n[it.video_id]; return n; });
+    if (!r?.ok) {
+      setFailed({ id: it.video_id, msg: r?.error || "Could not save — is the backend running?" });
+      return;
+    }
+    setData(d => ({ ...d, items: d.items.filter(x => x.video_id !== it.video_id) }));
+    onMarked?.(kind);
+  }
+
+  async function handleCopy(it) {
+    try {
+      await navigator.clipboard.writeText(watchUrl(it));
+      setCopied(it.video_id);
+      setTimeout(() => setCopied(c => (c === it.video_id ? null : c)), 1500);
+    } catch { /* clipboard refused: the link is still one click away */ }
+  }
+
+  const items = data?.items || [];
+  const q = query.trim().toLowerCase();
+  const pool  = items.filter(it => data.shorts || !it.is_short);
+  const fresh   = pool.filter(it => !it.backlog);
+  const older   = pool.length - fresh.length;
+  const shown   = (showOlder ? pool : fresh).filter(it =>
+    !q || (it.title || "").toLowerCase().includes(q) || (it.channel_name || "").toLowerCase().includes(q));
+  const hiddenShorts = items.filter(it => it.is_short && (showOlder || !it.backlog)).length;
+
+  if (error && !data) {
+    return <div className="card"><div className="msg show err">Could not load the inbox — is the backend running?</div></div>;
+  }
+  if (!data) return <div className="card"><div className="empty">Loading…</div></div>;
+
+  const linked = data.artists - data.unlinked.length;
+  const stats = [
+    { num: fresh.length.toLocaleString(), label: "new uploads" },
+    { num: `${linked}/${data.artists}`,   label: "channels followed" },
+    { num: checking ? "…" : ago(data.last_checked), label: "last checked", small: true },
+  ];
+
+  return (
+    <div className="inbox-page">
+      <div className="card">
+        <div className="page-head">
+          <h2 className="page-title">Inbox</h2>
+          <span className="page-count">{shown.length.toLocaleString()}</span>
+          <div className="page-head-spacer" />
+          <button className="btn-secondary inbox-check" onClick={handleCheck} disabled={checking}>
+            <Icon name="refresh" size={14} className={checking ? "spin" : undefined} />
+            {checking ? "Checking…" : "Check now"}
+          </button>
+        </div>
+
+        <div className="stats-hero is-compact inbox-hero">
+          {stats.map((s, i) => (
+            <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${i * 60}ms` }}>
+              <span className={`stats-hero-num${s.small ? " inbox-hero-small" : ""}`}>{s.num}</span>
+              <span className="stats-hero-label">{s.label}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="inbox-controls">
+          <label className="inbox-toggle">
+            <input type="checkbox" checked={showOlder} onChange={e => setShowOlder(e.target.checked)} />
+            Show older uploads{older ? ` (${older.toLocaleString()})` : ""}
+          </label>
+          <label className="inbox-toggle">
+            <input type="checkbox" checked={!!data.shorts} onChange={e => handleSetting({ feed_shorts: e.target.checked })} />
+            Show Shorts{!data.shorts && hiddenShorts ? ` (${hiddenShorts.toLocaleString()})` : ""}
+          </label>
+          <span className="inbox-controls-spacer" />
+          <label className="inbox-toggle">
+            <input type="checkbox" checked={!!data.enabled} onChange={e => handleSetting({ feed_enabled: e.target.checked })} />
+            Check automatically every
+          </label>
+          <select
+            className="inbox-interval"
+            value={data.interval_hours}
+            disabled={!data.enabled}
+            onChange={e => handleSetting({ feed_interval_hours: Number(e.target.value) })}
+          >
+            {[...new Set([...INTERVALS, data.interval_hours])].sort((a, b) => a - b).map(h => (
+              <option key={h} value={h}>{h === 168 ? "week" : h >= 24 && h % 24 === 0 ? `${h / 24} d` : `${h} h`}</option>
+            ))}
+          </select>
+        </div>
+
+        {failed && <div className="msg show err">{failed.msg}</div>}
+
+        {shown.length === 0 ? (
+          <div className="empty" style={{ marginTop: 14 }}>
+            {q ? "No matching uploads."
+              : linked === 0 ? "No channels followed yet — see below for how to link them."
+              : checking ? "Checking your channels…"
+              : older && !showOlder ? "Nothing new since the last check. Older uploads you never saved are under “Show older uploads”."
+              : "Nothing new since the last check."}
+          </div>
+        ) : (
+          <div className="inbox-grid">
+            {shown.map((it, i) => (
+              <div key={it.video_id} className="inbox-item" style={{ animationDelay: `${Math.min(i, 12) * 40}ms` }}>
+                <a className="inbox-thumb" href={watchUrl(it)} target="_blank" rel="noreferrer" title="Open on YouTube">
+                  <img
+                    src={`https://i.ytimg.com/vi/${it.video_id}/mqdefault.jpg`}
+                    alt=""
+                    loading="lazy"
+                    referrerPolicy="no-referrer"
+                  />
+                  {it.is_short ? <span className="inbox-tag">Short</span> : null}
+                  {it.backlog ? <span className="inbox-tag inbox-tag-old">Older</span> : null}
+                </a>
+                <div className="inbox-meta">
+                  <a className="inbox-title" href={watchUrl(it)} target="_blank" rel="noreferrer">{it.title || it.video_id}</a>
+                  <div className="inbox-sub">
+                    <Link to={`/artist/${encodeURIComponent(it.channel_name)}`}>{it.channel_name}</Link>
+                    <span className="inbox-dot">·</span>
+                    <span title={toDate(it.published_at)?.toLocaleString()}>{ago(it.published_at)}</span>
+                  </div>
+                  <div className="inbox-actions">
+                    <button className="btn-secondary inbox-want" disabled={busy[it.video_id]} onClick={() => handleMark(it, "want")} title="Add to your wanted list">
+                      <Icon name="download" size={13} />Want
+                    </button>
+                    <button className="btn-ghost" disabled={busy[it.video_id]} onClick={() => handleMark(it, "skip")} title="Mark as skipped: it leaves the inbox and YouTube shows it as Skip">
+                      <Icon name="close" size={13} />Skip
+                    </button>
+                    <button className="btn-ghost" onClick={() => handleCopy(it)} title="Copy the video link (for your downloader)">
+                      <Icon name={copied === it.video_id ? "check" : "copy"} size={13} />{copied === it.video_id ? "Copied" : "Copy link"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {(data.unlinked.length > 0 || data.errors.length > 0) && (
+        <div className="card inbox-footer">
+          {data.unlinked.length > 0 && (
+            <details>
+              <summary>
+                {data.unlinked.length.toLocaleString()} channel{data.unlinked.length !== 1 ? "s" : ""} not followed yet
+              </summary>
+              <p className="inbox-help">
+                The feed needs each channel's YouTube id, and ChannelVault never looks it up on its own.
+                It learns it when you open one of the channel's videos or its page on YouTube with the
+                userscript installed, when you use “Fetch metadata” on one of its videos, or when you paste
+                the id on the artist page.
+              </p>
+              <div className="inbox-names">
+                {data.unlinked.map(n => (
+                  <Link key={n} className="inbox-name" to={`/artist/${encodeURIComponent(n)}`}>{n}</Link>
+                ))}
+              </div>
+            </details>
+          )}
+          {data.errors.length > 0 && (
+            <details>
+              <summary>{data.errors.length} channel{data.errors.length !== 1 ? "s" : ""} failed the last check</summary>
+              <ul className="inbox-errors">
+                {data.errors.map(e => (
+                  <li key={e.channel_name}>
+                    <Link to={`/artist/${encodeURIComponent(e.channel_name)}`}>{e.channel_name}</Link>: {e.error}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

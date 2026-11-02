@@ -84,6 +84,27 @@ erDiagram
         INTEGER   tag_id PK
         TEXT      source "manual|rule"
     }
+    channel_ids {
+        TEXT      channel_name PK "artist name"
+        TEXT      channel_id "UC + 22 chars"
+        TEXT      found_via "userscript|ytdlp|manual"
+        TIMESTAMP updated_at
+    }
+    feed_channels {
+        TEXT      channel_id PK
+        TIMESTAMP checked_at
+        TEXT      check_error
+        INTEGER   seeded "first successful poll done"
+    }
+    feed_items {
+        TEXT      video_id PK
+        TEXT      channel_id
+        TEXT      title
+        TEXT      published_at
+        INTEGER   is_short
+        INTEGER   backlog "already out at first poll"
+        TIMESTAMP found_at
+    }
 
     playlists         ||--o{ playlist_items : "FK CASCADE"
     tags              ||--o{ tag_rules      : "tag_id (manual cascade)"
@@ -95,3 +116,5 @@ erDiagram
     downloaded_videos ||--o{ playlist_items : "video_id (loose)"
     downloaded_videos ||--o{ watch_sessions : "video_id (loose)"
     creators          ||--o{ downloaded_videos : "channel_name (loose)"
+    channel_ids       }o--|| feed_channels  : "channel_id (loose)"
+    feed_channels     ||--o{ feed_items     : "channel_id (loose)"

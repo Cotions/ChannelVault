@@ -1,13 +1,14 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.6.5
+// @version      1.7.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
 // @connect      localhost
 // @grant        GM_xmlhttpRequest
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @run-at       document-idle
 // @updateURL    http://localhost:3360/userscript/channelvault.user.js
 // @downloadURL  http://localhost:3360/userscript/channelvault.user.js
@@ -851,6 +852,63 @@ function scheduleCreatorInject() {
 new MutationObserver(scheduleCreatorInject).observe(document.body, { childList: true, subtree: true });
 
 // ---------------------------------------------------------------------------
+// Channel ids — the dashboard's Inbox follows a channel's uploads through its
+// public feed, which is keyed by the channel's YouTube id ("UC…"). The backend
+// never loads YouTube pages itself; it learns ids from the pages you open here.
+// ---------------------------------------------------------------------------
+
+const pageWin = typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+let _lastChannelReport = "";
+
+// YouTube hands every in-app navigation's data to this event: the player
+// response on a watch page, the channel metadata on a channel page.
+function channelFromNavigate(detail) {
+  try {
+    const r  = detail && detail.response;
+    const vd = r && r.playerResponse && r.playerResponse.videoDetails;
+    if (vd && vd.channelId && vd.videoId === getVideoId()) {
+      return { channel_id: vd.channelId, video_id: vd.videoId, channel_name: vd.author };
+    }
+    const cm = r && r.response && r.response.metadata && r.response.metadata.channelMetadataRenderer;
+    if (cm && cm.externalId) return { channel_id: cm.externalId, channel_name: cm.title };
+  } catch (_) { /* page data out of reach (sandbox): the fallback below covers it */ }
+  return null;
+}
+
+// First page load, or a sandbox that can't read the event: ask the page.
+// Meta tags are not used: they keep the first page's values across navigation.
+function channelFromPage() {
+  try {
+    const videoId = getVideoId();
+    if (videoId) {
+      const player = pageWin.document.getElementById("movie_player");
+      const vd = player && player.getPlayerResponse && player.getPlayerResponse();
+      const d  = vd && vd.videoDetails;
+      if (d && d.channelId && d.videoId === videoId) {
+        return { channel_id: d.channelId, video_id: videoId, channel_name: d.author };
+      }
+      return null;
+    }
+    const browse = pageWin.document.querySelector("ytd-browse[page-subtype='channels']");
+    const cm = browse && browse.data && browse.data.metadata && browse.data.metadata.channelMetadataRenderer;
+    if (cm && cm.externalId) return { channel_id: cm.externalId, channel_name: cm.title };
+  } catch (_) { /* nothing to report */ }
+  return null;
+}
+
+function reportChannel(info) {
+  if (!info || !/^UC[A-Za-z0-9_-]{22}$/.test(info.channel_id || "")) return;
+  const key = `${info.channel_id}:${info.video_id || ""}`;
+  if (key === _lastChannelReport) return;
+  _lastChannelReport = key;
+  gmPost(`${API_BASE}/channel-id`, {
+    channel_id:   info.channel_id,
+    video_id:     info.video_id || null,
+    channel_name: info.channel_name || null,
+  }).catch(() => { _lastChannelReport = ""; });
+}
+
+// ---------------------------------------------------------------------------
 // YouTube SPA navigation
 // ---------------------------------------------------------------------------
 
@@ -860,5 +918,11 @@ function onNavigate() {
   injectCreatorButton();
 }
 
-window.addEventListener("yt-navigate-finish", onNavigate);
+window.addEventListener("yt-navigate-finish", (e) => {
+  onNavigate();
+  const info = channelFromNavigate(e.detail);
+  if (info) reportChannel(info);
+  else setTimeout(() => reportChannel(channelFromPage()), 1500);
+});
 onNavigate();
+setTimeout(() => reportChannel(channelFromPage()), 2500);

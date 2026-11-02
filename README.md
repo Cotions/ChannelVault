@@ -127,6 +127,20 @@ https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channel
 
 The badge appears automatically on YouTube video pages and card thumbnails for any video in your vault.
 
+The script also tells the dashboard which YouTube channel id a video or channel page belongs to, so the Inbox can follow that channel (see below). It only reads the page you already have open.
+
+---
+
+## 3b — Inbox: new uploads from your channels
+
+The **Inbox** lists videos your channels posted that aren't in the vault yet. Click **Want** to put one on your wanted list (then download it with whatever you use), **Skip** to mark it skipped, or **Copy link**.
+
+It reads each channel's public RSS feed (`youtube.com/feeds/videos.xml`), the one YouTube publishes for feed readers: no account, cookie or API key, one request per channel every few hours (change the interval or turn it off on the Inbox page). Channels marked abandoned, deleted or banned are not checked.
+
+A channel is followed once the app knows its YouTube id. It learns it when you open one of the channel's videos (or its page) on YouTube with the userscript, when you use **Fetch metadata** on one of its videos, or when you paste the id on the artist page. The app never loads YouTube pages to look ids up.
+
+The first check of a channel only counts uploads from the last few days as new; anything older sits under **Show older uploads**. Shorts are hidden unless you tick **Show Shorts**.
+
 ---
 
 ## 4 — Tags and segments
@@ -433,6 +447,17 @@ Video ids must be the 11 character YouTube shape; anything else is a 404.
 | POST | `/creator` | Save an About-panel snapshot (the userscript posts this) |
 | GET | `/creators` | Every stored profile |
 | GET | `/creator/<name>` | One profile |
+
+**Upload feed (Inbox)**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/feed` | Uploads from followed channels not in the vault, plus which channels aren't followed yet |
+| GET | `/feed/count` | New uploads waiting (the sidebar badge) |
+| POST | `/feed/check` | Poll every followed channel now, in the background |
+| GET | `/channel-ids` | Which channel id each artist is followed by |
+| POST | `/channel-ids` | Set an artist's channel id by hand (`null` unfollows) |
+| POST | `/channel-id` | The userscript reports the channel of the page it is on |
 
 **Files, importing and housekeeping**
 
