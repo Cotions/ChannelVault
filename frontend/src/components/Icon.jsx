@@ -5,6 +5,7 @@
 
 const PATHS = {
   home:      <><path d="M3 10.2 12 3l9 7.2" /><path d="M5.5 9.2V20h13V9.2" /><path d="M9.8 20v-5.4h4.4V20" /></>,
+  inbox:     <><path d="M3.5 13.5 6 5.5h12l2.5 8" /><path d="M3.5 13.5V19h17v-5.5h-5.2l-1.3 2.4h-4l-1.3-2.4z" /></>,
   playlist:  <><path d="M3 6h11" /><path d="M3 12h11" /><path d="M3 18h7" /><circle cx="17.5" cy="17" r="3" /><path d="M20.5 17V8.4l2.5.9" /></>,
   users:     <><circle cx="9.5" cy="8" r="3.4" /><path d="M3.5 20c0-3.3 2.7-5.6 6-5.6s6 2.3 6 5.6" /><path d="M16.4 5.2a3.4 3.4 0 0 1 0 6.4" /><path d="M18 14.9c2.1.7 3.5 2.5 3.5 5.1" /></>,
   pulse:     <><path d="M3 12h3.6l2.2-6 3.4 12.4L14.8 12H21" /></>,

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink, useLocation } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, getProfiles, shutdownApp } from "./lib/api";
+import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, getProfiles, shutdownApp, getFeedCount } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
@@ -19,6 +19,9 @@ import VideoPage       from "./pages/VideoPage";
 import Stats           from "./pages/Stats";
 import TagsPage        from "./pages/TagsPage";
 import TagPage         from "./pages/TagPage";
+import InboxPage       from "./pages/InboxPage";
+import DownloadQueue from "./components/DownloadQueue";
+import { onDownloadDone } from "./lib/downloads";
 
 // A deleted tag must leave the Home filter too, or the grid filters on an id
 // nothing carries.
@@ -88,6 +91,7 @@ export default function App() {
       setPlaylists(p);
       setTags(t);
       setTagIds(prev => dropDeletedTags(prev, t));
+      loadInboxCount();          // a scan may have filed a video the inbox listed
       setLibVer(n => n + 1);     // pages holding their own lists (tag, playlist) reload on this
       setOnline(true);
     } catch {
@@ -100,6 +104,29 @@ export default function App() {
   }
 
   useEffect(() => { load(); loadProfiles(); }, []);
+  // A download that lands in the library shows up without a reload.
+  useEffect(() => onDownloadDone(() => { load(); loadInboxCount(); }), []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // New uploads waiting in the inbox. The poller runs on the server; checking
+  // its count now and then keeps the sidebar badge current.
+  const [inboxCount, setInboxCount] = useState(0);
+  async function loadInboxCount() {
+    try { setInboxCount((await getFeedCount()).count || 0); } catch { /* offline: load() reports it */ }
+  }
+  useEffect(() => {
+    loadInboxCount();
+    const t = setInterval(loadInboxCount, 5 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  // Want or Skip in the inbox adds an entry the artist pages and Stats list.
+  async function handleInboxMarked(kind) {
+    loadInboxCount();
+    if (kind === "count") return;
+    const [w, i] = await Promise.all([getWanted(), getIgnored()]);
+    setWanted(w);
+    setIgnored(i);
+  }
 
   async function handleDelete(id) {
     const r = await deleteVideo(id);
@@ -210,6 +237,7 @@ export default function App() {
         )}
         </div>
         <div className="header-right">
+          <DownloadQueue />
           <ProfileSwitch profiles={profiles} onManage={() => setShowWatchFolder("profiles")} />
           <span className="header-count" title="Videos in vault">{videos.length.toLocaleString()}</span>
           <span
@@ -240,6 +268,10 @@ export default function App() {
       <div className="app-body">
         <nav className="sidebar">
           <NavLink to="/" end className="side-link"><Icon name="home" />Home</NavLink>
+          <NavLink to="/inbox" className="side-link">
+            <Icon name="inbox" />Inbox
+            {inboxCount > 0 && <span className="side-badge" title="New uploads from your channels">{inboxCount > 99 ? "99+" : inboxCount}</span>}
+          </NavLink>
           <NavLink to="/playlists" className="side-link"><Icon name="playlist" />Playlists</NavLink>
           <NavLink to="/artists" className="side-link"><Icon name="users" />Artists</NavLink>
           <NavLink to="/tags" className="side-link"><Icon name="tag" />Tags</NavLink>
@@ -292,6 +324,7 @@ export default function App() {
               path="/artists"
               element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} />}
             />
+            <Route path="/inbox" element={<InboxPage query={query} onMarked={handleInboxMarked} />} />
             <Route path="/data-quality" element={<DataQualityPage onLibraryChanged={load} />} />
             <Route path="/tags" element={<TagsPage tags={tags} query={query} onChanged={handleTagsChanged} />} />
             <Route
