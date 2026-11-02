@@ -252,8 +252,8 @@ not match the video, which is the quickest way to spot a file that belongs to
 something else.
 
 If the two were not cut from the same master, the **− +0.0s +** buttons shift the
-sound against the picture in tenths of a second. The offset is saved with the
-track.
+sound against the picture in tenths of a second: **+** makes the sound come
+later, **−** earlier. The offset is saved with the track.
 
 Removing a track only detaches it. The audio file itself is never touched.
 
