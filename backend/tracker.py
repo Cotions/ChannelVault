@@ -4692,6 +4692,8 @@ def _name_for_upload(conn, video_id, uploader):
     row = conn.execute(
         "SELECT channel_name FROM downloaded_videos WHERE video_id = ? AND status IN ('downloaded', 'attached')",
         (video_id,)).fetchone() if video_id else None
+    # A channel still shown under a name the library renamed from.
+    uploader = _aliases(conn).get(uploader, uploader) if uploader else uploader
     if row:
         names = _artist_names(row["channel_name"])
         if len(names) == 1:
@@ -5227,6 +5229,8 @@ def add_download():
         if _dl_in_library(conn, video_id):
             conn.close()
             return jsonify({"ok": False, "error": "Already in the library"}), 409
+        # A credit under a name the library renamed from goes by the new one.
+        channel = _alias_credit(channel, conn)
         # No quality picked: the creator's own default, else the library's usual.
         _dl_queue(conn, video_id, title, channel, quality or _dl_pref(conn, channel)["quality"])
         conn.commit()
@@ -5586,6 +5590,18 @@ def _rename_artist(conn, src, dst):
     _merge_row(conn, "creators", src, dst, [f for f in _CREATOR_FIELDS])
     _merge_row(conn, "channel_status", src, dst, [])
     _merge_row(conn, "channel_ids", src, dst, [])
+    _merge_row(conn, "download_prefs", src, dst, [])
+    # Download jobs carry the credit they were queued under; keep it in step.
+    for j in conn.execute("SELECT id, channel_name FROM download_jobs WHERE instr(channel_name, ?) > 0",
+                          (src,)).fetchall():
+        names = _artist_names(j["channel_name"])
+        if src in names:
+            parts = []
+            for p in names:
+                p = dst if p == src else p
+                if p not in parts:
+                    parts.append(p)
+            conn.execute("UPDATE download_jobs SET channel_name = ? WHERE id = ?", (", ".join(parts), j["id"]))
 
     # "Also on": src's group joins dst's, and a group left with one member goes.
     g_src = conn.execute("SELECT group_id FROM artist_links WHERE channel_name = ?", (src,)).fetchone()
