@@ -125,7 +125,7 @@ https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channel
 
 3. Allow `localhost` connections when Tampermonkey prompts.
 
-The badge appears automatically on YouTube video pages and card thumbnails for any video in your vault.
+A badge appears on YouTube video pages and on video thumbnails everywhere: home, channel pages, the watch-page sidebar, search results and Shorts tiles. Green **In Vault** means downloaded, blue **Wanted** means on your wanted list, red **Skip** means skipped, and the title takes the same color. Each card's ⋯ menu gets **Wanted** and **Skipped** entries (search results included).
 
 The script also tells the dashboard which YouTube channel id a video or channel page belongs to, so the Inbox can follow that channel (see below). It only reads the page you already have open.
 
