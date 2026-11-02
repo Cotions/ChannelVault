@@ -925,7 +925,25 @@ def init_db():
     # and only stops the feed.
     if "unfollowed" not in [r[1] for r in conn.execute("PRAGMA table_info(channel_ids)")]:
         conn.execute("ALTER TABLE channel_ids ADD COLUMN unfollowed INTEGER NOT NULL DEFAULT 0")
+    # The name YouTube shows for that channel now, as last seen by a fetch or
+    # the userscript. When it differs from channel_name the channel was
+    # renamed, and the artist page offers to follow the rename.
+    if "youtube_name" not in [r[1] for r in conn.execute("PRAGMA table_info(channel_ids)")]:
+        conn.execute("ALTER TABLE channel_ids ADD COLUMN youtube_name TEXT")
+    # The renamed name the user chose not to follow, so it isn't offered again.
+    if "rename_dismissed" not in [r[1] for r in conn.execute("PRAGMA table_info(channel_ids)")]:
+        conn.execute("ALTER TABLE channel_ids ADD COLUMN rename_dismissed TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_ids_id ON channel_ids(channel_id)")
+    # Names the library no longer uses for an artist. A credit naming the alias
+    # is stored under `name` instead, and /artist/<alias> redirects there. Made
+    # by renaming an artist, or by keeping the old name after a channel rename.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS artist_aliases (
+            alias      TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     # Upload feed: one row per channel id polled, one per upload seen. Uploads
     # already out when a channel was first polled are `backlog`, so the inbox
     # starts with what is new rather than every video the user skipped.
@@ -1182,12 +1200,13 @@ def process_video_file(file_path):
             url = None                    # the marker isn't a link anywhere
 
         title         = meta.get("title")
-        artist        = meta.get("artist")
         description   = meta.get("description")
         recorded_date = meta.get("recorded_date")
 
         with _db_lock:
             conn = get_conn()
+            # Read under the lock so a rename can't slip in between.
+            artist = _alias_credit(meta.get("artist"), conn)
             # UPSERT: insert new, or promote wanted/ignored → downloaded
             conn.execute('''
                 INSERT INTO downloaded_videos
@@ -1889,6 +1908,9 @@ def _artist_scan_files(artist):
     any media root, plus videos tagged with this artist that sit (non-recursively)
     next to the files we already track for them."""
     files, seen = [], set()
+    conn = get_conn()
+    # Files can still carry a name the artist was renamed from.
+    credits = {artist} | {a for a, n in _aliases(conn).items() if n == artist}
 
     def add(fp):
         key = os.path.realpath(fp)
@@ -1897,12 +1919,12 @@ def _artist_scan_files(artist):
             files.append(fp)
 
     for root in get_media_roots():
-        folder = os.path.join(root, _safe_dirname(artist))
-        if os.path.isdir(folder):
-            for fp in _walk_videos(folder):
-                add(fp)
+        for name in credits:
+            folder = os.path.join(root, _safe_dirname(name))
+            if os.path.isdir(folder):
+                for fp in _walk_videos(folder):
+                    add(fp)
 
-    conn = get_conn()
     rows = conn.execute(
         "SELECT channel_name, file_path FROM downloaded_videos WHERE file_path IS NOT NULL AND channel_name LIKE ?",
         (f"%{artist}%",),
@@ -1930,7 +1952,7 @@ def _artist_scan_files(artist):
             if os.path.realpath(fp) in seen or not f.lower().endswith(_LIBRARY_EXTS) \
                     or _is_temp_file(f) or not os.path.isfile(fp):
                 continue
-            if artist in _artist_names(_read_meta(fp).get("artist")):
+            if credits & set(_artist_names(_read_meta(fp).get("artist"))):
                 add(fp)
     return files
 
@@ -2089,6 +2111,7 @@ def _upsert_mark(video_id, title, channel_name, url, status):
     if url and not re.match(r"https?://", url, re.I):
         url = None
     conn = get_conn()
+    channel_name = _alias_credit(channel_name, conn)
     conn.execute('''
         INSERT INTO downloaded_videos (video_id, title, channel_name, url, status)
         VALUES (?, ?, ?, ?, ?)
@@ -2943,7 +2966,7 @@ def add_video_manual():
         ''', {
             "id":      video_id,
             "title":   _text(body.get("title")),
-            "channel": _clean_name(_text(body.get("channel_name"))),
+            "channel": _alias_credit(_clean_name(_text(body.get("channel_name")))),
             "url":     url or None,
             "path":    file_path or None,
             "genre":   _text(body.get("genre")),
@@ -3192,7 +3215,7 @@ def fetch_metadata(video_id):
             WHERE video_id = ?
         ''', (
             info.get("title") or None,
-            _clean_name(info.get("channel") or info.get("uploader")),
+            _alias_credit(_clean_name(info.get("channel") or info.get("uploader")), conn),
             info.get("webpage_url") or url,
             info.get("description") or None,
             recorded_date,
@@ -3203,8 +3226,9 @@ def fetch_metadata(video_id):
         ))
         # yt-dlp names the channel's id too: the key its upload feed needs.
         channel_id = _channel_id_from(info.get("channel_id"))
-        name = channel_id and _name_for_upload(conn, video_id, _clean_name(info.get("channel") or info.get("uploader")))
-        linked = bool(name) and _link_channel_id(conn, name, channel_id, "ytdlp")
+        uploader = _clean_name(info.get("channel") or info.get("uploader"))
+        name = channel_id and _name_for_upload(conn, video_id, uploader)
+        linked = bool(name) and _link_channel_id(conn, name, channel_id, "ytdlp", uploader)
         conn.commit()
         conn.close()
     if linked:
@@ -3936,7 +3960,7 @@ def import_enrich():
                     description = COALESCE(?, description), recorded_date = COALESCE(?, recorded_date),
                     file_size_bytes = ?
                 WHERE video_id = ?
-            ''', (meta.get("title"), _clean_name(meta.get("artist")), meta.get("genre"),
+            ''', (meta.get("title"), _alias_credit(_clean_name(meta.get("artist"))), meta.get("genre"),
                   meta.get("description"), _norm_date(meta.get("recorded_date")),
                   os.path.getsize(path), tracked["video_id"]))
             conn.commit()
@@ -4422,6 +4446,8 @@ def upsert_creator():
     )
     with _db_lock:
         conn = get_conn()
+        # A profile captured under a channel's old name belongs to its new one.
+        vals["channel_name"] = _aliases(conn).get(channel_name, channel_name)
         conn.execute(f'''
             INSERT INTO creators
                 (channel_name, handle, channel_url, description, country, joined_date,
@@ -4635,23 +4661,28 @@ def _channel_id_from(value):
     return v if _CHANNEL_ID_RE.fullmatch(v) else None
 
 
-def _link_channel_id(conn, channel_name, channel_id, via):
-    """Record which channel id a name is. Automatic sources only fill a name
-    that has none: one video of an artist can sit on someone else's channel (a
-    reupload, a label), and a channel keeps its id through a rename, so a
-    different id reported later is more likely wrong than new. Only a link
-    made by hand replaces one. True when the stored id changed."""
+def _link_channel_id(conn, channel_name, channel_id, via, youtube_name=None):
+    """Record which channel id a name is, and the name YouTube shows for it
+    now. Automatic sources only fill a name that has none: one video of an
+    artist can sit on someone else's channel (a reupload, a label), and a
+    channel keeps its id through a rename, so a different id reported later is
+    more likely wrong than new. Only a link made by hand replaces one. The
+    YouTube name is kept only when it comes with the stored id. True when the
+    stored id changed."""
     row = conn.execute("SELECT channel_id FROM channel_ids WHERE channel_name = ?",
                        (channel_name,)).fetchone()
-    if row and (row["channel_id"] == channel_id or via != "manual"):
-        return False
-    conn.execute('''
-        INSERT INTO channel_ids (channel_name, channel_id, found_via) VALUES (?, ?, ?)
-        ON CONFLICT(channel_name) DO UPDATE SET
-            channel_id = excluded.channel_id, found_via = excluded.found_via,
-            unfollowed = 0, updated_at = CURRENT_TIMESTAMP
-    ''', (channel_name, channel_id, via))
-    return True
+    changed = not row or (row["channel_id"] != channel_id and via == "manual")
+    if changed:
+        conn.execute('''
+            INSERT INTO channel_ids (channel_name, channel_id, found_via) VALUES (?, ?, ?)
+            ON CONFLICT(channel_name) DO UPDATE SET
+                channel_id = excluded.channel_id, found_via = excluded.found_via,
+                unfollowed = 0, youtube_name = NULL, updated_at = CURRENT_TIMESTAMP
+        ''', (channel_name, channel_id, via))
+    if youtube_name:
+        conn.execute("UPDATE channel_ids SET youtube_name = ? WHERE channel_name = ? AND channel_id = ?",
+                     (youtube_name, channel_name, channel_id))
+    return changed
 
 
 def _name_for_upload(conn, video_id, uploader):
@@ -4661,6 +4692,8 @@ def _name_for_upload(conn, video_id, uploader):
     row = conn.execute(
         "SELECT channel_name FROM downloaded_videos WHERE video_id = ? AND status IN ('downloaded', 'attached')",
         (video_id,)).fetchone() if video_id else None
+    # A channel still shown under a name the library renamed from.
+    uploader = _aliases(conn).get(uploader, uploader) if uploader else uploader
     if row:
         names = _artist_names(row["channel_name"])
         if len(names) == 1:
@@ -5196,6 +5229,8 @@ def add_download():
         if _dl_in_library(conn, video_id):
             conn.close()
             return jsonify({"ok": False, "error": "Already in the library"}), 409
+        # A credit under a name the library renamed from goes by the new one.
+        channel = _alias_credit(channel, conn)
         # No quality picked: the creator's own default, else the library's usual.
         _dl_queue(conn, video_id, title, channel, quality or _dl_pref(conn, channel)["quality"])
         conn.commit()
@@ -5441,7 +5476,7 @@ def report_channel_id():
     with _db_lock:
         conn = get_conn()
         name = _name_for_upload(conn, video_id, uploader)
-        changed = bool(name) and _link_channel_id(conn, name, channel_id, "userscript")
+        changed = bool(name) and _link_channel_id(conn, name, channel_id, "userscript", uploader)
         conn.commit()
         conn.close()
     if changed:
@@ -5479,6 +5514,194 @@ def set_channel_id():
         conn.commit()
         conn.close()
     _feed_wake.set()
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Renaming artists
+#
+# An artist is a display name, and YouTube channels change theirs. Renaming
+# moves every credit plus the name-keyed rows (profile, "Also on" links, status
+# mark, channel id) in one transaction, and leaves the old name as an alias so
+# its URL and any file still tagged with it land on the new name. Renaming onto
+# a name that already exists merges the two.
+# ---------------------------------------------------------------------------
+
+def _aliases(conn):
+    return dict(conn.execute("SELECT alias, name FROM artist_aliases").fetchall())
+
+
+def _alias_credit(credit, conn=None):
+    """A credit with every aliased part replaced by the name it now goes by."""
+    if not credit:
+        return credit
+    own = conn is None
+    conn = conn or get_conn()
+    try:
+        aliases = _aliases(conn)
+    finally:
+        if own:
+            conn.close()
+    if not aliases:
+        return credit
+    out = []
+    for part in _artist_names(credit):
+        part = aliases.get(part, part)
+        if part not in out:
+            out.append(part)
+    return ", ".join(out) or credit
+
+
+def _credit_rows(conn, name):
+    """(video_id, channel_name) of every entry crediting name, alone or in a collab."""
+    rows = conn.execute("SELECT video_id, channel_name FROM downloaded_videos WHERE instr(channel_name, ?) > 0",
+                        (name,)).fetchall()
+    return [r for r in rows if name in _artist_names(r["channel_name"])]
+
+
+def _merge_row(conn, table, src, dst, fields):
+    """Move src's row in a channel_name-keyed table to dst. When dst already
+    has one, dst's values win and src only fills its gaps."""
+    if not conn.execute(f"SELECT 1 FROM {table} WHERE channel_name = ?", (src,)).fetchone():
+        return
+    if conn.execute(f"SELECT 1 FROM {table} WHERE channel_name = ?", (dst,)).fetchone():
+        if fields:
+            sets = ", ".join(f"{f} = COALESCE({f}, (SELECT {f} FROM {table} WHERE channel_name = :src))"
+                             for f in fields)
+            conn.execute(f"UPDATE {table} SET {sets} WHERE channel_name = :dst", {"src": src, "dst": dst})
+        conn.execute(f"DELETE FROM {table} WHERE channel_name = ?", (src,))
+    else:
+        conn.execute(f"UPDATE {table} SET channel_name = ? WHERE channel_name = ?", (dst, src))
+
+
+def _rename_artist(conn, src, dst):
+    """Rename src to dst inside the caller's transaction. Returns the number of
+    entries whose credit changed."""
+    rows = _credit_rows(conn, src)
+    for r in rows:
+        parts = []
+        for p in _artist_names(r["channel_name"]):
+            p = dst if p == src else p
+            if p not in parts:
+                parts.append(p)
+        conn.execute("UPDATE downloaded_videos SET channel_name = ? WHERE video_id = ?",
+                     (", ".join(parts), r["video_id"]))
+
+    _merge_row(conn, "creators", src, dst, [f for f in _CREATOR_FIELDS])
+    _merge_row(conn, "channel_status", src, dst, [])
+    _merge_row(conn, "channel_ids", src, dst, [])
+    _merge_row(conn, "download_prefs", src, dst, [])
+    # Download jobs carry the credit they were queued under; keep it in step.
+    for j in conn.execute("SELECT id, channel_name FROM download_jobs WHERE instr(channel_name, ?) > 0",
+                          (src,)).fetchall():
+        names = _artist_names(j["channel_name"])
+        if src in names:
+            parts = []
+            for p in names:
+                p = dst if p == src else p
+                if p not in parts:
+                    parts.append(p)
+            conn.execute("UPDATE download_jobs SET channel_name = ? WHERE id = ?", (", ".join(parts), j["id"]))
+
+    # "Also on": src's group joins dst's, and a group left with one member goes.
+    g_src = conn.execute("SELECT group_id FROM artist_links WHERE channel_name = ?", (src,)).fetchone()
+    g_dst = conn.execute("SELECT group_id FROM artist_links WHERE channel_name = ?", (dst,)).fetchone()
+    if g_src and g_dst:
+        conn.execute("UPDATE artist_links SET group_id = ? WHERE group_id = ?", (g_dst[0], g_src[0]))
+        conn.execute("DELETE FROM artist_links WHERE channel_name = ?", (src,))
+    elif g_src:
+        conn.execute("UPDATE artist_links SET channel_name = ? WHERE channel_name = ?", (dst, src))
+    conn.execute('''DELETE FROM artist_links WHERE group_id IN
+                    (SELECT group_id FROM artist_links GROUP BY group_id HAVING COUNT(*) < 2)''')
+
+    # src now points at dst, and so does anything that pointed at src. dst
+    # itself is a live name again, not an alias of anything.
+    conn.execute("UPDATE artist_aliases SET name = ? WHERE name = ?", (dst, src))
+    conn.execute("DELETE FROM artist_aliases WHERE alias = ?", (dst,))
+    conn.execute('''INSERT INTO artist_aliases (alias, name) VALUES (?, ?)
+                    ON CONFLICT(alias) DO UPDATE SET name = excluded.name, created_at = CURRENT_TIMESTAMP''',
+                 (src, dst))
+    return len(rows)
+
+
+def _pending_rename(conn, name):
+    """The name YouTube now shows for this artist's channel, when it differs
+    and the user hasn't already answered for that name."""
+    row = conn.execute("SELECT youtube_name, rename_dismissed FROM channel_ids WHERE channel_name = ?",
+                       (name,)).fetchone()
+    yt = row and row["youtube_name"]
+    if not yt or yt == name or yt == row["rename_dismissed"] or _aliases(conn).get(yt) == name:
+        return None
+    return yt
+
+
+@app.get("/artist-name/<path:name>")
+def artist_name_info(name):
+    """Where an artist name stands: an alias of another name (the page
+    redirects), or a channel YouTube now shows under another name."""
+    name = _clean_name(name)
+    conn = get_conn()
+    alias_of = _aliases(conn).get(name)
+    rename = None
+    yt = None if alias_of else _pending_rename(conn, name)
+    if yt:
+        rename = {"to": yt, "existing": _known_artist(conn, yt)}
+    conn.close()
+    return jsonify({"alias_of": alias_of, "rename": rename})
+
+
+@app.post("/artist-rename")
+def rename_artist():
+    """Rename an artist, merging into the new name when it already exists.
+    dry_run reports what would happen without changing anything."""
+    body = request.get_json(silent=True) or {}
+    src  = _body_name(body, "from")
+    dst  = _body_name(body, "to")
+    if not src or not dst:
+        return jsonify({"ok": False, "error": "from and to are required"}), 400
+    if "," in dst:
+        return jsonify({"ok": False, "error": "A name can't contain a comma: commas separate collab credits"}), 400
+    if src == dst:
+        return jsonify({"ok": False, "error": "That is already the name"}), 400
+    with _db_lock:
+        conn = get_conn()
+        try:
+            if not _known_artist(conn, src):
+                return jsonify({"ok": False, "error": f"no videos from {src}"}), 404
+            merge = _known_artist(conn, dst)
+            if body.get("dry_run"):
+                # Both names linked to different channels: only dst's link stays.
+                ids = dict(conn.execute("SELECT channel_name, channel_id FROM channel_ids WHERE channel_name IN (?, ?)",
+                                        (src, dst)).fetchall())
+                drops = ids.get(src) if ids.get(dst) and ids.get(src) != ids.get(dst) else None
+                return jsonify({"ok": True, "videos": len(_credit_rows(conn, src)), "merge": merge,
+                                "drops_channel": drops})
+            with conn:
+                moved = _rename_artist(conn, src, dst)
+        finally:
+            conn.close()
+    sync_artist_folders()                  # the thumbnails follow their videos' new name
+    return jsonify({"ok": True, "name": dst, "videos": moved, "merged": merge})
+
+
+@app.post("/artist-rename/keep")
+def keep_artist_name():
+    """Keep the library's name for a channel YouTube renamed. Files tagged
+    with the new name join this artist from now on, unless that name is
+    already an artist of its own."""
+    body = request.get_json(silent=True) or {}
+    name = _body_name(body, "name")
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    with _db_lock:
+        conn = get_conn()
+        with conn:
+            yt = _pending_rename(conn, name)
+            if yt:
+                conn.execute("UPDATE channel_ids SET rename_dismissed = ? WHERE channel_name = ?", (yt, name))
+                if not _known_artist(conn, yt):
+                    conn.execute("INSERT OR IGNORE INTO artist_aliases (alias, name) VALUES (?, ?)", (yt, name))
+        conn.close()
     return jsonify({"ok": True})
 
 
