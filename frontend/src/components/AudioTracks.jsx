@@ -217,7 +217,7 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
                 <button className="icon-btn" onClick={() => nudge(-NUDGE)} title={`Sound earlier by ${NUDGE}s`}>
                   <Icon name="minus" size={14} />
                 </button>
-                <span className="audio-offset" title="Sound shifted against the picture">
+                <span className="audio-offset" title={offset > 0 ? "Sound plays this much later than the picture" : offset < 0 ? "Sound plays this much earlier than the picture" : "Sound in step with the picture"}>
                   {offset >= 0 ? "+" : "−"}{Math.abs(offset).toFixed(1)}s
                 </span>
                 <button className="icon-btn" onClick={() => nudge(NUDGE)} title={`Sound later by ${NUDGE}s`}>

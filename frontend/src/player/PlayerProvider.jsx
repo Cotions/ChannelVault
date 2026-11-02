@@ -120,9 +120,25 @@ export default function PlayerProvider({ onCompleted, children }) {
   const syncAudio = useCallback((force = false) => {
     const v = videoRef.current, a = audioRef.current, track = trackRef.current;
     if (!v || !a || !track) return;
-    const target = Math.max(0, v.currentTime + (track.offset_secs || 0));
-    if (force || Math.abs(a.currentTime - target) > AUDIO_DRIFT) a.currentTime = target;
+    // A positive offset_secs delays the sound ("Sound later"): the file's
+    // second 0 plays at the video's second `offset_secs`. Before that the
+    // soundtrack hasn't started; timeupdate calls back in and starts it.
     if (a.playbackRate !== v.playbackRate) a.playbackRate = v.playbackRate;
+    const target = v.currentTime - (track.offset_secs || 0);
+    if (target < 0) {
+      if (!a.paused) a.pause();
+      if (a.currentTime !== 0) a.currentTime = 0;
+      return;
+    }
+    // Past the soundtrack's end (a shorter file, or sound shifted earlier):
+    // stay silent. play() on an ended element would restart it from 0.
+    if (Number.isFinite(a.duration) && target >= a.duration) {
+      if (!a.paused) a.pause();
+      return;
+    }
+    // Starting from paused (first play, or after the pre-offset wait) lands
+    // exactly on target rather than inheriting up to AUDIO_DRIFT of lag.
+    if (force || (a.paused && !v.paused) || Math.abs(a.currentTime - target) > AUDIO_DRIFT) a.currentTime = target;
     if (v.paused || v.ended) { if (!a.paused) a.pause(); }
     else if (a.paused) a.play().catch(() => {});
   }, []);
