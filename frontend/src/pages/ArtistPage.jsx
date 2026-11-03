@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom";
 import { goBack } from "../lib/nav";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
@@ -33,9 +33,32 @@ export default function ArtistPage(props) {
   return <ArtistPageBody key={name} {...props} />;
 }
 
+// One wanted or skipped video: its thumbnail and title (to YouTube), its
+// actions, and the button that drops the mark.
+function MarkRow({ video: v, onRemoveMark, children }) {
+  const href = isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url);
+  return (
+    <div className="mark-row">
+      <a className="mark-thumb" href={href} target="_blank" rel="noreferrer" tabIndex={-1}>
+        {isYouTube(v) && (
+          <img src={`https://i.ytimg.com/vi/${v.video_id}/mqdefault.jpg`} alt="" loading="lazy" referrerPolicy="no-referrer" />
+        )}
+      </a>
+      <a className="mark-title" href={href} target="_blank" rel="noreferrer">{v.title || v.video_id}</a>
+      <div className="mark-actions">
+        {children}
+        <button className="btn-ghost mark-remove" title="Remove the mark" onClick={() => onRemoveMark(v.video_id)}>
+          <Icon name="close" size={13} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
   const { name } = useParams();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const artist   = name;              // the router already decoded it; again would choke on "%"
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useRememberedState(`artist:${name}:sort`, "upload");
@@ -138,6 +161,22 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   const artistWanted  = wanted.filter(v => artistsOf(v).includes(artist));
   const artistIgnored = ignored.filter(v => artistsOf(v).includes(artist));
 
+  // Videos / Wanted / Skipped. In the URL so Back and a refresh keep the tab;
+  // a tab with nothing left in it falls back to the first that has something.
+  const counts = { videos: artistVideos.length, wanted: artistWanted.length, skipped: artistIgnored.length };
+  const asked  = params.get("tab");
+  // No tab asked for: the first one with something in it.
+  const first  = ["videos", "wanted", "skipped"].find(k => counts[k]) || "videos";
+  const tab    = counts[asked] ? asked : first;
+  function openTab(next) {
+    setParams(p => {
+      const n = new URLSearchParams(p);
+      if (next === "videos") n.delete("tab"); else n.set("tab", next);
+      return n;
+    }, { replace: true });
+  }
+  const showTabs = counts.wanted > 0 || counts.skipped > 0;
+
   return (
     <div className="card">
       <div className="artist-page-header">
@@ -162,10 +201,16 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
           <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>
         )}
         {artistWanted.length > 0 && (
-          <span className="artist-badge" style={{ background: "#1565c033", color: "#90caf9" }}><Icon name="download" size={12} />{artistWanted.length} wanted</span>
+          <button type="button" className="artist-badge artist-badge-btn" style={{ background: "#1565c033", color: "#90caf9" }}
+                  onClick={() => openTab("wanted")} title="Show the Wanted tab">
+            <Icon name="download" size={12} />{artistWanted.length} wanted
+          </button>
         )}
         {artistIgnored.length > 0 && (
-          <span className="artist-badge" style={{ background: "#b71c1c33", color: "#ef9a9a" }}><Icon name="close" size={12} />{artistIgnored.length} skipped</span>
+          <button type="button" className="artist-badge artist-badge-btn" style={{ background: "#b71c1c33", color: "#ef9a9a" }}
+                  onClick={() => openTab("skipped")} title="Show the Skipped tab">
+            <Icon name="close" size={12} />{artistIgnored.length} skipped
+          </button>
         )}
         {artistVideos.length > 0 && (
           <Link to={`/artist/${encodeURIComponent(artist)}/stats`} className="btn-secondary btn-export">Stats</Link>
@@ -179,10 +224,10 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
           <Icon name="refresh" size={13} />{scanMsg || "Scan folder"}
         </button>
         <ChannelStatusMenu status={channelMark?.status || null} onChange={handleStatus} />
-        {artistVideos.length > 1 && (
+        {tab === "videos" && artistVideos.length > 1 && (
           <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />
         )}
-        {artistVideos.length > 0 && (
+        {tab === "videos" && artistVideos.length > 0 && (
           <div className="layout-toggle">
             <button
               className={`btn-ghost${layout === "grid" ? " active" : ""}`}
@@ -331,7 +376,19 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
         </div>
       )}
 
-      {artistVideos.length > 0 && (
+      {showTabs && (
+        <div className="artist-tabs" role="tablist">
+          {[["videos", "Videos"], ["wanted", "Wanted"], ["skipped", "Skipped"]].map(([k, label]) => (
+            <button key={k} type="button" role="tab" aria-selected={tab === k}
+                    className={`artist-tab artist-tab-${k}${tab === k ? " is-on" : ""}`}
+                    disabled={!counts[k]} onClick={() => openTab(k)}>
+              {label}<span className="artist-tab-n">{counts[k].toLocaleString()}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "videos" && artistVideos.length > 0 && (
         <>
           <div className={layout === "list" ? "video-list" : "video-grid"}>
             {pageVideos.map(v => (
@@ -351,37 +408,24 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
         </>
       )}
 
-      {artistWanted.length > 0 && (
-        <div style={{ marginTop: artistVideos.length > 0 ? 24 : 0 }}>
-          <div className="card-title" style={{ marginBottom: 8 }}>Wanted</div>
-          <div className="wanted-list">
-            {artistWanted.map(v => (
-              <div key={v.video_id} className="wanted-item">
-                <a href={isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url)} target="_blank" rel="noreferrer">
-                  {v.title || v.video_id}
-                </a>
-                {isYouTube(v) && <DownloadButton video={v} />}
-                <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>
-              </div>
-            ))}
-          </div>
+      {tab === "wanted" && (
+        <div className="mark-list">
+          {artistWanted.map(v => (
+            <MarkRow key={v.video_id} video={v} onRemoveMark={onRemoveMark}>
+              {isYouTube(v) && <DownloadButton video={v} className="btn-secondary" />}
+            </MarkRow>
+          ))}
         </div>
       )}
 
-      {artistIgnored.length > 0 && (
-        <div style={{ marginTop: (artistVideos.length > 0 || artistWanted.length > 0) ? 24 : 0 }}>
-          <div className="card-title" style={{ marginBottom: 8, color: "#ef9a9a" }}>Skipped</div>
-          <div className="wanted-list">
-            {artistIgnored.map(v => (
-              <div key={v.video_id} className="ignored-item">
-                <a href={isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url)} target="_blank" rel="noreferrer">
-                  {v.title || v.video_id}
-                </a>
-                <button className="del-btn del-btn-danger" title="Remove mark" onClick={() => onRemoveMark(v.video_id)}><Icon name="close" /></button>
-              </div>
-            ))}
-          </div>
+      {tab === "skipped" && (
+        <div className="mark-list">
+          {artistIgnored.map(v => <MarkRow key={v.video_id} video={v} onRemoveMark={onRemoveMark} />)}
         </div>
+      )}
+
+      {tab === "videos" && artistVideos.length === 0 && showTabs && (
+        <div className="empty">No downloaded videos yet{q ? " match the search" : ""}.</div>
       )}
 
       {artistVideos.length === 0 && artistWanted.length === 0 && artistIgnored.length === 0 && (
