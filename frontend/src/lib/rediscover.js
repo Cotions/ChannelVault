@@ -2,7 +2,8 @@
 // random but weighted by watch history. Old favorites (finished more than once,
 // not seen in months) and long-forgotten downloads come up most; anything
 // finished in the last few weeks stays out. Artists not watched in a while get
-// a boost too, and one artist never takes more than one slot.
+// a boost too, and an artist only takes a second slot once every other
+// artist with an eligible video has one.
 
 const DAY = 86400 * 1000;
 export const RECENT_DAYS = 21;
@@ -67,13 +68,19 @@ export function pickRediscover(videos, mode, n, rand = Math.random) {
     if (w > 0) keyed.push({ v, k: Math.pow(rand(), 1 / w) });
   }
   keyed.sort((a, b) => b.k - a.k);
-  const out = [], artists = new Set();
+  // One per artist first; if there aren't enough artists to fill the page,
+  // top it up with their next best picks, in the same weighted order.
+  const out = [], artists = new Set(), rest = [];
   for (const { v } of keyed) {
+    if (out.length >= n) break;
     const a = artistKey(v);
-    if (artists.has(a)) continue;
+    if (artists.has(a)) { rest.push(v); continue; }
     artists.add(a);
     out.push(v);
+  }
+  for (const v of rest) {
     if (out.length >= n) break;
+    out.push(v);
   }
   return out;
 }
