@@ -10,6 +10,7 @@ import ProfileSwitch   from "./components/ProfileSwitch";
 import TagSelect       from "./components/TagSelect";
 import AddVideoModal   from "./components/AddVideoModal";
 import Overview        from "./pages/Overview";
+import Rediscover      from "./components/Rediscover";
 import ArtistPage      from "./pages/ArtistPage";
 import ArtistsPage     from "./pages/ArtistsPage";
 import PlaylistPage    from "./pages/PlaylistPage";
@@ -268,6 +269,7 @@ export default function App() {
       <div className="app-body">
         <nav className="sidebar">
           <NavLink to="/" end className="side-link"><Icon name="home" />Home</NavLink>
+          <NavLink to="/rediscover" className="side-link"><Icon name="sparkle" />Rediscover</NavLink>
           <NavLink to="/inbox" className="side-link">
             <Icon name="inbox" />Inbox
             {inboxCount > 0 && <span className="side-badge" title="New uploads from your channels">{inboxCount > 99 ? "99+" : inboxCount}</span>}
@@ -313,6 +315,15 @@ export default function App() {
                   onDelete={handleDelete}
                   onEdit={setEditVideo}
                   onFetchMeta={handleFetchMeta}
+                />
+              }
+            />
+            <Route
+              path="/rediscover"
+              element={
+                <Rediscover
+                  videos={videos}
+                  cardProps={{ onDelete: handleDelete, onEdit: setEditVideo, onFetchMeta: handleFetchMeta, playlists, onAddToPlaylist: handleAddToPlaylist }}
                 />
               }
             />
