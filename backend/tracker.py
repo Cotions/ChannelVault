@@ -2233,10 +2233,17 @@ def _text(v, limit=500):
     return v.strip()[:limit] or None if isinstance(v, str) else None
 
 
+_BARE_COUNT = re.compile(r"^\d[\d.,\s]*[KMB]?$", re.I)
+
+
 def _upsert_mark(video_id, title, channel_name, url, status):
     title, url = _text(title), _text(url, 2000)
     if url and not re.match(r"https?://", url, re.I):
         url = None
+    # A bare view count ("15K") is what an older userscript sent from a
+    # channel's own grid, where cards carry no name. Keep what's stored.
+    if channel_name and _BARE_COUNT.match(channel_name):
+        channel_name = None
     conn = get_conn()
     channel_name = _alias_credit(channel_name, conn)
     conn.execute('''
