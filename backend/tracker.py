@@ -2074,6 +2074,10 @@ _SCAN_MAX_CHECKS  = 60
 _SCAN_TABS        = ("videos", "shorts", "streams")
 # Seen in a channel's public grid, so none of these can still be true.
 _SCAN_CLEARS      = ("deleted", "private", "unavailable")
+# video_id -> when oEmbed last answered for it (this process). Missing videos
+# are checked least-recently-checked first, so a repeat scan moves on to the
+# ones past the per-scan cap instead of re-checking the same first batch.
+_scan_checked     = {}
 
 
 def _oembed_status(video_id):
@@ -2152,8 +2156,11 @@ def channel_scan():
     # (YouTube's public embed-info endpoint, one small request each) tells
     # gone apart from the rest.
     deleted, not_public, still_up = [], [], 0
+    candidates.sort(key=lambda c: _scan_checked.get(c["video_id"], 0))
     for c in candidates[:_SCAN_MAX_CHECKS]:
         status = _oembed_status(c["video_id"])
+        if status is not None:
+            _scan_checked[c["video_id"]] = time.time()
         if status == 404:
             _set_availability(c["video_id"], "deleted")
             deleted.append(c)
