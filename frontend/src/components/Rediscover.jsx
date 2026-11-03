@@ -4,7 +4,7 @@ import { usePlayer } from "../player/playerContext";
 import VideoCard from "./VideoCard";
 import Icon from "./Icon";
 
-const COUNT = 5;
+const COUNT = 24;   // a page full: divides into 2, 3, 4, 6 and 8 columns
 
 // Picks survive navigation within the session, so coming back to the tab shows
 // the same ones until the user asks for others.
