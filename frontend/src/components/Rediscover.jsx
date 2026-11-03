@@ -6,11 +6,11 @@ import Icon from "./Icon";
 
 const COUNT = 5;
 
-// Picks survive navigation within the session, so coming back to Home shows
+// Picks survive navigation within the session, so coming back to the tab shows
 // the same ones until the user asks for others.
 const mem = { mode: "mix", roll: 0, ids: null };
 
-/* A few library videos worth another look, on the Home page. */
+/* A few library videos worth another look, on its own Rediscover tab. */
 export default function Rediscover({ videos, cardProps }) {
   const { playQueue } = usePlayer();
   const [mode, setMode] = useState(mem.mode);
