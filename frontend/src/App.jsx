@@ -22,6 +22,7 @@ import TagsPage        from "./pages/TagsPage";
 import TagPage         from "./pages/TagPage";
 import InboxPage       from "./pages/InboxPage";
 import DownloadQueue from "./components/DownloadQueue";
+import SideDownloads from "./components/SideDownloads";
 import { onDownloadDone } from "./lib/downloads";
 
 // A deleted tag must leave the Home filter too, or the grid filters on an id
@@ -297,6 +298,7 @@ export default function App() {
               <Icon name="power" />Quit
             </button>
           )}
+          <SideDownloads />
         </nav>
 
         <main>
