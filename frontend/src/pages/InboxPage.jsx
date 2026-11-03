@@ -24,6 +24,11 @@ function ago(ts) {
   return d.toLocaleDateString();
 }
 
+// Case- and accent-insensitive, so "asmr" finds "ASMR" and "e" finds "é".
+function fold(s) {
+  return s.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
 function watchUrl(it) {
   return it.is_short ? `https://www.youtube.com/shorts/${it.video_id}` : `https://www.youtube.com/watch?v=${it.video_id}`;
 }
@@ -35,6 +40,7 @@ export default function InboxPage({ query, onMarked }) {
   const [busy,      setBusy]      = useState({});       // video_id -> true while marking
   const [copied,    setCopied]    = useState(null);
   const [failed,    setFailed]    = useState(null);     // { id, msg } of the last refused mark
+  const [nameQuery, setNameQuery] = useState("");       // filter for the not-followed list
 
   function load() {
     return getFeed().then(d => { setData(d); setError(false); }, () => setError(true));
@@ -106,6 +112,8 @@ export default function InboxPage({ query, onMarked }) {
   if (!data) return <div className="card"><div className="empty">Loading…</div></div>;
 
   const linked = data.artists - data.unlinked.length;
+  const nq = fold(nameQuery.trim());
+  const shownUnlinked = nq ? data.unlinked.filter(n => fold(n).includes(nq)) : data.unlinked;
   const stats = [
     { num: fresh.length.toLocaleString(), label: "new uploads" },
     { num: `${linked}/${data.artists}`,   label: "channels followed" },
@@ -223,10 +231,22 @@ export default function InboxPage({ query, onMarked }) {
                 userscript installed, when you use “Fetch metadata” on one of its videos, or when you paste
                 the id on the artist page.
               </p>
+              <div className="inbox-names-search">
+                <Icon name="search" size={13} />
+                <input
+                  type="search"
+                  value={nameQuery}
+                  onChange={e => setNameQuery(e.target.value)}
+                  placeholder="Filter channels…"
+                  aria-label="Filter channels not followed yet"
+                />
+                {nameQuery && <span className="inbox-names-count">{shownUnlinked.length} of {data.unlinked.length}</span>}
+              </div>
               <div className="inbox-names">
-                {data.unlinked.map(n => (
+                {shownUnlinked.map(n => (
                   <Link key={n} className="inbox-name" to={`/artist/${encodeURIComponent(n)}`}>{n}</Link>
                 ))}
+                {shownUnlinked.length === 0 && <span className="inbox-help">No channel matches “{nameQuery}”.</span>}
               </div>
             </details>
           )}

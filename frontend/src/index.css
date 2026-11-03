@@ -2904,6 +2904,15 @@ a.creator-profile-handle:hover { text-decoration: underline; }
 .inbox-footer summary { cursor: pointer; color: var(--text-dim); font-weight: 600; }
 .inbox-help { margin: 10px 0; color: var(--muted); font-size: 12px; line-height: 1.55; max-width: 760px; }
 .inbox-names { display: flex; flex-wrap: wrap; gap: 6px; }
+.inbox-names-search {
+  display: flex; align-items: center; gap: 8px;
+  max-width: 320px; margin-bottom: 10px; padding: 5px 10px;
+  border: 1px solid var(--border); border-radius: 999px; color: var(--muted);
+}
+.inbox-names-search:focus-within { border-color: rgba(var(--glow-rgb), 0.45); }
+.inbox-names-search input { all: unset; flex: 1; min-width: 0; font-size: 12px; color: var(--text); }
+.inbox-names-search input::placeholder { color: var(--muted); }
+.inbox-names-count { font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .inbox-name {
   padding: 3px 10px;
   border-radius: 999px;
