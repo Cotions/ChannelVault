@@ -5264,7 +5264,12 @@ def _dl_quality_ok(q):
     # other scripts' digits, which would reach yt-dlp's -S as is.
     return q in ("best", "audio") or (re.fullmatch(r"[0-9]{3,4}", q) is not None and 100 <= int(q) <= 4320)
 _DL_TEMPLATE = "%(title).180B-%(id)s.%(ext)s"
-_DL_PROGRESS = re.compile(r"cvprog\s+([\d.]+)%?\s*(\S*)\s*(\S*)")
+# "|" between fields: yt-dlp pads them with spaces, and "Unknown B/s" has one.
+_DL_PROG_TPL = ("download:cvprog|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
+                "|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s"
+                "|%(info.vcodec)s")
+_DL_PROGRESS = re.compile(r"cvprog\|\s*([\d.]+)%?\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)")
+_DL_UNKNOWN  = ("", "NA", "N/A", "Unknown", "Unknown B/s", "None")
 _DL_ANSI     = re.compile(r"\x1b\[[0-9;]*m")
 
 _dl_wake  = threading.Event()
@@ -5294,7 +5299,7 @@ def _dl_argv(video_id, folder, quality="best", auto=False):
     wait = ["--match-filters", "!is_live & live_status != is_upcoming"] if auto else []
     return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + wait + [
         "--no-playlist", "--newline", "--progress",
-        "--progress-template", "download:cvprog %(progress._percent_str)s %(progress._speed_str)s %(progress._eta_str)s",
+        "--progress-template", _DL_PROG_TPL,
     ] + _dl_quality_args(quality) + [
         "--embed-metadata", "--embed-chapters", "--embed-thumbnail", "--write-thumbnail",
         # The library files a video under its channel; yt-dlp's own artist
@@ -5372,10 +5377,14 @@ def _dl_run(job):
                         pct = float(m.group(1))
                     except ValueError:
                         continue
+                    speed, eta, done_b, total_b, vcodec = (
+                        "" if g.strip() in _DL_UNKNOWN else g.strip() for g in m.groups()[1:])
                     with _dl_state:
-                        _dl_live["progress"] = {"percent": pct,
-                                                "speed": "" if m.group(2) in ("NA", "Unknown") else m.group(2),
-                                                "eta":   "" if m.group(3) in ("NA", "Unknown") else m.group(3)}
+                        # A "best" download is two passes, the picture then the
+                        # sound, each from 0 to 100 %; say which one this is.
+                        _dl_live["progress"] = {"percent": pct, "speed": speed, "eta": eta,
+                                                "downloaded": done_b, "total": total_b,
+                                                "stream": "audio" if vcodec == "none" else "video" if vcodec else ""}
                 elif line:
                     tail = (tail + [line])[-30:]
                     # Streams are down; ffmpeg merges them and embeds the tags.
