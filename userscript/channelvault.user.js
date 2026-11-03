@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.9.0
+// @version      1.10.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -980,6 +980,194 @@ function reportChannel(info) {
 }
 
 // ---------------------------------------------------------------------------
+// Channel scan — on a channel's Videos / Shorts / Live tab, one click scrolls
+// the grid to its end (the page loading its own next batches, as a user
+// scrolling would) and sends every tile's id and view count to the vault.
+// The vault updates view counts and checks whether its videos of that
+// channel that weren't on the tab still exist.
+// ---------------------------------------------------------------------------
+
+const SCAN_TAB_RE = /^\/(?:@[^/]+|channel\/UC[\w-]{22}|c\/[^/]+|user\/[^/]+)\/(videos|shorts|streams)\/?$/;
+const SCAN_BTN_ID = "cv-scan-btn";
+const SCAN_PANEL_ID = "cv-scan-panel";
+let _scan = null;          // { stop: bool } while a scan runs
+// YouTube keeps earlier pages' grids in the DOM, hidden.
+const ACTIVE_GRID = "ytd-browse:not([hidden]) ytd-rich-grid-renderer";
+
+GM_addStyle(`
+  #${SCAN_BTN_ID} {
+    position: fixed; right: 24px; bottom: 24px; z-index: 9999;
+    font: 500 13px/1 Roboto, Arial, sans-serif; color: #fff; background: #2e7d32;
+    border: none; border-radius: 18px; padding: 11px 16px; cursor: pointer;
+    box-shadow: 0 6px 20px rgba(0,0,0,.4);
+  }
+  #${SCAN_BTN_ID}:hover { background: #388e3c; }
+  #${SCAN_BTN_ID}.cv-running { background: #1b5e20; }
+  #${SCAN_PANEL_ID} {
+    position: fixed; right: 24px; bottom: 72px; z-index: 9999; width: 340px; max-height: 50vh; overflow: auto;
+    font: 400 13px/1.45 Roboto, Arial, sans-serif; color: #e6f4ea; background: #0f2a1c;
+    border-radius: 10px; padding: 12px 14px; box-shadow: 0 6px 20px rgba(0,0,0,.45);
+  }
+  #${SCAN_PANEL_ID} b { color: #9ff0bf; font-weight: 500; }
+  #${SCAN_PANEL_ID} .cv-bad { color: #ffb3b5; }
+  #${SCAN_PANEL_ID} ul { margin: 4px 0 8px 18px; padding: 0; }
+  #${SCAN_PANEL_ID} a { color: inherit; }
+  #${SCAN_PANEL_ID} .cv-close { float: right; cursor: pointer; opacity: .7; margin-left: 8px; }
+`);
+
+function scanTab() {
+  const m = window.location.pathname.match(SCAN_TAB_RE);
+  return m ? m[1] : null;
+}
+
+// The view count of one grid tile, from the data YouTube drew it with: the
+// newer layout shows a bare "918K" next to a play icon, so the text alone
+// can't be told apart from other numbers in the row.
+function tileFromData(d) {
+  const c = d && d.content;
+  const lvm = c && c.lockupViewModel;
+  if (lvm) {
+    if (lvm.contentType && lvm.contentType !== "LOCKUP_CONTENT_TYPE_VIDEO") return null;
+    const rows = lvm.metadata?.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows || [];
+    const parts = rows.flatMap(r => r.metadataParts || []);
+    const part = parts.find(p => p.leadingIcon && /\d/.test(p.text?.content || "")) ||
+                 parts.find(p => /view/i.test(p.accessibilityLabel || p.text?.content || ""));
+    return { video_id: lvm.contentId, views: part ? parseAbbrevCount(part.text?.content) : null };
+  }
+  const s = c && c.shortsLockupViewModel;
+  if (s) {
+    const id = s.onTap?.innertubeCommand?.reelWatchEndpoint?.videoId ||
+               (s.entityId || "").replace(/^shorts-shelf-item-/, "");
+    return { video_id: id, views: parseAbbrevCount(s.overlayMetadata?.secondaryText?.content) };
+  }
+  return null;
+}
+
+function collectTiles() {
+  const out = new Map();
+  pageWin.document.querySelectorAll(`${ACTIVE_GRID} ytd-rich-item-renderer`).forEach(r => {
+    let t = null;
+    try { t = tileFromData(r.data); } catch (_) { /* page data out of reach */ }
+    // Fallback without page data: the id from the link, no count.
+    if (!t) {
+      const a = r.querySelector("a[href*='watch?v='], a[href^='/shorts/']");
+      const id = a && extractVideoIdFromHref(a.getAttribute("href"));
+      if (id) t = { video_id: id, views: null };
+    }
+    if (t && /^[\w-]{11}$/.test(t.video_id || "") && !out.has(t.video_id)) out.set(t.video_id, t);
+  });
+  return [...out.values()];
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Scroll until the grid stops offering more. True when it reached the end.
+async function loadWholeGrid(state, onProgress) {
+  const grid = () => document.querySelector(ACTIVE_GRID);
+  const path = window.location.pathname;
+  let last = -1, stuck = 0;
+  while (!state.stop && window.location.pathname === path) {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    await sleep(1200);
+    const g = grid();
+    const n = g ? g.querySelectorAll("ytd-rich-item-renderer").length : 0;
+    onProgress(n);
+    const more = g && g.querySelector("ytd-continuation-item-renderer");
+    if (n === last) {
+      stuck++;
+      if (!more && stuck >= 2) return true;
+      if (stuck >= 12) return false;          // still a spinner after ~15 s
+    } else {
+      stuck = 0;
+      last = n;
+    }
+  }
+  return false;
+}
+
+function showScanResult(r, tab) {
+  document.getElementById(SCAN_PANEL_ID)?.remove();
+  const p = el("div", null, { id: SCAN_PANEL_ID });
+  const close = el("span", "cv-close");
+  close.textContent = "✕";
+  close.addEventListener("click", () => p.remove());
+  p.appendChild(close);
+  const line = (text, cls) => { const d = el("div", cls); d.textContent = text; p.appendChild(d); return d; };
+  const title = el("b");
+  title.textContent = `Vault sync — ${tab}`;
+  p.appendChild(title);
+  line(`${r.seen} on this tab · ${r.in_vault} in vault · ${r.updated} view counts updated`);
+  if (r.restored) line(`${r.restored} marked available again (they're on the channel)`);
+  if (!r.complete) {
+    line("Didn't reach the end of the tab (or couldn't read the channel id): missing-video check skipped.");
+  } else if (!r.artist) {
+    line("This channel isn't linked to an artist in the vault yet: missing-video check skipped.");
+  } else {
+    line(`${r.missing} of ${r.artist}'s vault videos aren't on this tab` +
+         (r.missing ? ` — checked ${r.checked}, ${r.still_up} still up (unlisted, other tab or channel)` : ""));
+    const list = (label, items, cls) => {
+      if (!items.length) return;
+      line(label, cls);
+      const ul = el("ul");
+      items.forEach(v => {
+        const li = el("li");
+        const a = el("a", null, { href: `/watch?v=${v.video_id}`, target: "_blank" });
+        a.textContent = v.title || v.video_id;
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      p.appendChild(ul);
+    };
+    list(`Gone from YouTube, marked Deleted (${r.deleted.length}):`, r.deleted, "cv-bad");
+    list(`Private or embed-blocked (${r.not_public.length}) — card fetch tells which:`, r.not_public);
+    if (r.missing > r.checked) line(`${r.missing - r.checked} left unchecked; scan again to check more.`);
+  }
+  document.body.appendChild(p);
+}
+
+async function runScan(btn) {
+  if (_scan) { _scan.stop = true; return; }     // second click stops early
+  const tab = scanTab();
+  const state = _scan = { stop: false };
+  btn.classList.add("cv-running");
+  document.getElementById(SCAN_PANEL_ID)?.remove();
+  try {
+    const complete = await loadWholeGrid(state, n => { btn.textContent = `Loading… ${n} (click to stop)`; });
+    if (scanTab() !== tab) return;                 // navigated away mid-scan
+    const info = channelFromPage();
+    const items = collectTiles();
+    btn.textContent = `Checking ${items.length}…`;
+    window.scrollTo(0, 0);
+    const r = await gmPost(`${API_BASE}/channel-scan`, {
+      channel_id: info && info.channel_id, tab, complete, items,
+    });
+    showScanResult(r, tab);
+  } catch (e) {
+    cvToast(`Vault sync failed: ${e.message || e}`, true);
+  } finally {
+    _scan = null;
+    btn.classList.remove("cv-running");
+    btn.textContent = "Sync views to Vault";
+  }
+}
+
+function updateScanButton() {
+  const btn = document.getElementById(SCAN_BTN_ID);
+  if (!scanTab()) {
+    btn?.remove();
+    document.getElementById(SCAN_PANEL_ID)?.remove();
+    if (_scan) _scan.stop = true;
+    return;
+  }
+  if (btn) return;
+  const b = el("button", null, { id: SCAN_BTN_ID, type: "button",
+    title: "Scroll this whole tab and send every video's view count to ChannelVault" });
+  b.textContent = "Sync views to Vault";
+  b.addEventListener("click", () => runScan(b));
+  document.body.appendChild(b);
+}
+
+// ---------------------------------------------------------------------------
 // YouTube SPA navigation
 // ---------------------------------------------------------------------------
 
@@ -987,6 +1175,7 @@ function onNavigate() {
   checkAndAnnotate();
   initCardAnnotation();
   injectCreatorButton();
+  updateScanButton();
 }
 
 window.addEventListener("yt-navigate-finish", (e) => {

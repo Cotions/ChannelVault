@@ -2068,6 +2068,124 @@ def update_stats(video_id):
     conn.close()
     return jsonify({"ok": True})
 
+_OEMBED_URL       = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={}&format=json"
+_SCAN_MAX_ITEMS   = 20000
+_SCAN_MAX_CHECKS  = 60
+_SCAN_TABS        = ("videos", "shorts", "streams")
+# Seen in a channel's public grid, so none of these can still be true.
+_SCAN_CLEARS      = ("deleted", "private", "unavailable")
+# video_id -> when oEmbed last answered for it (this process). Missing videos
+# are checked least-recently-checked first, so a repeat scan moves on to the
+# ones past the per-scan cap instead of re-checking the same first batch.
+_scan_checked     = {}
+
+
+def _oembed_status(video_id):
+    """HTTP status of YouTube's public oEmbed endpoint for a video: 200 when
+    it exists, 404 when it doesn't, 401/403 when it's private OR public with
+    embedding turned off (so those two can't be told apart). None on a
+    network error."""
+    req = urllib.request.Request(_OEMBED_URL.format(video_id),
+                                 headers={"User-Agent": f"ChannelVault/{__version__} (oembed)"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return None
+
+
+@app.post("/channel-scan")
+def channel_scan():
+    """The userscript read a channel tab's grid (Videos/Shorts/Live) while the
+    user had it open: every tile's id and view count. Views only grow, and the
+    grid rounds them ("918K"), so a stored count is replaced only by a larger
+    one. When the whole tab was loaded, the vault's videos of that channel
+    missing from it are checked against oEmbed: a 404 marks them deleted."""
+    body       = request.get_json(silent=True) or {}
+    channel_id = _channel_id_from(body.get("channel_id"))
+    tab        = body.get("tab") if body.get("tab") in _SCAN_TABS else None
+    raw        = body.get("items")
+    if not isinstance(raw, list):
+        return jsonify({"ok": False, "error": "items required"}), 400
+    views = {}
+    for it in raw[:_SCAN_MAX_ITEMS]:
+        vid = _valid_video_id(it.get("video_id")) if isinstance(it, dict) else None
+        if vid:
+            n = _count(it.get("views"))
+            views[vid] = max(n, views.get(vid) or 0) if n is not None else views.get(vid)
+    complete = body.get("complete") is True and bool(channel_id) and bool(tab)
+
+    with _db_lock:
+        conn = get_conn()
+        rows = conn.execute(
+            "SELECT video_id, view_count, availability FROM downloaded_videos "
+            "WHERE status = 'downloaded' AND video_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(list(views)),)).fetchall()
+        updated = restored = 0
+        for r in rows:
+            n = views.get(r["video_id"])
+            if n is not None and (r["view_count"] is None or n > r["view_count"]):
+                conn.execute("UPDATE downloaded_videos SET view_count = ?, stats_updated_at = CURRENT_TIMESTAMP "
+                             "WHERE video_id = ?", (n, r["video_id"]))
+                updated += 1
+            if r["availability"] in _SCAN_CLEARS:
+                conn.execute("UPDATE downloaded_videos SET availability = 'available' WHERE video_id = ?",
+                             (r["video_id"],))
+                restored += 1
+
+        candidates, artist = [], None
+        if complete:
+            names = {r["channel_name"] for r in conn.execute(
+                "SELECT channel_name FROM channel_ids WHERE channel_id = ?", (channel_id,))}
+            artist = ", ".join(sorted(names)) or None
+            if names:
+                for r in conn.execute(
+                        "SELECT video_id, title, channel_name FROM downloaded_videos "
+                        "WHERE status = 'downloaded' AND COALESCE(source, 'youtube') = 'youtube' "
+                        "AND (availability IS NULL OR availability = 'available') ORDER BY title"):
+                    if (r["video_id"] not in views and r["video_id"][-1] in _YT_LAST_CHARS
+                            and names.intersection(_artist_names(r["channel_name"]))):
+                        candidates.append({"video_id": r["video_id"], "title": r["title"]})
+        conn.commit()
+        conn.close()
+
+    # Not on this tab: a Short or a stream when another tab was scanned, an
+    # unlisted video, a collab on someone else's channel, or gone. oEmbed
+    # (YouTube's public embed-info endpoint, one small request each) tells
+    # gone apart from the rest.
+    deleted, not_public, still_up = [], [], 0
+    candidates.sort(key=lambda c: _scan_checked.get(c["video_id"], 0))
+    for c in candidates[:_SCAN_MAX_CHECKS]:
+        status = _oembed_status(c["video_id"])
+        if status is not None:
+            _scan_checked[c["video_id"]] = time.time()
+        if status == 404:
+            _set_availability(c["video_id"], "deleted")
+            deleted.append(c)
+        elif status in (401, 403):
+            not_public.append(c)
+        elif status == 200:
+            still_up += 1
+        time.sleep(0.2)
+
+    return jsonify({
+        "ok":         True,
+        "seen":       len(views),
+        "in_vault":   len(rows),
+        "updated":    updated,
+        "restored":   restored,
+        "complete":   complete,
+        "artist":     artist,
+        "missing":    len(candidates),
+        "checked":    min(len(candidates), _SCAN_MAX_CHECKS),
+        "still_up":   still_up,
+        "deleted":    deleted,
+        "not_public": not_public,
+    })
+
+
 @app.get("/videos/ids")
 def list_video_ids():
     conn = get_conn()
