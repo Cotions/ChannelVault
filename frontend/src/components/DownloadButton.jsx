@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useDownloads, queueDownload, retryJob, prefFor, QUALITIES, qualityLabel, formatSize } from "../lib/downloads";
 import { getDownloadFormats } from "../lib/api";
 import { artistsOf } from "../lib/artists";
+import { fmtDuration } from "../lib/fmt";
 import Icon from "./Icon";
 
 /* Download one YouTube video with the yt-dlp on this machine. Not shown when
@@ -103,6 +104,9 @@ function DownloadDialog({ video, def, onStart, onClose }) {
                            note: [sizes.audio.abr && `${sizes.audio.abr} kbps`, formatSize(sizes.audio.size)].filter(Boolean).join(" · ") }] : [])]
     : QUALITIES.map(q => ({ q, name: qualityLabel(q), note: q === "best" ? "usually 1080p" : /^\d+$/.test(q) ? `the biggest picture up to ${q}p` : "" }));
 
+  // yt-dlp's answer, else what the userscript saw when it was marked.
+  const length = (loaded && sizes.duration) || video.duration_secs || null;
+
   // The default may not exist for this video (a 1080p cap on a 720p upload).
   const chosen = options.some(o => o.q === pick) ? pick : "best";
 
@@ -121,7 +125,11 @@ function DownloadDialog({ video, def, onStart, onClose }) {
           <img src={`https://i.ytimg.com/vi/${video.video_id}/mqdefault.jpg`} alt="" referrerPolicy="no-referrer" />
           <div className="dl-dialog-meta">
             <div className="dl-dialog-title">{video.title || video.video_id}</div>
-            {video.channel_name && <div className="dl-dialog-channel">{video.channel_name}</div>}
+            {(video.channel_name || length) && (
+              <div className="dl-dialog-channel">
+                {[video.channel_name, length && fmtDuration(length)].filter(Boolean).join("  ·  ")}
+              </div>
+            )}
           </div>
         </div>
 
