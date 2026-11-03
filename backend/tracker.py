@@ -1466,7 +1466,7 @@ def _wants_html():
 for _rule in (
     "/", "/playlists", "/artists", "/data-quality", "/stats", "/tags",
     "/artist/<path:_spa_rest>", "/video/<path:_spa_rest>", "/playlist/<path:_spa_rest>",
-    "/tag/<path:_spa_rest>", "/inbox",
+    "/tag/<path:_spa_rest>", "/inbox", "/rediscover",
 ):
     if _rule in ("/playlists", "/tags"):
         continue  # collide with API routes below; handled there via Accept
