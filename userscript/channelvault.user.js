@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.10.0
+// @version      1.10.1
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -668,16 +668,26 @@ function injectCVMenuItemsPopup(popup) {
   }, 100);
 }
 
-// A channel name never reads like a view/subscriber/time stat.
+// A channel name never reads like a view/subscriber/time stat. The newer card
+// layout shows the view count bare ("15K", "1.8K") next to a play icon.
 function looksLikeStat(s) {
   return /\b(views?|subscribers?|watching|waiting|streamed|premieres?)\b/i.test(s)
-      || /\bago\b/i.test(s);
+      || /\bago\b/i.test(s)
+      || /^\d[\d.,\s]*[KMB]?$/i.test(s);
 }
 
 function extractChannelFromCard(card) {
   // A channel-link anchor is the reliable source — try it first.
   const anchor = (card.querySelector("a[href*='/@'], a[href*='/channel/'], a[href*='/user/']")?.textContent || "").trim();
   if (anchor && !looksLikeStat(anchor)) return anchor;
+
+  // A channel's own Videos/Shorts/Live grid leaves the name off its cards:
+  // they're all that channel's, so take the page's. Not on a watch page,
+  // where the page's channel is the one playing, not the sidebar card's.
+  if (!getVideoId()) {
+    const page = channelFromPage();
+    if (page && page.channel_name) return page.channel_name;
+  }
 
   // Fallbacks: reject anything that reads like a stat row (was the "34K views" bug).
   const fallbacks = [
