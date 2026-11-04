@@ -45,7 +45,10 @@ function MarkRow({ video: v, onRemoveMark, children }) {
         )}
         {v.duration_secs > 0 && <span className="dur-badge">{fmtDuration(v.duration_secs)}</span>}
       </a>
-      <a className="mark-title" href={href} target="_blank" rel="noreferrer">{v.title || v.video_id}</a>
+      <div className="mark-main">
+        <a className="mark-title" href={href} target="_blank" rel="noreferrer">{v.title || v.video_id}</a>
+        {v.duration_secs > 0 && <span className="mark-length">{fmtDuration(v.duration_secs)}</span>}
+      </div>
       <div className="mark-actions">
         {children}
         <button className="btn-ghost mark-remove" title="Remove the mark" onClick={() => onRemoveMark(v.video_id)}>
