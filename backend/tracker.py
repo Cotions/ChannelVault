@@ -2236,7 +2236,16 @@ def _text(v, limit=500):
 _BARE_COUNT = re.compile(r"^\d[\d.,\s]*[KMB]?$", re.I)
 
 
-def _upsert_mark(video_id, title, channel_name, url, status):
+def _duration(v):
+    """A video length in seconds from a request body, or None."""
+    try:
+        d = float(v)
+    except (TypeError, ValueError):
+        return None
+    return d if math.isfinite(d) and 0 < d < 7 * 86400 else None
+
+
+def _upsert_mark(video_id, title, channel_name, url, status, duration=None):
     title, url = _text(title), _text(url, 2000)
     if url and not re.match(r"https?://", url, re.I):
         url = None
@@ -2247,15 +2256,16 @@ def _upsert_mark(video_id, title, channel_name, url, status):
     conn = get_conn()
     channel_name = _alias_credit(channel_name, conn)
     conn.execute('''
-        INSERT INTO downloaded_videos (video_id, title, channel_name, url, status)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO downloaded_videos (video_id, title, channel_name, url, status, duration_secs)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(video_id) DO UPDATE SET
             title=COALESCE(excluded.title, downloaded_videos.title),
             channel_name=COALESCE(excluded.channel_name, downloaded_videos.channel_name),
             url=COALESCE(excluded.url, downloaded_videos.url),
+            duration_secs=COALESCE(excluded.duration_secs, downloaded_videos.duration_secs),
             status=excluded.status
         WHERE downloaded_videos.status NOT IN ('downloaded', 'attached')
-    ''', (video_id, title, channel_name, url, status))
+    ''', (video_id, title, channel_name, url, status, _duration(duration)))
     conn.commit()
     conn.close()
 
@@ -2265,7 +2275,8 @@ def add_wanted():
     video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
         return jsonify({"ok": False, "error": "valid video_id required"}), 400
-    _upsert_mark(video_id, body.get("title"), _clean_name(_text(body.get("channel_name"))), body.get("url"), "wanted")
+    _upsert_mark(video_id, body.get("title"), _clean_name(_text(body.get("channel_name"))), body.get("url"), "wanted",
+                 body.get("duration_secs"))
     return jsonify({"ok": True})
 
 @app.post("/do-not-want")
@@ -2274,7 +2285,8 @@ def add_ignored():
     video_id     = _valid_video_id(body.get("video_id"))
     if not video_id:
         return jsonify({"ok": False, "error": "valid video_id required"}), 400
-    _upsert_mark(video_id, body.get("title"), _clean_name(_text(body.get("channel_name"))), body.get("url"), "ignored")
+    _upsert_mark(video_id, body.get("title"), _clean_name(_text(body.get("channel_name"))), body.get("url"), "ignored",
+                 body.get("duration_secs"))
     return jsonify({"ok": True})
 
 @app.delete("/mark/<vid:video_id>")
@@ -5695,6 +5707,16 @@ def download_formats(video_id):
         return jsonify({"ok": False, "error": "yt-dlp gave an unreadable answer"}), 502
     answer = {"ok": True, **_dl_summarize_formats(info)}
     _dl_formats_cache[video_id] = (time.time(), answer)
+    # Keep the length on a wanted or skipped entry that has none; a
+    # downloaded one has its file's.
+    secs = _duration(answer.get("duration"))
+    if secs:
+        with _db_lock:
+            conn = get_conn()
+            conn.execute("UPDATE downloaded_videos SET duration_secs = ? WHERE video_id = ? "
+                         "AND duration_secs IS NULL AND status IN ('wanted', 'ignored')", (secs, video_id))
+            conn.commit()
+            conn.close()
     if len(_dl_formats_cache) > 200:
         _dl_formats_cache.pop(next(iter(_dl_formats_cache), None), None)
     return jsonify(answer)

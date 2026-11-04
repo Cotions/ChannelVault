@@ -9,7 +9,7 @@ import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import { getCreator, getCreators, getArtistLinks, linkArtists, unlinkArtist, getChannelStatuses, setChannelStatus, artistThumbUrl, scan } from "../lib/api";
 import { CHANNEL_STATUS, markedOn } from "../lib/channelStatus";
 import { describeLink } from "../lib/socials";
-import { fmt, safeUrl } from "../lib/fmt";
+import { fmt, fmtDuration, safeUrl } from "../lib/fmt";
 import { isYouTube } from "../lib/source";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
@@ -43,8 +43,12 @@ function MarkRow({ video: v, onRemoveMark, children }) {
         {isYouTube(v) && (
           <img src={`https://i.ytimg.com/vi/${v.video_id}/mqdefault.jpg`} alt="" loading="lazy" referrerPolicy="no-referrer" />
         )}
+        {v.duration_secs > 0 && <span className="dur-badge">{fmtDuration(v.duration_secs)}</span>}
       </a>
-      <a className="mark-title" href={href} target="_blank" rel="noreferrer">{v.title || v.video_id}</a>
+      <div className="mark-main">
+        <a className="mark-title" href={href} target="_blank" rel="noreferrer">{v.title || v.video_id}</a>
+        {v.duration_secs > 0 && <span className="mark-length">{fmtDuration(v.duration_secs)}</span>}
+      </div>
       <div className="mark-actions">
         {children}
         <button className="btn-ghost mark-remove" title="Remove the mark" onClick={() => onRemoveMark(v.video_id)}>

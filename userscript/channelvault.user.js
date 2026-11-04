@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.10.1
+// @version      1.11.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -409,6 +409,7 @@ async function initCardAnnotation() {
 let _pendingMenuVideoId  = null;
 let _pendingMenuVideoUrl = null;
 let _pendingMenuTitle    = null;
+let _pendingMenuDuration = null;   // seconds, when the card or player shows it
 let _pendingMenuChannel  = null;
 
 function gmPost(url, body) {
@@ -503,6 +504,7 @@ function injectCVMenuItems(container) {
   const videoId  = _pendingMenuVideoId;
   const videoUrl = _pendingMenuVideoUrl;
   const title    = _pendingMenuTitle;
+  const duration_secs = _pendingMenuDuration;
   const channel  = _pendingMenuChannel;
   if (!videoId) return;
 
@@ -517,7 +519,7 @@ function injectCVMenuItems(container) {
       e.stopPropagation();
       closeMenu();
       try {
-        await gmPost(`${API_BASE}/want-to-download`, { video_id: videoId, url: videoUrl, title, channel_name: channel });
+        await gmPost(`${API_BASE}/want-to-download`, { video_id: videoId, url: videoUrl, title, channel_name: channel, duration_secs });
         const ids = await gmFetchIds();
         _downloadedIds = ids.downloaded; _wantedIds = ids.wanted; _ignoredIds = ids.ignored;
         annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
@@ -532,7 +534,7 @@ function injectCVMenuItems(container) {
       e.stopPropagation();
       closeMenu();
       try {
-        await gmPost(`${API_BASE}/do-not-want`, { video_id: videoId, url: videoUrl, title, channel_name: channel });
+        await gmPost(`${API_BASE}/do-not-want`, { video_id: videoId, url: videoUrl, title, channel_name: channel, duration_secs });
         const ids = await gmFetchIds();
         _downloadedIds = ids.downloaded; _wantedIds = ids.wanted; _ignoredIds = ids.ignored;
         annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
@@ -615,6 +617,7 @@ function injectCVMenuItemsPopup(popup) {
   const videoId  = _pendingMenuVideoId;
   const videoUrl = _pendingMenuVideoUrl;
   const title    = _pendingMenuTitle;
+  const duration_secs = _pendingMenuDuration;
   const channel  = _pendingMenuChannel;
   if (!videoId) return;
   // Inject into the listbox so items are inside the Polymer event/scroll context
@@ -627,7 +630,7 @@ function injectCVMenuItemsPopup(popup) {
       e.stopPropagation();
       closeMenu();
       try {
-        await gmPost(`${API_BASE}/want-to-download`, { video_id: videoId, url: videoUrl, title, channel_name: channel });
+        await gmPost(`${API_BASE}/want-to-download`, { video_id: videoId, url: videoUrl, title, channel_name: channel, duration_secs });
         const ids = await gmFetchIds();
         _downloadedIds = ids.downloaded; _wantedIds = ids.wanted; _ignoredIds = ids.ignored;
         annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
@@ -641,7 +644,7 @@ function injectCVMenuItemsPopup(popup) {
       e.stopPropagation();
       closeMenu();
       try {
-        await gmPost(`${API_BASE}/do-not-want`, { video_id: videoId, url: videoUrl, title, channel_name: channel });
+        await gmPost(`${API_BASE}/do-not-want`, { video_id: videoId, url: videoUrl, title, channel_name: channel, duration_secs });
         const ids = await gmFetchIds();
         _downloadedIds = ids.downloaded; _wantedIds = ids.wanted; _ignoredIds = ids.ignored;
         annotateCards(_downloadedIds, _wantedIds, _ignoredIds);
@@ -708,9 +711,37 @@ function extractChannelFromCard(card) {
   return null;
 }
 
+// "30:40" or "1:02:03" -> seconds.
+function parseClock(t) {
+  const m = /^(?:(\d{1,2}):)?(\d{1,2}):(\d{2})$/.exec((t || "").trim());
+  return m ? (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]) : null;
+}
+
+// The length badge on a card's thumbnail. Read from the text, not class
+// names: YouTube renames those, but the badge is always a bare clock.
+function extractDurationFromCard(card) {
+  const walk = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    const secs = parseClock(n.nodeValue);
+    if (secs) return secs;
+  }
+  return null;
+}
+
+// The playing video's length, from the player's own data (an ad playing
+// first would make the <video> element's length wrong).
+function watchPageDuration(videoId) {
+  try {
+    const player = pageWin.document.getElementById("movie_player");
+    const d = player && player.getPlayerResponse && player.getPlayerResponse()?.videoDetails;
+    if (d && d.videoId === videoId && +d.lengthSeconds > 0) return +d.lengthSeconds;
+  } catch (_) { /* page data out of reach */ }
+  return null;
+}
+
 function captureMenuContext(btn) {
   // Never let a previous card's context leak into this menu.
-  _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
+  _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = _pendingMenuDuration = null;
   const card = btn.closest(CARD_SELECTOR);
   if (!card) return;
   const link = card.querySelector(
@@ -724,6 +755,7 @@ function captureMenuContext(btn) {
   _pendingMenuVideoUrl = `https://www.youtube.com/watch?v=${videoId}`;
   _pendingMenuTitle    = link.textContent.trim() || null;
   _pendingMenuChannel  = extractChannelFromCard(card);
+  _pendingMenuDuration = extractDurationFromCard(card);
 }
 
 document.addEventListener("click", (e) => {
@@ -753,7 +785,7 @@ document.addEventListener("click", (e) => {
       if (popup) injectCVMenuItemsPopup(popup);
     }, 80);
   } else if (videoBtn && !onShortsPage()) {
-    _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = null;
+    _pendingMenuVideoId = _pendingMenuVideoUrl = _pendingMenuTitle = _pendingMenuChannel = _pendingMenuDuration = null;
     const videoId = getVideoId();
     if (!videoId) return;
     _pendingMenuVideoId  = videoId;
@@ -768,6 +800,7 @@ document.addEventListener("click", (e) => {
       "ytd-channel-name a, " +
       "#channel-name a"
     )?.textContent.trim() || null;
+    _pendingMenuDuration = watchPageDuration(videoId);
     setTimeout(() => {
       const popup = document.querySelector("ytd-menu-popup-renderer");
       if (popup) injectCVMenuItemsPopup(popup);
