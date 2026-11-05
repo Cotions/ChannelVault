@@ -156,6 +156,20 @@ export default function AvatarPicker({ artist, videos, onClose, onSaved }) {
     }
   }
 
+  // Wheel zooms. React's onWheel is passive and can't stop the page behind
+  // the dialog from scrolling too, so listen natively with passive: false.
+  const frameRef = useRef(null);
+  const wheelZoom = useRef(null);
+  useEffect(() => {
+    wheelZoom.current = e => setZoomKeepingFocus(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08));
+  });
+  useEffect(() => {
+    const el = frameRef.current;
+    const onWheel = e => { e.preventDefault(); wheelZoom.current?.(e); };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   function onPointerDown(e) {
     if (!geo) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -224,13 +238,13 @@ export default function AvatarPicker({ artist, videos, onClose, onSaved }) {
         <div className="ap-body">
           <div className="ap-stage">
             <div
+              ref={frameRef}
               className={`ap-frame${geo ? " is-ready" : ""}`}
               style={{ width: FRAME, height: FRAME }}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
-              onWheel={e => setZoomKeepingFocus(zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08))}
             >
               {srcUrl ? (
                 <img

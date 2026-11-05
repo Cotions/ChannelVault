@@ -6253,8 +6253,14 @@ def rename_artist():
                 drops = ids.get(src) if ids.get(dst) and ids.get(src) != ids.get(dst) else None
                 return jsonify({"ok": True, "videos": len(_credit_rows(conn, src)), "merge": merge,
                                 "drops_channel": drops})
+            # Merging two artists that both have a chosen picture keeps dst's;
+            # src's files go once the merge is committed.
+            pictures = {r["channel_name"]: r for r in conn.execute(
+                "SELECT * FROM artist_avatars WHERE channel_name IN (?, ?)", (src, dst))}
             with conn:
                 moved = _rename_artist(conn, src, dst)
+            if src in pictures and dst in pictures:
+                _drop_avatar_files(conn, pictures[src])
         finally:
             conn.close()
     sync_artist_folders()                  # the thumbnails follow their videos' new name
