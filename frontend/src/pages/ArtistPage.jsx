@@ -22,6 +22,7 @@ import SocialIcon from "../components/SocialIcon";
 import ChannelStatusMenu from "../components/ChannelStatusMenu";
 import FeedFollow from "../components/FeedFollow";
 import ArtistRename from "../components/ArtistRename";
+import AvatarPicker from "../components/AvatarPicker";
 import ProfileEffect from "../components/ProfileEffect";
 import ProfileEffectMenu from "../components/ProfileEffectMenu";
 import { useEffectPrefs, resolveEffect } from "../lib/profileEffects";
@@ -76,6 +77,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   const [creatorNames, setCreatorNames] = useState([]);
   const [channelMark, setChannelMark] = useState(null);   // { status, marked_at } or null
   const [renaming, setRenaming] = useState(false);
+  const [pickingPicture, setPickingPicture] = useState(false);
+  const [, setPictureTick] = useState(0);   // re-render so every avatar picks up the new picture
   const effectPrefs = useEffectPrefs();
   const effect = resolveEffect(effectPrefs, artist);
 
@@ -200,6 +203,9 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
           <button className="artist-rename-btn" onClick={() => setRenaming(true)} title="Rename this artist, or merge it into another">
             <Icon name="pencil" size={13} />
           </button>
+          <button className="artist-rename-btn" onClick={() => setPickingPicture(true)} title="Choose this artist's picture">
+            <Icon name="image" size={13} />
+          </button>
         </h2>
         {artistVideos.length > 0 && (
           <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>
@@ -303,12 +309,16 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
           {effect && <ProfileEffect effect={effect} seed={artist} />}
           {effectPrefs.enabled && <ProfileEffectMenu artist={artist} prefs={effectPrefs} />}
           <div className="creator-profile-top">
-            <img
-              className="creator-profile-avatar"
-              src={artistThumbUrl(artist)}
-              alt=""
-              onError={e => { e.currentTarget.style.visibility = "hidden"; }}
-            />
+            <button className="creator-profile-avatar-btn" onClick={() => setPickingPicture(true)} title="Choose this artist's picture">
+              <img
+                className="creator-profile-avatar"
+                src={artistThumbUrl(artist)}
+                alt=""
+                onLoad={e => { e.currentTarget.style.visibility = ""; }}
+                onError={e => { e.currentTarget.style.visibility = "hidden"; }}
+              />
+              <span className="creator-profile-avatar-edit"><Icon name="image" size={14} /></span>
+            </button>
             <div className="creator-profile-id">
               <div className="creator-profile-name">{artist}</div>
               {safeUrl(creator.channel_url) ? (
@@ -434,6 +444,15 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
 
       {artistVideos.length === 0 && artistWanted.length === 0 && artistIgnored.length === 0 && (
         <div className="empty">No videos found for this artist.</div>
+      )}
+
+      {pickingPicture && (
+        <AvatarPicker
+          artist={artist}
+          videos={videos}
+          onClose={() => setPickingPicture(false)}
+          onSaved={() => setPictureTick(t => t + 1)}
+        />
       )}
     </div>
   );
