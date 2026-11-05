@@ -191,7 +191,7 @@ _PROFILE_FREE_ENDPOINTS = {"activate_profile", "shutdown_app", "watch_progress"}
 _PUBLIC_ENDPOINTS = {
     "spa_assets", "spa_icon", "serve_userscript",
     "serve_thumb", "serve_thumb_latest", "serve_artist_thumb",
-    "serve_thumbnail_version", "import_thumb", "stream_video",
+    "serve_thumbnail_version", "import_thumb", "stream_video", "serve_artist_avatar_src",
     "export_json", "export_csv", "stream_audio_track",
 }
 
@@ -837,6 +837,23 @@ def init_db():
             channel_name TEXT PRIMARY KEY,
             status       TEXT NOT NULL,
             marked_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # The picture the user chose for an artist: one of their videos'
+    # thumbnails or an uploaded image, framed by a focus point and a zoom.
+    # `file` is the square avatar rendered from it; no row means the newest
+    # video's thumbnail.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS artist_avatars (
+            channel_name TEXT PRIMARY KEY,
+            video_id     TEXT,
+            upload       TEXT,
+            focus_x      REAL NOT NULL DEFAULT 0.5,
+            focus_y      REAL NOT NULL DEFAULT 0.5,
+            zoom         REAL NOT NULL DEFAULT 1,
+            file         TEXT NOT NULL,
+            updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
 
@@ -1651,7 +1668,7 @@ def set_config():
         if os.path.exists(old_db) and not os.path.exists(new_db):
             _copy_db(old_db, new_db)
             # Thumbnails live next to the DB; fetched versions exist nowhere else.
-            for sub in ("artist_thumbs", "thumbs", "thumb_versions"):
+            for sub in ("artist_thumbs", "artist_avatars", "thumbs", "thumb_versions"):
                 src = os.path.join(cfg["data_directory"], sub)
                 if os.path.isdir(src):
                     shutil.copytree(src, os.path.join(data_dir, sub), dirs_exist_ok=True)
@@ -1731,6 +1748,7 @@ def open_active_library():
     _picked_paths.clear()              # import picks belong to the library they were made in
     init_db()
     sync_artist_folders()
+    sweep_avatar_files_on_open()
     start_observer(cfg["watch_directory"])
 
 
@@ -4312,6 +4330,14 @@ def write_tags(video_id):
 
 @app.get("/artist-thumb/<path:name>")
 def serve_artist_thumb(name):
+    # A picture the user picked wins over the newest video's thumbnail.
+    conn = get_conn()
+    chosen = conn.execute("SELECT file FROM artist_avatars WHERE channel_name = ?", (name,)).fetchone()
+    conn.close()
+    if chosen and _AVATAR_FILE_RE.match(chosen["file"]):
+        avatars_dir = get_artist_avatars_dir()
+        if os.path.isfile(os.path.join(avatars_dir, chosen["file"])):
+            return send_from_directory(avatars_dir, chosen["file"])
     artist_thumbs_dir = os.path.realpath(get_artist_thumbs_dir())
     safe = _safe_dirname(name)
     if not safe or safe.startswith("."):          # also rules out "." and ".."
@@ -4425,19 +4451,262 @@ def serve_thumb(video_id):
     return ("", 404)
 
 
-@app.get("/thumb-latest/<vid:video_id>")
-def serve_thumb_latest(video_id):
-    """Newest fetched thumbnail if one exists, else the original."""
+def _latest_thumb_path(video_id):
+    """Newest fetched thumbnail's path if one exists, else the original's."""
     vdir = _thumb_versions_dir(video_id)
     if os.path.isdir(vdir):
         files = [f for f in os.listdir(vdir) if f.lower().endswith((".jpg", ".jpeg", ".webp", ".png"))]
         if files:
-            newest = max(files, key=lambda f: os.path.getmtime(os.path.join(vdir, f)))
-            return _send_thumb(vdir, newest)
-    op = _original_thumb_path(video_id)
-    if op:
-        return _send_thumb(os.path.dirname(op), os.path.basename(op))
+            return os.path.join(vdir, max(files, key=lambda f: os.path.getmtime(os.path.join(vdir, f))))
+    return _original_thumb_path(video_id)
+
+
+@app.get("/thumb-latest/<vid:video_id>")
+def serve_thumb_latest(video_id):
+    """Newest fetched thumbnail if one exists, else the original."""
+    path = _latest_thumb_path(video_id)
+    if path:
+        return _send_thumb(os.path.dirname(path), os.path.basename(path))
     return ("", 404)
+
+# ---------------------------------------------------------------------------
+# Chosen artist pictures
+#
+# By default an artist's picture is their newest video's thumbnail. The user
+# can pick another video's thumbnail or upload an image, and frame it: a
+# focus point (fractions of the source's width/height) and a zoom. The square
+# avatar is rendered once on save, so every place that shows /artist-thumb
+# gets it without knowing about the framing.
+# ---------------------------------------------------------------------------
+
+_AVATAR_SIZE      = 512
+_AVATAR_FILE_RE   = re.compile(r"^[0-9a-f]{32}\.jpg$")
+_AVATAR_UPLOAD_RE = re.compile(r"^[0-9a-f]{40}\.(?:jpg|png|webp)$")
+_AVATAR_FORMATS   = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
+
+
+def get_artist_avatars_dir():
+    return os.path.join(load_config()["data_directory"], "artist_avatars")
+
+
+def _avatar_uploads_dir():
+    return os.path.join(get_artist_avatars_dir(), "src")
+
+
+def _render_avatar(source, fx, fy, zoom, letterbox):
+    """JPEG bytes of the square cut of `source` centred on (fx, fy), its side
+    the source's short side divided by zoom, pushed back inside the picture
+    when the focus sits near an edge. letterbox: crop baked-in bars first, as
+    /thumb-latest does, so the framing matches what the picker showed."""
+    from PIL import ImageOps
+    Image = _pil_image()
+    data = _letterbox_crop(source) if letterbox else None
+    with Image.open(io.BytesIO(data) if data else source) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        w, h = im.size
+        side = min(w, h) / zoom
+        left = min(max(fx * w - side / 2, 0), w - side)
+        top  = min(max(fy * h - side / 2, 0), h - side)
+        out = im.crop((round(left), round(top), round(left + side), round(top + side)))
+        out = out.resize((_AVATAR_SIZE, _AVATAR_SIZE), Image.LANCZOS)
+        buf = io.BytesIO()
+        out.save(buf, "JPEG", quality=90)
+        return buf.getvalue()
+
+
+def _drop_avatar_files(conn, row):
+    """Remove a replaced/cleared row's rendered avatar, and its uploaded
+    source when no other artist uses that upload."""
+    d = get_artist_avatars_dir()
+    if row["file"] and _AVATAR_FILE_RE.match(row["file"]):
+        try:
+            os.remove(os.path.join(d, row["file"]))
+        except OSError:
+            pass
+    up = row["upload"]
+    if up and _AVATAR_UPLOAD_RE.match(up) and not conn.execute(
+            "SELECT 1 FROM artist_avatars WHERE upload = ?", (up,)).fetchone():
+        try:
+            os.remove(os.path.join(_avatar_uploads_dir(), up))
+        except OSError:
+            pass
+
+
+# An upload sits unused from the moment it is added until the picker saves it.
+_AVATAR_ORPHAN_GRACE = 3600
+
+
+def _sweep_avatar_files(conn, grace=_AVATAR_ORPHAN_GRACE):
+    """Delete rendered avatars and uploaded images no artist uses: uploads
+    the picker was cancelled on, leftovers of a crash. Files younger than
+    `grace` seconds stay, so a picker still open keeps its upload. Callers
+    hold _db_lock: set_artist_avatar writes its file before the row."""
+    d = get_artist_avatars_dir()
+    rows = conn.execute("SELECT file, upload FROM artist_avatars").fetchall()
+    used = {r["file"] for r in rows} | {r["upload"] for r in rows if r["upload"]}
+    cutoff = time.time() - grace
+    for folder, pattern in ((d, _AVATAR_FILE_RE), (_avatar_uploads_dir(), _AVATAR_UPLOAD_RE)):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for n in names:
+            if n in used or not pattern.match(n):
+                continue
+            path = os.path.join(folder, n)
+            try:
+                if os.path.getmtime(path) <= cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+
+
+def sweep_avatar_files_on_open():
+    """On opening a library no picker is open yet: every unused file goes."""
+    with _db_lock:
+        conn = get_conn()
+        try:
+            _sweep_avatar_files(conn, grace=0)
+        finally:
+            conn.close()
+
+
+@app.get("/artist-avatars")
+def list_artist_avatars():
+    conn = get_conn()
+    rows = conn.execute("SELECT * FROM artist_avatars").fetchall()
+    conn.close()
+    return jsonify({r["channel_name"]: {
+        "video_id": r["video_id"], "upload": r["upload"],
+        "focus_x": r["focus_x"], "focus_y": r["focus_y"], "zoom": r["zoom"],
+        "v": r["file"][:8],
+    } for r in rows})
+
+
+@app.post("/artist-avatar/upload")
+def upload_artist_avatar():
+    """Keep an uploaded image (base64 in JSON, the page downsizes it first)
+    as a picture source. Returns its token for /artist-avatar."""
+    body = request.get_json(silent=True) or {}
+    raw = body.get("data")
+    if not isinstance(raw, str) or not raw:
+        return jsonify({"ok": False, "error": "data required"}), 400
+    if raw.startswith("data:"):
+        raw = raw.split(",", 1)[-1]
+    try:
+        blob = base64.b64decode(raw, validate=True)
+        Image = _pil_image()
+        with Image.open(io.BytesIO(blob)) as im:
+            ext = _AVATAR_FORMATS.get(im.format)
+            im.verify()
+    except Exception:
+        return jsonify({"ok": False, "error": "Not an image this app can read"}), 400
+    if not ext:
+        return jsonify({"ok": False, "error": "Use a JPEG, PNG or WebP image"}), 400
+    token = f"{hashlib.sha1(blob).hexdigest()}.{ext}"
+    d = _avatar_uploads_dir()
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, token)
+    with _db_lock:
+        if os.path.exists(path):
+            os.utime(path)    # added again: a fresh grace period before the sweep may take it
+        else:
+            with open(path, "wb") as f:
+                f.write(blob)
+        conn = get_conn()
+        try:
+            _sweep_avatar_files(conn)
+        finally:
+            conn.close()
+    return jsonify({"ok": True, "upload": token})
+
+
+@app.get("/artist-avatar-src/<token>")
+def serve_artist_avatar_src(token):
+    """An uploaded picture source, for re-framing it in the picker."""
+    if not _AVATAR_UPLOAD_RE.match(token):
+        return ("", 404)
+    d = _avatar_uploads_dir()
+    if not os.path.isfile(os.path.join(d, token)):
+        return ("", 404)
+    return send_from_directory(d, token)
+
+
+@app.post("/artist-avatar")
+def set_artist_avatar():
+    """Choose an artist's picture: {name, video_id | upload, focus_x, focus_y, zoom}."""
+    body = request.get_json(silent=True) or {}
+    name = _body_name(body, "name")
+    video_id, upload = body.get("video_id"), body.get("upload")
+    if not name:
+        return jsonify({"ok": False, "error": "name required"}), 400
+    if bool(video_id) == bool(upload):
+        return jsonify({"ok": False, "error": "give one of video_id or upload"}), 400
+    try:
+        fx   = min(max(float(body.get("focus_x", 0.5)), 0.0), 1.0)
+        fy   = min(max(float(body.get("focus_y", 0.5)), 0.0), 1.0)
+        zoom = min(max(float(body.get("zoom", 1)), 1.0), 8.0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "focus and zoom must be numbers"}), 400
+    if video_id:
+        if not isinstance(video_id, str) or not _VIDEO_ID_RE.fullmatch(video_id):
+            return jsonify({"ok": False, "error": "bad video_id"}), 400
+        source = _latest_thumb_path(video_id)
+        if not source:
+            return jsonify({"ok": False, "error": "That video has no thumbnail"}), 404
+    else:
+        if not isinstance(upload, str) or not _AVATAR_UPLOAD_RE.match(upload):
+            return jsonify({"ok": False, "error": "bad upload"}), 400
+        source = os.path.join(_avatar_uploads_dir(), upload)
+        if not os.path.isfile(source):
+            return jsonify({"ok": False, "error": "Upload not found, add it again"}), 404
+    try:
+        jpeg = _render_avatar(source, fx, fy, zoom, letterbox=bool(video_id))
+    except Exception:
+        return jsonify({"ok": False, "error": "Could not read that image"}), 400
+    fname = f"{uuid.uuid4().hex}.jpg"
+    d = get_artist_avatars_dir()
+    os.makedirs(d, exist_ok=True)
+    with _db_lock:
+        conn = get_conn()
+        try:
+            if not _known_artist(conn, name):
+                return jsonify({"ok": False, "error": f"no videos from {name}"}), 404
+            with open(os.path.join(d, fname), "wb") as f:
+                f.write(jpeg)
+            old = conn.execute("SELECT * FROM artist_avatars WHERE channel_name = ?", (name,)).fetchone()
+            with conn:
+                conn.execute('''
+                    INSERT INTO artist_avatars (channel_name, video_id, upload, focus_x, focus_y, zoom, file)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(channel_name) DO UPDATE SET
+                        video_id = excluded.video_id, upload = excluded.upload,
+                        focus_x = excluded.focus_x, focus_y = excluded.focus_y, zoom = excluded.zoom,
+                        file = excluded.file, updated_at = CURRENT_TIMESTAMP
+                ''', (name, video_id or None, upload or None, fx, fy, zoom, fname))
+            if old:
+                _drop_avatar_files(conn, old)
+            _sweep_avatar_files(conn)
+        finally:
+            conn.close()
+    return jsonify({"ok": True, "v": fname[:8]})
+
+
+@app.delete("/artist-avatar/<path:name>")
+def clear_artist_avatar(name):
+    """Back to the default picture: the newest video's thumbnail."""
+    with _db_lock:
+        conn = get_conn()
+        try:
+            old = conn.execute("SELECT * FROM artist_avatars WHERE channel_name = ?", (name,)).fetchone()
+            if old:
+                with conn:
+                    conn.execute("DELETE FROM artist_avatars WHERE channel_name = ?", (name,))
+                _drop_avatar_files(conn, old)
+            _sweep_avatar_files(conn)
+        finally:
+            conn.close()
+    return jsonify({"ok": True})
 
 # ---------------------------------------------------------------------------
 # Thumbnail versions (original stays with the video; fetched ones kept here)
@@ -5946,6 +6215,7 @@ def _rename_artist(conn, src, dst):
 
     _merge_row(conn, "creators", src, dst, [f for f in _CREATOR_FIELDS])
     _merge_row(conn, "channel_status", src, dst, [])
+    _merge_row(conn, "artist_avatars", src, dst, [])
     _merge_row(conn, "channel_ids", src, dst, [])
     _merge_row(conn, "download_prefs", src, dst, [])
     # Download jobs carry the credit they were queued under; keep it in step.
@@ -6033,8 +6303,14 @@ def rename_artist():
                 drops = ids.get(src) if ids.get(dst) and ids.get(src) != ids.get(dst) else None
                 return jsonify({"ok": True, "videos": len(_credit_rows(conn, src)), "merge": merge,
                                 "drops_channel": drops})
+            # Merging two artists that both have a chosen picture keeps dst's;
+            # src's files go once the merge is committed.
+            pictures = {r["channel_name"]: r for r in conn.execute(
+                "SELECT * FROM artist_avatars WHERE channel_name IN (?, ?)", (src, dst))}
             with conn:
                 moved = _rename_artist(conn, src, dst)
+            if src in pictures and dst in pictures:
+                _drop_avatar_files(conn, pictures[src])
         finally:
             conn.close()
     sync_artist_folders()                  # the thumbnails follow their videos' new name
@@ -6797,6 +7073,7 @@ if __name__ == "__main__":
         print(f"[init] Migrated DB to {new_db}")
     init_db()
     sync_artist_folders()
+    sweep_avatar_files_on_open()
     if _ffmpeg_missing():
         print(f"[init] WARNING: {' and '.join(_ffmpeg_missing())} not found on PATH. "
               "Install ffmpeg: webm/mkv files can't be read and chapters, frame grabs "

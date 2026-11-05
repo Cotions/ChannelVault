@@ -125,7 +125,26 @@ export function watchBeacon(id, data) {
 export function getWatchHistory()  { return get("/watch-history"); }
 export function exportCsvUrl()     { return `${BASE}/export/csv`; }
 export function exportJsonUrl()    { return `${BASE}/export/json`; }
-export function artistThumbUrl(name) { return `${BASE}/artist-thumb/${encodeURIComponent(name)}`; }
+// A chosen picture keeps its URL, so the version saved this session rides
+// along: every <img> showing the artist reloads instead of keeping the old one.
+const avatarVersions = Object.create(null);
+export function artistThumbUrl(name) {
+  const v = avatarVersions[name];
+  return `${BASE}/artist-thumb/${encodeURIComponent(name)}${v ? `?v=${v}` : ""}`;
+}
+export function getArtistAvatars()   { return get("/artist-avatars"); }
+export function artistAvatarSrcUrl(token) { return `${BASE}/artist-avatar-src/${encodeURIComponent(token)}`; }
+export function uploadArtistAvatar(dataUrl) { return post("/artist-avatar/upload", { data: dataUrl }); }
+export async function setArtistAvatar(choice) {
+  const r = await post("/artist-avatar", choice);
+  if (r?.ok) avatarVersions[choice.name] = r.v;
+  return r;
+}
+export async function clearArtistAvatar(name) {
+  const r = await del(`/artist-avatar/${encodeURIComponent(name)}`);
+  if (r?.ok) avatarVersions[name] = `d${Date.now().toString(36)}`;
+  return r;
+}
 export function getThumbnails(id)    { return get(`/thumbnails/${id}`); }
 export function fetchThumbnail(id, force = false) { return post(`/fetch-thumbnail/${id}`, force ? { force: true } : {}); }
 export function thumbnailVersionUrl(id, file) { return `${BASE}/thumbnail-version/${id}/${file}`; }

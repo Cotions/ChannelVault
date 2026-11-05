@@ -46,7 +46,7 @@ function byNum(a, b) {
 // recorded_date comes in mixed formats: yt-dlp "20260426", site fetch "2026-05-26".
 // Strip non-digits so both become "20260426" for correct lexical ordering.
 // A year-only date ("2024") counts as the end of that year.
-function recDate(v) {
+export function recDate(v) {
   const d = (v || "").replace(/\D/g, "").slice(0, 8);
   if (d.length === 8 && /^\d{4}-?\d{2}-?\d{2}/.test((v || "").trim())) return d;
   if (d.length === 4 && /^\d{4}$/.test((v || "").trim())) return d + "9999";
