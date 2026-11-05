@@ -1748,6 +1748,7 @@ def open_active_library():
     _picked_paths.clear()              # import picks belong to the library they were made in
     init_db()
     sync_artist_folders()
+    sweep_avatar_files_on_open()
     start_observer(cfg["watch_directory"])
 
 
@@ -4531,6 +4532,45 @@ def _drop_avatar_files(conn, row):
             pass
 
 
+# An upload sits unused from the moment it is added until the picker saves it.
+_AVATAR_ORPHAN_GRACE = 3600
+
+
+def _sweep_avatar_files(conn, grace=_AVATAR_ORPHAN_GRACE):
+    """Delete rendered avatars and uploaded images no artist uses: uploads
+    the picker was cancelled on, leftovers of a crash. Files younger than
+    `grace` seconds stay, so a picker still open keeps its upload. Callers
+    hold _db_lock: set_artist_avatar writes its file before the row."""
+    d = get_artist_avatars_dir()
+    rows = conn.execute("SELECT file, upload FROM artist_avatars").fetchall()
+    used = {r["file"] for r in rows} | {r["upload"] for r in rows if r["upload"]}
+    cutoff = time.time() - grace
+    for folder, pattern in ((d, _AVATAR_FILE_RE), (_avatar_uploads_dir(), _AVATAR_UPLOAD_RE)):
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for n in names:
+            if n in used or not pattern.match(n):
+                continue
+            path = os.path.join(folder, n)
+            try:
+                if os.path.getmtime(path) <= cutoff:
+                    os.remove(path)
+            except OSError:
+                pass
+
+
+def sweep_avatar_files_on_open():
+    """On opening a library no picker is open yet: every unused file goes."""
+    with _db_lock:
+        conn = get_conn()
+        try:
+            _sweep_avatar_files(conn, grace=0)
+        finally:
+            conn.close()
+
+
 @app.get("/artist-avatars")
 def list_artist_avatars():
     conn = get_conn()
@@ -4567,9 +4607,17 @@ def upload_artist_avatar():
     d = _avatar_uploads_dir()
     os.makedirs(d, exist_ok=True)
     path = os.path.join(d, token)
-    if not os.path.exists(path):
-        with open(path, "wb") as f:
-            f.write(blob)
+    with _db_lock:
+        if os.path.exists(path):
+            os.utime(path)    # added again: a fresh grace period before the sweep may take it
+        else:
+            with open(path, "wb") as f:
+                f.write(blob)
+        conn = get_conn()
+        try:
+            _sweep_avatar_files(conn)
+        finally:
+            conn.close()
     return jsonify({"ok": True, "upload": token})
 
 
@@ -4638,6 +4686,7 @@ def set_artist_avatar():
                 ''', (name, video_id or None, upload or None, fx, fy, zoom, fname))
             if old:
                 _drop_avatar_files(conn, old)
+            _sweep_avatar_files(conn)
         finally:
             conn.close()
     return jsonify({"ok": True, "v": fname[:8]})
@@ -4654,6 +4703,7 @@ def clear_artist_avatar(name):
                 with conn:
                     conn.execute("DELETE FROM artist_avatars WHERE channel_name = ?", (name,))
                 _drop_avatar_files(conn, old)
+            _sweep_avatar_files(conn)
         finally:
             conn.close()
     return jsonify({"ok": True})
@@ -7023,6 +7073,7 @@ if __name__ == "__main__":
         print(f"[init] Migrated DB to {new_db}")
     init_db()
     sync_artist_folders()
+    sweep_avatar_files_on_open()
     if _ffmpeg_missing():
         print(f"[init] WARNING: {' and '.join(_ffmpeg_missing())} not found on PATH. "
               "Install ffmpeg: webm/mkv files can't be read and chapters, frame grabs "
