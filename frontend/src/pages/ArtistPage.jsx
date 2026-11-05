@@ -9,13 +9,14 @@ import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import { getCreator, getCreators, getArtistLinks, linkArtists, unlinkArtist, getChannelStatuses, setChannelStatus, artistThumbUrl, scan } from "../lib/api";
 import { CHANNEL_STATUS, markedOn } from "../lib/channelStatus";
 import { describeLink } from "../lib/socials";
-import { fmt, fmtDuration, safeUrl } from "../lib/fmt";
+import { fmt, safeUrl } from "../lib/fmt";
 import { isYouTube } from "../lib/source";
 import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 import DownloadButton from "../components/DownloadButton";
+import MarkRow from "../components/MarkRow";
 import DownloadPrefs from "../components/DownloadPrefs";
 import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
@@ -31,32 +32,6 @@ import { useEffectPrefs, resolveEffect } from "../lib/profileEffects";
 export default function ArtistPage(props) {
   const { name } = useParams();
   return <ArtistPageBody key={name} {...props} />;
-}
-
-// One wanted or skipped video: its thumbnail and title (to YouTube), its
-// actions, and the button that drops the mark.
-function MarkRow({ video: v, onRemoveMark, children }) {
-  const href = isYouTube(v) ? `https://www.youtube.com/watch?v=${v.video_id}` : safeUrl(v.url);
-  return (
-    <div className="mark-row">
-      <a className="mark-thumb" href={href} target="_blank" rel="noreferrer" tabIndex={-1}>
-        {isYouTube(v) && (
-          <img src={`https://i.ytimg.com/vi/${v.video_id}/mqdefault.jpg`} alt="" loading="lazy" referrerPolicy="no-referrer" />
-        )}
-        {v.duration_secs > 0 && <span className="dur-badge">{fmtDuration(v.duration_secs)}</span>}
-      </a>
-      <div className="mark-main">
-        <a className="mark-title" href={href} target="_blank" rel="noreferrer">{v.title || v.video_id}</a>
-        {v.duration_secs > 0 && <span className="mark-length">{fmtDuration(v.duration_secs)}</span>}
-      </div>
-      <div className="mark-actions">
-        {children}
-        <button className="btn-ghost mark-remove" title="Remove the mark" onClick={() => onRemoveMark(v.video_id)}>
-          <Icon name="close" size={13} />
-        </button>
-      </div>
-    </div>
-  );
 }
 
 function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {

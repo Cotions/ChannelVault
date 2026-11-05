@@ -21,6 +21,7 @@ import Stats           from "./pages/Stats";
 import TagsPage        from "./pages/TagsPage";
 import TagPage         from "./pages/TagPage";
 import InboxPage       from "./pages/InboxPage";
+import WantedPage      from "./pages/WantedPage";
 import DownloadQueue from "./components/DownloadQueue";
 import SideDownloads from "./components/SideDownloads";
 import { onDownloadDone } from "./lib/downloads";
@@ -275,6 +276,10 @@ export default function App() {
             <Icon name="inbox" />Inbox
             {inboxCount > 0 && <span className="side-badge" title="New uploads from your channels">{inboxCount > 99 ? "99+" : inboxCount}</span>}
           </NavLink>
+          <NavLink to="/wanted-videos" className="side-link">
+            <Icon name="download" />Wanted
+            {wanted.length > 0 && <span className="side-badge side-badge-quiet" title="Videos marked to download">{wanted.length > 999 ? "999+" : wanted.length}</span>}
+          </NavLink>
           <NavLink to="/playlists" className="side-link"><Icon name="playlist" />Playlists</NavLink>
           <NavLink to="/artists" className="side-link"><Icon name="users" />Artists</NavLink>
           <NavLink to="/tags" className="side-link"><Icon name="tag" />Tags</NavLink>
@@ -337,6 +342,7 @@ export default function App() {
               path="/artists"
               element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} />}
             />
+            <Route path="/wanted-videos" element={<WantedPage wanted={wanted} ignored={ignored} query={query} onRemoveMark={handleRemoveMark} />} />
             <Route path="/inbox" element={<InboxPage query={query} onMarked={handleInboxMarked} />} />
             <Route path="/data-quality" element={<DataQualityPage onLibraryChanged={load} />} />
             <Route path="/tags" element={<TagsPage tags={tags} query={query} onChanged={handleTagsChanged} />} />
