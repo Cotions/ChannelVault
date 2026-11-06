@@ -234,7 +234,7 @@ export default function PlayerProvider({ onCompleted, children }) {
       if (r.completed && !w.completed) {
         w.completed = true;
         setCompletedId(vid);
-        onCompletedRef.current?.();
+        onCompletedRef.current?.(vid);
       }
     } catch {
       w.reported = sent;                // backend down: retry after the next 15 s, not on every tick

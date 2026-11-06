@@ -5,7 +5,7 @@ import { getDownloads, addDownload, cancelDownload, retryDownload, clearDownload
 /* One shared view of the download queue: the header indicator and every
    Download button read it. It asks the backend every 1.5 s while a job is
    queued or running, else every 30 s (the userscript queues downloads too)
-   and when the tab comes back into view. */
+   and when the tab comes back into view; not at all while the tab is hidden. */
 
 let state = { installed: false, jobs: [], loaded: false, prefs: {} };
 const listeners = new Set();
@@ -33,7 +33,9 @@ export async function refreshDownloads() {
     emit({ ...state, installed: !!d.installed, jobs: d.jobs || [], loaded: true });
   } catch { /* offline: keep what we had */ }
   clearTimeout(timer);
-  timer = listeners.size ? setTimeout(refreshDownloads, state.jobs.some(isActive) ? 1500 : 30000) : null;
+  // A hidden tab does not poll: coming back into view asks right away.
+  timer = listeners.size && document.visibilityState !== "hidden"
+    ? setTimeout(refreshDownloads, state.jobs.some(isActive) ? 1500 : 30000) : null;
 }
 
 function onVisible() { if (document.visibilityState === "visible") refreshDownloads(); }

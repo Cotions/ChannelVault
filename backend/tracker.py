@@ -212,20 +212,39 @@ def _is_public_endpoint():
     return ep in _PUBLIC_ENDPOINTS
 
 
+def _accepts_gzip():
+    return "gzip" in request.headers.get("Accept-Encoding", "").lower()
+
+
 @app.after_request
-def _gzip_json(resp):
-    """Compress big JSON answers. /videos carries every description and is
-    refetched after most actions; gzip takes it from megabytes to a fraction."""
+def _shrink_json(resp):
+    """Keep JSON answers off the wire when they can be.
+
+    The page refetches its lists after most actions, and most of the time a
+    given list did not change. A GET answer carries an ETag hashed from its
+    body; the browser stores it (no-cache: store, but ask every time) and
+    sends it back, and an unchanged list comes back as an empty 304 that
+    fetch() hands the page as the stored body. A changed or first answer
+    goes out gzipped: /videos takes it from megabytes to a fraction."""
     if (resp.direct_passthrough or resp.status_code != 200 or resp.mimetype != "application/json"
-            or "Content-Encoding" in resp.headers
-            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()):
+            or "Content-Encoding" in resp.headers):
         return resp
     data = resp.get_data()
-    if len(data) < 4096:
+    if request.method in ("GET", "HEAD"):
+        # Weak: the gzipped and plain answers carry the same tag.
+        resp.set_etag(hashlib.blake2b(data, digest_size=12).hexdigest(), weak=True)
+        resp.headers["Cache-Control"] = "private, no-cache"
+        resp.vary.add("Accept-Encoding")
+        if request.if_none_match.contains_weak(resp.get_etag()[0]):
+            resp.status_code = 304
+            resp.set_data(b"")
+            resp.headers.pop("Content-Type", None)
+            return resp
+    if len(data) < 1024 or not _accepts_gzip():
         return resp
-    resp.set_data(gzip.compress(data, compresslevel=5))
+    resp.set_data(gzip.compress(data, compresslevel=6))
     resp.headers["Content-Encoding"] = "gzip"
-    resp.headers.add("Vary", "Accept-Encoding")
+    resp.vary.add("Accept-Encoding")
     return resp
 
 
@@ -1491,13 +1510,52 @@ for _rule in (
         _rule, f"spa{_rule}", lambda **_kw: _spa(), methods=["GET"]
     )
 
+# The UI bundle is text that gzip shrinks to about a third. Each file is
+# compressed once per build and kept: (path, mtime, size) -> bytes.
+_GZIP_STATIC_EXTS = (".js", ".css", ".svg", ".html", ".json", ".map", ".txt")
+_static_gz_cache  = {}
+
+def _send_static(directory, filename, immutable=False):
+    """A file of the UI bundle, gzipped when the browser takes it.
+
+    Vite names every file under /assets after a hash of its content, so a
+    build that changes one gives it a new name: those can be cached for good
+    and a page load asks for nothing it already has. index.html keeps its
+    name, so the browser always asks for it (and gets a 304 when unchanged)."""
+    from werkzeug.security import safe_join
+    path = safe_join(directory, filename)
+    if not path or not os.path.isfile(path):
+        return ("", 404)
+    cache = "public, max-age=31536000, immutable" if immutable else "no-cache"
+    if not (path.endswith(_GZIP_STATIC_EXTS) and _accepts_gzip()):
+        resp = send_from_directory(directory, filename)
+        resp.headers["Cache-Control"] = cache
+        return resp
+    st  = os.stat(path)
+    key = (path, st.st_mtime_ns, st.st_size)
+    gz  = _static_gz_cache.get(key)
+    if gz is None:
+        with open(path, "rb") as f:
+            gz = gzip.compress(f.read(), compresslevel=9)
+        if len(_static_gz_cache) > 200:
+            _static_gz_cache.clear()
+        _static_gz_cache[key] = gz
+    import mimetypes
+    resp = Response(gz, mimetype=mimetypes.guess_type(path)[0] or "application/octet-stream")
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.headers["Cache-Control"]    = cache
+    resp.vary.add("Accept-Encoding")
+    resp.set_etag(f"{st.st_mtime_ns:x}-{st.st_size:x}", weak=True)
+    resp.last_modified = st.st_mtime
+    return resp.make_conditional(request)
+
 @app.get("/assets/<path:filename>")
 def spa_assets(filename):
-    return send_from_directory(os.path.join(STATIC_DIR, "assets"), filename)
+    return _send_static(os.path.join(STATIC_DIR, "assets"), filename, immutable=True)
 
 @app.get("/favicon.svg")
 def spa_icon():
-    return send_from_directory(STATIC_DIR, "favicon.svg")
+    return _send_static(STATIC_DIR, "favicon.svg")
 
 @app.get("/config")
 def get_config():
@@ -2339,25 +2397,89 @@ def list_ignored():
     conn.close()
     return jsonify([dict(r) for r in rows])
 
+_LIBRARY_SELECT = '''
+    SELECT v.*,
+           COALESCE(w.watch_count, 0) AS watch_count,
+           w.last_watched_at
+    FROM downloaded_videos v
+    LEFT JOIN (
+        SELECT video_id, COUNT(*) AS watch_count, MAX(updated_at) AS last_watched_at
+        FROM watch_sessions WHERE completed = 1 {only}
+        GROUP BY video_id
+    ) w ON w.video_id = v.video_id
+    WHERE v.status='downloaded' {only_v}
+'''
+
+# Descriptions are half the library's bytes and only the video page and the
+# edit form show one, so the list leaves them out: those ask for their video
+# alone (/videos/<id>), and search finds description matches server side.
 @app.get("/videos")
 def list_videos():
     conn = get_conn()
-    rows = conn.execute('''
-        SELECT v.*,
-               COALESCE(w.watch_count, 0) AS watch_count,
-               w.last_watched_at
-        FROM downloaded_videos v
-        LEFT JOIN (
-            SELECT video_id, COUNT(*) AS watch_count, MAX(updated_at) AS last_watched_at
-            FROM watch_sessions WHERE completed = 1
-            GROUP BY video_id
-        ) w ON w.video_id = v.video_id
-        WHERE v.status='downloaded' ORDER BY v.downloaded_at DESC
-    ''').fetchall()
+    rows = conn.execute(_LIBRARY_SELECT.format(only="", only_v="") + " ORDER BY v.downloaded_at DESC").fetchall()
     videos = [dict(r) for r in rows]
+    for v in videos:
+        v.pop("description", None)
     _attach_tags(conn, videos)
     conn.close()
     return jsonify(videos)
+
+@app.get("/videos/<vid:video_id>")
+def get_library_video(video_id):
+    """One library video in the shape /videos lists it, description included:
+    after an action on one video the page refreshes that card alone."""
+    conn = get_conn()
+    row = conn.execute(_LIBRARY_SELECT.format(only="AND video_id = ?", only_v="AND v.video_id = ?"),
+                       (video_id, video_id)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"ok": False, "error": "not in the library"}), 404
+    video = dict(row)
+    _attach_tags(conn, [video])
+    conn.close()
+    return jsonify(video)
+
+
+def _fold(s):
+    """Text as search compares it: accents dropped, lower case. Same as the
+    page's fold() in lib/sort.js, so "beyonce" finds "Beyoncé" both sides."""
+    return "".join(c for c in unicodedata.normalize("NFD", s or "")
+                   if not unicodedata.category(c).startswith("M")).lower()
+
+# Folding every description takes longer than the search itself, so the folded
+# set is kept until the database changes (its file or its -wal file).
+_folded_desc_cache = (None, [])
+
+def _folded_descriptions():
+    global _folded_desc_cache
+    db = get_db_path()
+    key = [db]
+    for f in (db, db + "-wal"):
+        try:
+            st = os.stat(f)
+            key.append((st.st_mtime_ns, st.st_size))
+        except OSError:
+            key.append(None)
+    key = tuple(key)
+    cached_key, folded = _folded_desc_cache
+    if cached_key == key:
+        return folded
+    conn = get_conn()
+    rows = conn.execute("SELECT video_id, description FROM downloaded_videos "
+                        "WHERE description IS NOT NULL AND description != ''").fetchall()
+    conn.close()
+    folded = [(r["video_id"], _fold(r["description"])) for r in rows]
+    _folded_desc_cache = (key, folded)
+    return folded
+
+@app.get("/search/descriptions")
+def search_descriptions():
+    """Ids of the videos whose description holds q. Titles, channels and tags
+    are matched in the page; descriptions stay here (see list_videos)."""
+    q = _fold((request.args.get("q") or "")[:200]).strip()
+    if len(q) < 2:
+        return jsonify({"ids": []})
+    return jsonify({"ids": [vid for vid, text in _folded_descriptions() if q in text]})
 
 _STREAM_MIMES = {
     ".mp4":  "video/mp4",
@@ -4337,7 +4459,7 @@ def serve_artist_thumb(name):
     if chosen and _AVATAR_FILE_RE.match(chosen["file"]):
         avatars_dir = get_artist_avatars_dir()
         if os.path.isfile(os.path.join(avatars_dir, chosen["file"])):
-            return send_from_directory(avatars_dir, chosen["file"])
+            return _send_thumb(avatars_dir, chosen["file"], crop=False)
     artist_thumbs_dir = os.path.realpath(get_artist_thumbs_dir())
     safe = _safe_dirname(name)
     if not safe or safe.startswith("."):          # also rules out "." and ".."
@@ -4413,13 +4535,119 @@ def _letterbox_crop(path):
     return out
 
 
-def _send_thumb(directory, fname):
-    """send_from_directory for thumbnails, letterbox bars cropped off."""
+# Thumbnails on disk are YouTube's full size (1280x720, ~100 KB), but a card
+# shows one a few hundred pixels wide and an avatar under a hundred. "?size="
+# asks for a copy whose shorter side is this many pixels: enough for a 2x
+# screen, a fraction of the bytes. Named sizes only, so the cache stays small.
+_THUMB_SIZES = {"card": 360, "avatar": 192}
+
+
+def _thumb_cache_dir():
+    return os.path.join(load_config()["data_directory"], "thumb_cache")
+
+
+def _small_thumb(path, side, crop):
+    """Path of a WebP copy of the image at path, scaled so its shorter side is
+    `side` (letterbox bars cropped first when crop), or None to send the
+    original: already small enough, or not decodable.
+
+    A copy costs ~25 ms to make, so it is made once and kept on disk, named
+    after the source's path, mtime and size: a changed source gets a new
+    copy, and _warm_thumb_cache clears the ones nothing points at anymore."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    name = hashlib.blake2b(f"{path}|{st.st_mtime_ns}|{st.st_size}|{side}|{int(crop)}".encode(),
+                           digest_size=12).hexdigest()
+    cache_dir = _thumb_cache_dir()
+    out  = os.path.join(cache_dir, name + ".webp")
+    skip = os.path.join(cache_dir, name + ".full")   # marker: send the original
+    if os.path.exists(out):
+        return out
+    if os.path.exists(skip):
+        return None
+    result = None
+    try:
+        cropped = _letterbox_crop(path) if crop else None
+        Image = _pil_image()
+        with Image.open(io.BytesIO(cropped) if cropped else path) as im:
+            w, h = im.size
+            scale = side / min(w, h) if min(w, h) else 1
+            if scale < 0.85:                   # anything less saves too little to re-encode
+                im.draft("RGB", (max(1, int(w * scale)), max(1, int(h * scale))))   # JPEG: decode smaller
+                scale = side / min(im.size)
+                im = im.convert("RGBA" if im.mode in ("RGBA", "LA", "P") else "RGB")
+                im = im.resize((max(1, round(im.size[0] * scale)), max(1, round(im.size[1] * scale))),
+                               Image.LANCZOS, reducing_gap=2.0)
+                buf = io.BytesIO()
+                # method 2: a quarter faster to encode than the default 4 for ~3% more bytes.
+                im.save(buf, "WEBP", quality=80, method=2)
+                result = buf.getvalue()
+    except Exception:
+        return None                            # unreadable now; maybe not next time, so no marker
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=cache_dir, suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(result or b"")
+        os.replace(tmp, out if result else skip)
+    except OSError:
+        return None
+    return out if result else None
+
+
+def _warm_thumb_cache():
+    """Make the card copy of every library thumbnail ahead of the first page
+    that shows it, then drop copies of sources that changed or went away.
+    Runs once at startup at the lowest CPU priority: a first run over a big
+    library takes a minute of one core, later runs only stat files."""
+    try:
+        os.setpriority(os.PRIO_PROCESS, threading.get_native_id(), 19)   # this thread only (Linux)
+    except (AttributeError, OSError):
+        pass
+    try:
+        conn = get_conn()
+        ids = [r["video_id"] for r in conn.execute(
+            "SELECT video_id FROM downloaded_videos WHERE status = 'downloaded' ORDER BY downloaded_at DESC")]
+        conn.close()
+        made = 0
+        for vid in ids:
+            path = _latest_thumb_path(vid)
+            if path and _small_thumb(path, _THUMB_SIZES["card"], True):
+                made += 1
+        # Anything not touched in a month belongs to a source that changed or left.
+        cache_dir = _thumb_cache_dir()
+        cutoff = time.time() - 30 * 86400
+        for f in os.listdir(cache_dir) if os.path.isdir(cache_dir) else ():
+            fp = os.path.join(cache_dir, f)
+            try:
+                if os.path.getatime(fp) < cutoff and os.path.getmtime(fp) < cutoff:
+                    os.remove(fp)
+            except OSError:
+                pass
+        print(f"[thumbs] {made} card thumbnails ready")
+    except Exception as e:
+        print(f"[thumbs] warm-up stopped: {_clean_err(e)}")
+
+
+def _send_thumb(directory, fname, crop=True):
+    """send_from_directory for thumbnails: letterbox bars cropped off, and
+    scaled down when the page asked for a ?size=."""
+    from flask import send_file
     path = os.path.join(directory, fname)
-    data = _letterbox_crop(path)
+    side = _THUMB_SIZES.get(request.args.get("size", ""))
+    small = _small_thumb(path, side, crop) if side else None
+    if small:
+        # Tagged by the cache key, not the copy's own mtime: two requests can
+        # race to write the same copy, and the second write must not read as
+        # a new picture to a browser holding the first.
+        return send_file(small, mimetype="image/webp", conditional=True,
+                         etag=os.path.splitext(os.path.basename(small))[0],
+                         last_modified=os.stat(path).st_mtime)
+    data = _letterbox_crop(path) if crop else None
     if data is None:
         return send_from_directory(directory, fname)
-    from flask import send_file
     st = os.stat(path)
     return send_file(io.BytesIO(data), mimetype="image/jpeg", conditional=True,
                      etag=f"crop-{st.st_mtime_ns:x}-{st.st_size:x}", last_modified=st.st_mtime)
@@ -7049,6 +7277,28 @@ def _port_busy(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         return sock.connect_ex(("127.0.0.1", port)) == 0
 
+def _serve():
+    """Serve until the process exits.
+
+    Werkzeug's own server closes the connection after every answer, so each
+    request pays a fresh connection: nothing locally, a full round trip from
+    another machine, and a library page asks for dozens of thumbnails.
+    waitress keeps connections open, and hands a file (a video, a thumbnail)
+    to its I/O loop instead of holding a worker thread for the whole send.
+    It writes progress streams out as they come (send_bytes=1, its default)."""
+    try:
+        from waitress import serve
+    except ImportError:
+        print("[api] waitress not installed; using the development server")
+        app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
+        return
+    # Threads only run handlers: a long scan or yt-dlp stream holds one, a
+    # video or file send holds none. Idle kept-alive connections close after
+    # channel_timeout; a progress stream that goes quiet that long is cut too.
+    serve(app, host="127.0.0.1", port=PORT, threads=16, channel_timeout=300,
+          connection_limit=200, ident="ChannelVault")
+
+
 if __name__ == "__main__":
     if "--version" in sys.argv:
         print(f"ChannelVault {__version__}")
@@ -7084,6 +7334,7 @@ if __name__ == "__main__":
     watcher_thread.start()
     threading.Thread(target=_feed_loop, daemon=True).start()
     threading.Thread(target=_download_loop, daemon=True).start()
+    threading.Thread(target=_warm_thumb_cache, daemon=True).start()
     atexit.register(_dl_stop_live)       # Ctrl+C
     if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
@@ -7092,4 +7343,4 @@ if __name__ == "__main__":
     print(f"[api] UI files    {STATIC_DIR}")
     print(f"[api] Config      {CONFIG_PATH}")
     print(f"[api] Profile     {cfg['profile_name']} ({cfg['data_directory']})")
-    app.run(host="127.0.0.1", port=PORT, debug=False)
+    _serve()

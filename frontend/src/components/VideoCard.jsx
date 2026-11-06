@@ -112,7 +112,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         {thumbOk ? (
           <img
             className="video-thumb"
-            src={latestThumbUrl(video.video_id)}
+            src={latestThumbUrl(video.video_id, "card")}
             alt=""
             loading="lazy"
             onError={() => setThumbOk(false)}

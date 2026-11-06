@@ -77,7 +77,14 @@ export function browse()             { return get("/browse"); }
 export function browseData()         { return get("/browse?title=Select+data+directory"); }
 export function browseFile()         { return get("/browse-file"); }
 export function readFileTags(path)   { return post("/read-file-tags", { file_path: path }); }
+// The library list comes without descriptions (half its bytes): one video
+// alone carries its own, and search asks the backend which descriptions match.
 export function getVideos()        { return get("/videos"); }
+export function getVideo(id)       { return get(`/videos/${id}`); }
+export function searchDescriptions(q, signal) {
+  return fetch(`${BASE}/search/descriptions?q=${encodeURIComponent(q)}`, { headers: CSRF_HEADERS, signal })
+    .then(r => (r.ok ? r.json() : { ids: [] }));
+}
 export function getWanted()        { return get("/wanted"); }
 export function getIgnored()       { return get("/ignored"); }
 export function deleteVideo(id)    { return del(`/videos/${id}`); }
@@ -98,8 +105,11 @@ export function importInspect(file)   { return get(`/import/inspect?file=${encod
 export function importThumbUrl(file)  { return `${BASE}/import/thumb?file=${encodeURIComponent(file)}`; }
 export function importFetchMeta(file, videoId) { return post("/import/fetch-meta", { file, video_id: videoId }); }
 export function importEnrich(file, fields) { return post("/import/enrich", { file, fields }); }
-export function thumbUrl(id)       { return `${BASE}/thumb/${id}`; }
-export function latestThumbUrl(id) { return `${BASE}/thumb-latest/${id}`; }
+// size: "card" or "avatar" asks the backend for a scaled-down copy, a
+// fraction of the full-size file; left out, the original (player poster).
+const sized = size => (size ? `?size=${size}` : "");
+export function thumbUrl(id, size)       { return `${BASE}/thumb/${id}${sized(size)}`; }
+export function latestThumbUrl(id, size) { return `${BASE}/thumb-latest/${id}${sized(size)}`; }
 export function streamUrl(id)      { return `${BASE}/stream/${id}`; }
 export function getPlaylists()           { return get("/playlists"); }
 export function createPlaylist(name)     { return post("/playlists", { name }); }
@@ -128,9 +138,12 @@ export function exportJsonUrl()    { return `${BASE}/export/json`; }
 // A chosen picture keeps its URL, so the version saved this session rides
 // along: every <img> showing the artist reloads instead of keeping the old one.
 const avatarVersions = Object.create(null);
-export function artistThumbUrl(name) {
-  const v = avatarVersions[name];
-  return `${BASE}/artist-thumb/${encodeURIComponent(name)}${v ? `?v=${v}` : ""}`;
+export function artistThumbUrl(name, size = "avatar") {
+  const q = new URLSearchParams();
+  if (avatarVersions[name]) q.set("v", avatarVersions[name]);
+  if (size) q.set("size", size);
+  const qs = q.toString();
+  return `${BASE}/artist-thumb/${encodeURIComponent(name)}${qs ? `?${qs}` : ""}`;
 }
 export function getArtistAvatars()   { return get("/artist-avatars"); }
 export function artistAvatarSrcUrl(token) { return `${BASE}/artist-avatar-src/${encodeURIComponent(token)}`; }

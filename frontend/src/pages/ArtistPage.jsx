@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom"
 import { goBack } from "../lib/nav";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useDescriptionHits } from "../lib/descSearch";
 import { useSortPins } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
 import { useRememberedPage, useRememberedState } from "../lib/usePagination";
@@ -131,9 +132,10 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
 
   const q = (query || "").trim();
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
+  const descHits = useDescriptionHits(q);
   const [page, setPage] = useRememberedPage(`artist:${artist}`, [q, sort, dir]);
   const artistVideos  = sortVideos(
-    videos.filter(v => artistsOf(v).includes(artist) && videoMatches(v, q)),
+    videos.filter(v => artistsOf(v).includes(artist) && videoMatches(v, q, descHits)),
     sort, dir, pins
   );
 

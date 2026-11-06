@@ -4,6 +4,7 @@ import { goBack } from "../lib/nav";
 import { getTagVideos, getTagSegments } from "../lib/api";
 import { readLayout, saveLayout } from "../lib/layout";
 import { sortVideos, videoMatches } from "../lib/sort";
+import { useDescriptionHits } from "../lib/descSearch";
 import { useSortPins } from "../lib/sortPins";
 import { fmtTime } from "../lib/fmt";
 import { useRememberedPage, useRememberedState } from "../lib/usePagination";
@@ -62,6 +63,7 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
 
   const q = (query || "").trim();
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
+  const descHits = useDescriptionHits(q);
   const [page, setPage] = useRememberedPage(`tag:${id}`, [q, sort, dir]);
 
   function switchLayout(next) { setLayout(next); saveLayout(next); }
@@ -81,7 +83,7 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
     );
   }
 
-  const sorted     = sortVideos(q ? videos.filter(v => videoMatches(v, q)) : videos, sort, dir, pins);
+  const sorted     = sortVideos(q ? videos.filter(v => videoMatches(v, q, descHits)) : videos, sort, dir, pins);
   const pageCount  = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const safePage   = Math.min(page, pageCount);
   const pageVideos = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);

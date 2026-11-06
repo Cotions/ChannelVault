@@ -312,7 +312,7 @@ export default function AvatarPicker({ artist, videos, onClose, onSaved }) {
                     onClick={() => pick({ video_id: v.video_id })}
                     title={v.title || v.video_id}
                   >
-                    <img src={latestThumbUrl(v.video_id)} alt="" loading="lazy"
+                    <img src={latestThumbUrl(v.video_id, "avatar")} alt="" loading="lazy"
                          onError={e => { e.currentTarget.parentElement.style.display = "none"; }} />
                   </button>
                 ))}
