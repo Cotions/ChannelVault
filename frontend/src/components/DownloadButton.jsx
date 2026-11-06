@@ -71,19 +71,33 @@ function bestNote(heights) {
   return top ? `${Math.min(top, 1080)}p` : "";
 }
 
+// 0.4s under ten seconds, 12s after: tenths stop mattering once it's slow.
+function fmtSecs(ms) {
+  if (ms == null) return "";
+  const s = ms / 1000;
+  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+}
+
 function DownloadDialog({ video, def, onStart, onClose }) {
   const [sizes, setSizes] = useState("loading");   // "loading", { heights, audio } or { error }
   const [pick,  setPick]  = useState(def || "best");
+  const [elapsed, setElapsed] = useState(0);          // ms since yt-dlp was asked
+  const [took,    setTook]    = useState(null);       // ms it took to answer
   const downOnBackdrop = useRef(false);
 
-  // Ask yt-dlp right away: the sizes are what the choice is about.
+  // Ask yt-dlp right away: the sizes are what the choice is about. A ticking
+  // timer shows while it thinks, and how long it took once it answers.
   useEffect(() => {
     let live = true;
+    const t0 = performance.now();
+    setSizes("loading"); setElapsed(0); setTook(null);
+    const tick = setInterval(() => { if (live) setElapsed(performance.now() - t0); }, 100);
+    const done = r => { if (!live) return; clearInterval(tick); setTook(performance.now() - t0); setSizes(r); };
     getDownloadFormats(video.video_id).then(
-      r => { if (live) setSizes(r); },
-      e => { if (live) setSizes({ error: e.detail || "Could not ask yt-dlp" }); },
+      done,
+      e => done({ error: e.detail || "Could not ask yt-dlp" }),
     );
-    return () => { live = false; };
+    return () => { live = false; clearInterval(tick); };
   }, [video.video_id]);
 
   useEffect(() => {
@@ -135,16 +149,44 @@ function DownloadDialog({ video, def, onStart, onClose }) {
 
         <div className="dl-dialog-head">
           Quality
-          {sizes === "loading" && <span className="dl-dialog-status">Checking sizes…</span>}
-          {sizes?.error && <span className="dl-dialog-status is-bad" title={sizes.error}>Sizes unavailable</span>}
+          {sizes === "loading" && (
+            <span className="dl-dialog-status is-loading">
+              <span className="dl-dialog-spinner" />Checking sizes
+              <span className="dl-dialog-timer">{fmtSecs(elapsed)}</span>
+            </span>
+          )}
+          {sizes?.error && (
+            <span className="dl-dialog-status is-bad" title={sizes.error}>
+              Sizes unavailable <span className="dl-dialog-timer">{fmtSecs(took)}</span>
+            </span>
+          )}
+          {sizes !== "loading" && !sizes?.error && !loaded && (
+            <span className="dl-dialog-status" title="yt-dlp answered but listed no downloadable formats">
+              No sizes listed <span className="dl-dialog-timer">{fmtSecs(took)}</span>
+            </span>
+          )}
+          {loaded && took != null && (sizes.cached ? (
+            <span className="dl-dialog-status is-done is-cached" title="Asked yt-dlp in the last 10 minutes; this is that answer">
+              <Icon name="check" size={11} />Cached{sizes.took != null && <> · took <span className="dl-dialog-timer">{fmtSecs(sizes.took * 1000)}</span></>}
+            </span>
+          ) : (
+            <span className="dl-dialog-status is-done" title="How long yt-dlp took to list this video's formats">
+              <Icon name="check" size={11} />Sizes in <span className="dl-dialog-timer">{fmtSecs(took)}</span>
+            </span>
+          ))}
         </div>
-        <div className="dl-dialog-options" role="radiogroup">
-          {options.map(o => (
+        <div className={`dl-dialog-sweep${sizes === "loading" ? " is-on" : ""}`} />
+        <div className={`dl-dialog-options${loaded ? " is-loaded" : ""}`} role="radiogroup">
+          {options.map((o, i) => (
             <label key={o.q} className={`dl-option${o.q === chosen ? " is-on" : ""}`}>
               <input type="radio" name="dl-quality" value={o.q} checked={o.q === chosen} onChange={() => setPick(o.q)} />
               <span className="dl-option-name">{o.name}</span>
               {o.q === def && <span className="dl-menu-def">default</span>}
-              {o.note && <span className="dl-option-note">{o.note}</span>}
+              {o.note && (
+                <span key={loaded ? "real" : "guess"} className="dl-option-note" style={loaded ? { animationDelay: `${i * 35}ms` } : undefined}>
+                  {o.note}
+                </span>
+              )}
             </label>
           ))}
         </div>
