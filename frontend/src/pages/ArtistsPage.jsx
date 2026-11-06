@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { artistThumbUrl, getCreators, getChannelStatuses, getArtistRatings } from "../lib/api";
 import { ratingStyle, ratingsOn } from "../lib/rating";
-import { Stars } from "../components/Rating";
 import { CHANNEL_STATUS } from "../lib/channelStatus";
 import { artistsOf } from "../lib/artists";
 import { recDate } from "../lib/sort";
@@ -92,7 +91,7 @@ function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
   const [failed, setFailed] = useState(null);   // the URL that 404'd; a new picture gets a new chance
   const hasThumb = failed !== thumb;
   const gone = CHANNEL_STATUS[stats.status]?.gone;
-  // Their rating's color on the border (Settings → Appearance); the stars say it too.
+  // Their rating's color on the border (Settings → Appearance): the card's only sign of it.
   const rated = ratingStyle(stats.rating, rating);
   return (
     <div
@@ -108,7 +107,6 @@ function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
           )}
         </span>
         <span className="creator-name" title={name}>{name}</span>
-        {ratingsOn(rating) && <Stars rating={stats.rating} />}
         {CHANNEL_STATUS[stats.status] && (
           <span className={`channel-status-badge is-${stats.status}`}>{CHANNEL_STATUS[stats.status].label}</span>
         )}
@@ -120,8 +118,8 @@ function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
             </span>
           )}
           {stats.wanted > 0 && (
-            <span className="creator-count-wanted" title={`${stats.wanted} wanted`}>
-              <Icon name="download" size={11} />{stats.wanted}
+            <span className="creator-count-wanted" title={`${stats.wanted} wanted: not downloaded yet`}>
+              <Icon name="download" size={11} />{stats.wanted}<span className="creator-count-tag">wanted</span>
             </span>
           )}
           {stats.ignored > 0 && (

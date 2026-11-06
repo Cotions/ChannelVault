@@ -825,6 +825,7 @@ button:disabled { opacity: 0.4; cursor: default; }
   padding: 3px 6px;
 }
 .creator-count-wanted  { color: #9ecbff; background: rgba(91, 157, 255, 0.16); }
+.creator-count-tag { font-family: var(--body); font-size: 10px; font-weight: 600; letter-spacing: 0.4px; margin-left: 2px; }
 .creator-count-ignored { color: #ffb3b5; background: rgba(229, 72, 77, 0.16); }
 .creator-metric {
   font-family: var(--mono);
