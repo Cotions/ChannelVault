@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { artistThumbUrl, getCreators, getChannelStatuses } from "../lib/api";
+import { artistThumbUrl, getCreators, getChannelStatuses, getArtistRatings } from "../lib/api";
+import { ratingStyle, ratingsOn } from "../lib/rating";
+import { Stars } from "../components/Rating";
 import { CHANNEL_STATUS } from "../lib/channelStatus";
 import { artistsOf } from "../lib/artists";
 import { recDate } from "../lib/sort";
@@ -63,6 +65,7 @@ const SORTS = [
                                                  line: s => s.creator?.total_views != null && `${fmt(s.creator.total_views)} channel views` },
   { value: "chvideos", label: "Channel videos",  key: s => s.creator?.video_count ?? null,
                                                  line: s => s.creator?.video_count != null && `${fmt(s.creator.video_count)} on channel` },
+  { value: "rating",   label: "Rating",          key: s => s.rating || null, rated: true },
   { value: "status",   label: "Channel status",  key: s => STATUS_RANK[s.status] || 0,
                                                  line: s => s.status ? CHANNEL_STATUS[s.status]?.label : "Active" },
   { group: "Other" },
@@ -84,15 +87,17 @@ function shuffleKey(name, seed) {
   return h >>> 0;
 }
 
-function ArtistCard({ name, stats, line, index, onPickPicture }) {
+function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
   const thumb = artistThumbUrl(name);
   const [failed, setFailed] = useState(null);   // the URL that 404'd; a new picture gets a new chance
   const hasThumb = failed !== thumb;
   const gone = CHANNEL_STATUS[stats.status]?.gone;
+  // Their rating's color on the border (Settings → Appearance); the stars say it too.
+  const rated = ratingStyle(stats.rating, rating);
   return (
     <div
-      className={`creator-card${gone ? " is-gone" : ""}`}
-      style={{ animationDelay: `${Math.min(index, 24) * 22}ms` }}
+      className={`creator-card${gone ? " is-gone" : ""}${rated.className}`}
+      style={{ ...rated.style, animationDelay: `${Math.min(index, 24) * 22}ms` }}
     >
       <Link to={`/artist/${encodeURIComponent(name)}`} className="creator-card-link">
         <span className="creator-avatar-wrap">
@@ -103,6 +108,7 @@ function ArtistCard({ name, stats, line, index, onPickPicture }) {
           )}
         </span>
         <span className="creator-name" title={name}>{name}</span>
+        {ratingsOn(rating) && <Stars rating={stats.rating} />}
         {CHANNEL_STATUS[stats.status] && (
           <span className={`channel-status-badge is-${stats.status}`}>{CHANNEL_STATUS[stats.status].label}</span>
         )}
@@ -138,10 +144,12 @@ function ArtistCard({ name, stats, line, index, onPickPicture }) {
   );
 }
 
-export default function ArtistsPage({ videos, wanted, ignored, query }) {
+export default function ArtistsPage({ videos, wanted, ignored, query, rating }) {
   const q = (query || "").trim().toLowerCase();
   const [creators, setCreators] = useState([]);
   const [statuses, setStatuses] = useState({});
+  const [ratings, setRatings] = useState({});
+  const showRatings = ratingsOn(rating);
   const [sort, setSort] = useRememberedState("artists:sort", "videos");
   const [dir, setDir] = useRememberedState("artists:dir", "desc");
   const [seed, setSeed] = useRememberedState("artists:seed", 1);
@@ -152,6 +160,7 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
     let alive = true;
     getCreators().then(c => { if (alive) setCreators(c || []); }).catch(() => {});
     getChannelStatuses().then(m => { if (alive) setStatuses(m || {}); }).catch(() => {});
+    getArtistRatings().then(m => { if (alive) setRatings(m || {}); }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
@@ -194,11 +203,16 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
     for (const v of ignored) for (const name of artistsOf(v)) of(name).ignored++;
     // Channels saved from YouTube's About panel show up even with nothing in the vault yet.
     for (const c of creators) of(c.channel_name).creator = c;
-    for (const name in out) out[name].status = statuses[name]?.status || null;
+    for (const name in out) {
+      out[name].status = statuses[name]?.status || null;
+      out[name].rating = ratings[name] || null;
+    }
     return out;
-  }, [videos, wanted, ignored, creators, statuses]);
+  }, [videos, wanted, ignored, creators, statuses, ratings]);
 
-  const spec = SORT_BY[sort] || SORT_BY.videos;
+  // Ratings switched off: no Rating sort either (a remembered one falls back).
+  const sorts = useMemo(() => SORTS.filter(o => showRatings || !o.rated), [showRatings]);
+  const spec = (SORT_BY[sort]?.rated && !showRatings ? null : SORT_BY[sort]) || SORT_BY.videos;
   const artists = useMemo(() => {
     let list = Object.entries(allStats);
     if (q) list = list.filter(([name]) => name.toLowerCase().includes(q));
@@ -237,7 +251,7 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
         <span className="page-head-spacer" />
         <div className="sort-controls">
           <select className="sort-select" value={spec.value} onChange={e => chooseSort(e.target.value)} title="Sort artists">
-            {SORTS.reduce((acc, o) => {
+            {sorts.reduce((acc, o) => {
               if (o.group) acc.push({ label: o.group, items: [] });
               else acc[acc.length - 1].items.push(o);
               return acc;
@@ -274,6 +288,7 @@ export default function ArtistsPage({ videos, wanted, ignored, query }) {
               index={i}
               line={(spec.line ? spec.line(stats) : null) || defaultLine(stats)}
               onPickPicture={setPicking}
+              rating={rating}
             />
           ))}
         </div>

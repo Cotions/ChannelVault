@@ -7,7 +7,9 @@ import { useDescriptionHits } from "../lib/descSearch";
 import { useSortPins } from "../lib/sortPins";
 import { artistsOf } from "../lib/artists";
 import { useRememberedPage, useRememberedState } from "../lib/usePagination";
-import { getCreator, getCreators, getArtistLinks, linkArtists, unlinkArtist, getChannelStatuses, setChannelStatus, artistThumbUrl, scan } from "../lib/api";
+import { getCreator, getCreators, getArtistLinks, linkArtists, unlinkArtist, getChannelStatuses, setChannelStatus, getArtistRatings, setArtistRating, artistThumbUrl, scan } from "../lib/api";
+import { ratingsOn } from "../lib/rating";
+import { RatingInput } from "../components/Rating";
 import { CHANNEL_STATUS, markedOn } from "../lib/channelStatus";
 import { describeLink } from "../lib/socials";
 import { fmt, safeUrl } from "../lib/fmt";
@@ -36,7 +38,7 @@ export default function ArtistPage(props) {
   return <ArtistPageBody key={name} {...props} />;
 }
 
-function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
+function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings, onDelete, onRemoveMark, onEdit, onFetchMeta, playlists, onAddToPlaylist, onScanDone }) {
   const { name } = useParams();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -52,6 +54,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
   const [linking, setLinking] = useState(false);
   const [creatorNames, setCreatorNames] = useState([]);
   const [channelMark, setChannelMark] = useState(null);   // { status, marked_at } or null
+  const [rating, setRating] = useState(null);             // 1 to 10 (half stars), null = not rated
+  const [ratingBusy, setRatingBusy] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [pickingPicture, setPickingPicture] = useState(false);
   const [, setPictureTick] = useState(0);   // re-render so every avatar picks up the new picture
@@ -67,8 +71,21 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
     } catch { setChannelMark(prev); }
   }
 
+  // Saved at once; put back if the backend says no.
+  async function handleRate(next) {
+    const prev = rating;
+    setRating(next);
+    setRatingBusy(true);
+    try {
+      const r = await setArtistRating(artist, next);
+      if (!r.ok) setRating(prev);
+    } catch { setRating(prev); }
+    setRatingBusy(false);
+  }
+
   useEffect(() => {
     let alive = true;
+    getArtistRatings().then(m => { if (alive) setRating(m?.[artist] || null); }).catch(() => {});
     getCreator(artist).then(c => { if (alive) setCreator(c); }).catch(() => {});
     getArtistLinks(artist).then(l => { if (alive) setLinked(l || []); }).catch(() => {});
     getChannelStatuses().then(m => { if (alive) setChannelMark(m?.[artist] || null); }).catch(() => {});
@@ -176,6 +193,9 @@ function ArtistPageBody({ videos, wanted, ignored, query, onDelete, onRemoveMark
             >
               {CHANNEL_STATUS[channelMark.status].label}
             </span>
+          )}
+          {ratingsOn(ratingSettings) && (
+            <RatingInput value={rating} busy={ratingBusy} onChange={handleRate} size={18} />
           )}
           <button className="artist-rename-btn" onClick={() => setRenaming(true)} title="Rename this artist, or merge it into another">
             <Icon name="pencil" size={13} />
