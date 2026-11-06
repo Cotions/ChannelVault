@@ -6307,7 +6307,8 @@ def download_formats(video_id):
         return jsonify({"ok": False, "error": "yt-dlp is not installed (not on the PATH)"}), 400
     hit = _dl_formats_cache.get(video_id)
     if hit and time.time() - hit[0] < 600:
-        return jsonify(hit[1])
+        return jsonify({**hit[1], "cached": True})
+    t0 = time.monotonic()
     try:
         r = _ytdlp("-J", "--no-playlist", "--", f"https://www.youtube.com/watch?v={video_id}", timeout=60)
     except subprocess.TimeoutExpired:
@@ -6318,7 +6319,8 @@ def download_formats(video_id):
         info = json.loads(r.stdout)
     except ValueError:
         return jsonify({"ok": False, "error": "yt-dlp gave an unreadable answer"}), 502
-    answer = {"ok": True, **_dl_summarize_formats(info)}
+    # How long yt-dlp took, kept so a cached answer can still say it.
+    answer = {"ok": True, **_dl_summarize_formats(info), "took": round(time.monotonic() - t0, 2)}
     _dl_formats_cache[video_id] = (time.time(), answer)
     # Keep the length on a wanted or skipped entry that has none; a
     # downloaded one has its file's.
