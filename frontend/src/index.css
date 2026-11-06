@@ -838,6 +838,53 @@ button:disabled { opacity: 0.4; cursor: default; }
   text-overflow: ellipsis;
 }
 
+/* A rated artist's card: the border of their rating's band (Settings →
+   Appearance → Artist ratings, lib/rating.js), set by the card as
+   --rating-color; the top band's twice as thick, inside the border so
+   nothing moves. Unrated, below the first band, or ratings off: plain. */
+.creator-card.is-rated, .creator-card.is-rated:hover { border-color: var(--rating-color); }
+.creator-card.is-rated:hover { box-shadow: 0 0 22px -6px var(--rating-color), var(--lift); }
+.creator-card.is-rated.is-top-band { box-shadow: inset 0 0 0 1px var(--rating-color); }
+.creator-card.is-rated.is-top-band:hover { box-shadow: inset 0 0 0 1px var(--rating-color), 0 0 22px -6px var(--rating-color), var(--lift); }
+
+/* Stars (components/Rating.jsx): an outline, the filled star over it cut to
+   its share. Gold in every theme: the stars say the rating, the border's
+   band color is the user's. */
+.stars, .rating-input { display: inline-flex; align-items: center; gap: 1px; flex: none; line-height: 0; }
+.star { position: relative; display: inline-block; flex: none; }
+.star svg { display: block; }
+.star-empty path { fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linejoin: round; }
+.star-fill { position: absolute; inset: 0 auto 0 0; overflow: hidden; }
+.star-fill path { fill: #e8b931; stroke: #e8b931; stroke-width: 1.6; stroke-linejoin: round; }
+.rating-input { gap: 2px; padding: 2px; border-radius: 6px; cursor: pointer; width: max-content; vertical-align: middle; }
+.rating-input:focus-visible { outline: none; box-shadow: var(--ring); }
+.rating-input.is-busy { cursor: progress; opacity: 0.7; }
+.artist-page-title .rating-input { margin-left: 10px; }
+
+/* Settings → Artist ratings: a band's color, where it starts, a sample card
+   with its border, Remove. The sample shrinks first on a narrow screen. */
+.rating-bands { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.rating-band { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rating-band-color {
+  flex: none; width: 40px; height: 32px; padding: 2px; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+}
+.rating-band-color:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.rating-band-min { display: flex; align-items: center; gap: 6px; flex: none; font-size: 12px; color: var(--muted); }
+.rating-band-min .sort-select { min-width: 0; height: 32px; }
+.rating-sample {
+  flex: 0 1 220px; min-width: 0; display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+}
+.rating-sample.is-rated { border-color: var(--rating-color); }
+.rating-sample.is-rated.is-top-band { box-shadow: inset 0 0 0 1px var(--rating-color); }
+.rating-sample-reach { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rating-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rating-problem { font-size: 12px; color: #ffb3b5; margin-bottom: 8px; }
+.rating-msg { font-size: 12px; margin-top: 8px; }
+.rating-msg.ok { color: var(--accent-text); }
+.rating-msg.err { color: #ffb3b5; }
+
 /* Channel marked inactive: tag the name; dim the avatar when it is off YouTube. */
 .creator-card.is-gone .creator-avatar { filter: grayscale(1); opacity: 0.6; }
 .creator-card.is-gone .creator-name { color: var(--text-dim); }

@@ -291,6 +291,8 @@ export default function App() {
           initialRoots={cfg.media_roots}
           onScanDone={load}
           onProfilesChanged={loadProfiles}
+          rating={cfg.rating}
+          onRatingSaved={r => setCfg(c => ({ ...c, rating: r }))}
           initialTab={showWatchFolder === "profiles" ? "profiles" : "library"}
         />
       )}
@@ -373,7 +375,7 @@ export default function App() {
             />
             <Route
               path="/artists"
-              element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} />}
+              element={<ArtistsPage videos={videos} wanted={wanted} ignored={ignored} query={query} rating={cfg.rating} />}
             />
             <Route path="/wanted-videos" element={<WantedPage wanted={wanted} ignored={ignored} query={query} onRemoveMark={handleRemoveMark} />} />
             <Route path="/inbox" element={<InboxPage query={query} onMarked={handleInboxMarked} />} />
@@ -387,7 +389,7 @@ export default function App() {
             <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
             <Route
               path="/artist/:name"
-              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={handleEdit} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} onScanDone={load} />}
+              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} rating={cfg.rating} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={handleEdit} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} onScanDone={load} />}
             />
             <Route
               path="/video/:id"

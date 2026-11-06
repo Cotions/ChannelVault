@@ -12,7 +12,7 @@ const TABS = [
   { id: "appearance", label: "Appearance", icon: "palette" },
 ];
 
-export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone, onProfilesChanged, initialTab = "library" }) {
+export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone, onProfilesChanged, rating, onRatingSaved, initialTab = "library" }) {
   const [tab, setTab] = useState(initialTab);
 
   return (
@@ -56,7 +56,7 @@ export default function SettingsModal({ onClose, initialDir, initialDataDir, ini
             )}
             {tab === "appearance" && (
               <div className="watch-folder-body">
-                <AppearanceSettings />
+                <AppearanceSettings rating={rating} onRatingSaved={onRatingSaved} />
               </div>
             )}
           </div>

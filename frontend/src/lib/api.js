@@ -182,6 +182,9 @@ export function renameArtist(from, to, dryRun = false) { return post("/artist-re
 export function keepArtistName(name) { return post("/artist-rename/keep", { name }); }
 export function getChannelStatuses()  { return get("/channel-status"); }
 export function setChannelStatus(name, status) { return post("/channel-status", { channel_name: name, status }); }
+export function getArtistRatings()    { return get("/artist-ratings"); }
+export function setArtistRating(name, rating) { return post("/artist-ratings", { channel_name: name, rating }); }
+export function saveRatingSettings(rating) { return post("/config", { rating }); }
 
 // Tags and segments
 export function getTags()                    { return get("/tags"); }

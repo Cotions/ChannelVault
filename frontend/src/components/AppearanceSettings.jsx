@@ -6,6 +6,9 @@ import {
 } from "../lib/theme";
 import { useEffectPrefs, setEffectsEnabled, setFallbackEffect } from "../lib/profileEffects";
 import { EFFECTS } from "./effects";
+import { Stars } from "./Rating";
+import { saveRatingSettings } from "../lib/api";
+import { bandsProblem, DEFAULT_RATING, MAX_RATING, starsShort, withBand } from "../lib/rating";
 
 // Which palette variable each pinnable role shows when left on auto.
 const ROLE_VAR = {
@@ -139,7 +142,108 @@ function ProfileEffectSettings() {
   );
 }
 
-export default function AppearanceSettings() {
+
+/* Artist ratings: on or off as a whole (off, no stars, borders or rating
+   sort anywhere, and nothing to rate with), and the border color a rated
+   artist's card takes, by band. The switch saves at once; the bands are a
+   draft until Save. Saved in config.json, for every browser and profile. */
+function RatingSettings({ saved, onSaved }) {
+  const [draft,  setDraft]  = useState(saved.bands);
+  const [saving, setSaving] = useState(false);
+  const [msg,    setMsg]    = useState(null);
+  const problem = bandsProblem(draft);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(saved.bands);
+
+  async function send(next, okText) {
+    setSaving(true);
+    setMsg(null);
+    try {
+      const r = await saveRatingSettings(next);
+      if (r?.ok) { onSaved?.(r.rating || next); if (okText) setMsg({ ok: true, text: okText }); }
+      else setMsg({ ok: false, text: r?.error || "Save failed." });
+    } catch (err) {
+      setMsg({ ok: false, text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const edit = next => { setDraft(next); setMsg(null); };
+  const editBand = (i, change) => edit(draft.map((b, j) => (j === i ? { ...b, ...change } : b)));
+  const added = withBand(draft);
+  const isDefault = JSON.stringify(draft) === JSON.stringify(DEFAULT_RATING.bands);
+
+  return (
+    <>
+      <div className="card-title" style={{ marginTop: "24px" }}>Artist ratings</div>
+      <label className="pfx-setting">
+        <input type="checkbox" checked={saved.enabled} disabled={saving}
+               onChange={e => send({ enabled: e.target.checked, bands: saved.bands })} />
+        Rate artists, and color their card&rsquo;s border by rating
+      </label>
+      {saved.enabled ? (
+        <form onSubmit={e => { e.preventDefault(); if (!problem) send({ enabled: true, bands: draft }, "Saved."); }}>
+          <div style={{ fontSize: "11px", color: "var(--muted)", margin: "10px 0" }}>
+            A rated artist&rsquo;s card takes the color of the highest band that starts at or below their
+            rating. Below the first band, and not rated: the plain border.
+          </div>
+          <ul className="rating-bands" aria-label="Rating bands">
+            {draft.map((b, i) => {
+              const top = i === draft.length - 1;
+              const reach = top ? "Top band" : draft[i + 1].min > b.min ? `Up to ${starsShort(draft[i + 1].min - 1)}★` : "";
+              return (
+                <li key={i} className="rating-band">
+                  <input type="color" className="rating-band-color" value={b.color}
+                         aria-label={`Color from ${starsShort(b.min)} stars`}
+                         onChange={e => editBand(i, { color: e.target.value.toLowerCase() })} />
+                  <label className="rating-band-min">
+                    <span>From</span>
+                    <select className="sort-select" value={b.min} aria-label={`Band ${i + 1} starts at`}
+                            onChange={e => editBand(i, { min: Number(e.target.value) })}>
+                      {Array.from({ length: MAX_RATING }, (_, n) => n + 1).map(n => (
+                        <option key={n} value={n}>{starsShort(n)}★</option>
+                      ))}
+                    </select>
+                  </label>
+                  <span className={`rating-sample is-rated${top ? " is-top-band" : ""}`} style={{ "--rating-color": b.color }}>
+                    <Stars rating={b.min} />
+                    <span className="rating-sample-reach" title={reach}>{reach}</span>
+                  </span>
+                  <button type="button" className="icon-btn-sm danger" disabled={draft.length <= 1}
+                          aria-label={`Remove the band from ${starsShort(b.min)} stars`} title="Remove"
+                          onClick={() => edit(draft.filter((_, j) => j !== i))}>
+                    <Icon name="trash" size={13} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          {problem && <div className="rating-problem">{problem}</div>}
+          <div className="rating-actions">
+            <button type="button" className="btn-secondary btn-export" disabled={!added} onClick={() => edit(added)}
+                    title={added ? "A band half a star above the last" : "The last band starts at 5 stars, or there are 10"}>
+              <Icon name="plus" size={13} />Add a band
+            </button>
+            <button type="submit" className="btn-primary" disabled={saving || !dirty || !!problem}>
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button type="button" className="btn-ghost" disabled={isDefault} onClick={() => edit(DEFAULT_RATING.bands)}>
+              Reset to defaults
+            </button>
+            {dirty && <button type="button" className="btn-ghost" onClick={() => edit(saved.bands)}>Discard changes</button>}
+          </div>
+        </form>
+      ) : (
+        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "10px" }}>
+          Ratings are hidden everywhere. Ratings already given are kept for when you turn them back on.
+        </div>
+      )}
+      {msg && <div className={`rating-msg ${msg.ok ? "ok" : "err"}`} role="alert">{msg.text}</div>}
+    </>
+  );
+}
+
+export default function AppearanceSettings({ rating, onRatingSaved }) {
   const [custom, setCustom] = useState(getCustomThemes);
   const [activeId, setActiveId] = useState(getActiveId);
   const [editing, setEditing] = useState(null);
@@ -225,6 +329,9 @@ export default function AppearanceSettings() {
       )}
 
       {!editing && <ProfileEffectSettings />}
+      {!editing && (
+        <RatingSettings saved={rating || DEFAULT_RATING} onSaved={onRatingSaved} />
+      )}
     </>
   );
 }

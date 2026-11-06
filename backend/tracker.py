@@ -397,6 +397,61 @@ def _profile_defaults(p):
     return p
 
 
+# Artist ratings (Settings → Appearance): on or off as a whole (off, no
+# stars, no borders, no rating sort, nothing to rate with), and the border
+# color an artist's card takes from its rating. One color per band; a rating
+# takes the band with the highest ``min`` at or below it, and one below the
+# first band keeps the plain border, as an unrated artist always does. Shared
+# by every profile, as the rest of the top level of config.json is.
+MAX_RATING = 10
+MAX_RATING_BANDS = 10
+RATING_DEFAULT = {"enabled": True, "bands": [
+    {"min": 1, "color": "#d9534f"},            # red
+    {"min": 4, "color": "#f0ad4e"},            # orange: two stars
+    {"min": 6, "color": "#e6c84a"},            # yellow: three
+    {"min": 8, "color": "#5cb85c"},            # green: four
+    {"min": 10, "color": "#d4af37"},           # gold: five
+]}
+_HEX_COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def clean_rating_settings(value):
+    """Rating settings from a request, as (value, None) or (None, error):
+    {"enabled": bool, "bands": [{"min", "color"}]}, 1 to 10 bands, each
+    ``min`` a whole number from 1 to 10, strictly increasing, each color
+    ``#rrggbb`` (stored lowercase)."""
+    if not isinstance(value, dict) or set(value) != {"enabled", "bands"}:
+        return None, "rating must be { enabled: true or false, bands: [{ min, color }] }"
+    if not isinstance(value["enabled"], bool):
+        return None, "rating.enabled must be true or false"
+    bands = value["bands"]
+    if not isinstance(bands, list) or not 1 <= len(bands) <= MAX_RATING_BANDS:
+        return None, f"rating.bands must be a list of 1 to {MAX_RATING_BANDS} bands"
+    out = []
+    for b in bands:
+        if not isinstance(b, dict) or set(b) != {"min", "color"}:
+            return None, "each band must be { min, color }"
+        low, color = b["min"], b["color"]
+        if not isinstance(low, int) or isinstance(low, bool) or not 1 <= low <= MAX_RATING:
+            return None, f"a band's min must be a whole number from 1 to {MAX_RATING} (half stars: 4 is two stars)"
+        if out and low <= out[-1]["min"]:
+            return None, "the bands' min must go up, each above the one before"
+        if not isinstance(color, str) or not _HEX_COLOR.fullmatch(color):
+            return None, f"a band's color must be #rrggbb, not {str(color)[:20]!r}"
+        out.append({"min": low, "color": color.lower()})
+    return {"enabled": value["enabled"], "bands": out}, None
+
+
+def rating_settings(saved):
+    """The rating settings in use: config.json's, else the defaults (also
+    for a hand-edited value that doesn't read)."""
+    if saved is not None:
+        clean, error = clean_rating_settings(saved)
+        if error is None:
+            return clean
+    return {"enabled": RATING_DEFAULT["enabled"], "bands": [dict(b) for b in RATING_DEFAULT["bands"]]}
+
+
 def load_config():
     raw  = _read_raw_config()
     prof = _profile_defaults(dict(_active_profile(raw)))
@@ -414,6 +469,7 @@ def load_config():
     cfg.setdefault("feed_enabled", True)
     cfg.setdefault("feed_interval_hours", FEED_INTERVAL_DEFAULT)
     cfg.setdefault("feed_shorts", False)
+    cfg["rating"] = rating_settings(cfg.get("rating"))
     return cfg
 
 def save_config(cfg):
@@ -1030,6 +1086,15 @@ def init_db():
             channel_name TEXT PRIMARY KEY,
             quality      TEXT NOT NULL DEFAULT 'best',
             auto         INTEGER NOT NULL DEFAULT 0
+        )
+    ''')
+    # The user's rating of an artist: 1 to 10, the half stars of five (7 is
+    # three and a half). No row means not rated.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS artist_ratings (
+            channel_name TEXT PRIMARY KEY,
+            rating       INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 10),
+            rated_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.execute("CREATE INDEX IF NOT EXISTS idx_feed_items_channel ON feed_items(channel_id)")
@@ -1670,6 +1735,15 @@ def set_config():
                 or not FEED_INTERVAL_MIN <= hours <= FEED_INTERVAL_MAX:
             return bad(f"feed_interval_hours must be {FEED_INTERVAL_MIN} to {FEED_INTERVAL_MAX}")
 
+    if "rating" in body:
+        # null: back to the defaults.
+        if body["rating"] is None:
+            rating = rating_settings(None)
+        else:
+            rating, error = clean_rating_settings(body["rating"])
+            if error:
+                return bad(error)
+
     if "data_directory" in body:
         data_dir = _body_path(body, "data_directory")
         if not data_dir:
@@ -1719,6 +1793,10 @@ def set_config():
             cfg[k] = body[k]
         save_config(cfg)
         _feed_wake.set()          # a shorter interval or a re-enable takes effect now
+
+    if "rating" in body:
+        cfg["rating"] = rating
+        save_config(cfg)
 
     if "data_directory" in body:
         old_db = os.path.join(cfg["data_directory"], "videos.db")
@@ -2440,7 +2518,7 @@ def get_library_video(video_id):
     return jsonify(video)
 
 
-def _fold(s):
+def _search_fold(s):
     """Text as search compares it: accents dropped, lower case. Same as the
     page's fold() in lib/sort.js, so "beyonce" finds "Beyoncé" both sides."""
     return "".join(c for c in unicodedata.normalize("NFD", s or "")
@@ -2468,7 +2546,7 @@ def _folded_descriptions():
     rows = conn.execute("SELECT video_id, description FROM downloaded_videos "
                         "WHERE description IS NOT NULL AND description != ''").fetchall()
     conn.close()
-    folded = [(r["video_id"], _fold(r["description"])) for r in rows]
+    folded = [(r["video_id"], _search_fold(r["description"])) for r in rows]
     _folded_desc_cache = (key, folded)
     return folded
 
@@ -2476,7 +2554,7 @@ def _folded_descriptions():
 def search_descriptions():
     """Ids of the videos whose description holds q. Titles, channels and tags
     are matched in the page; descriptions stay here (see list_videos)."""
-    q = _fold((request.args.get("q") or "")[:200]).strip()
+    q = _search_fold((request.args.get("q") or "")[:200]).strip()
     if len(q) < 2:
         return jsonify({"ids": []})
     return jsonify({"ids": [vid for vid, text in _folded_descriptions() if q in text]})
@@ -5455,6 +5533,44 @@ def set_channel_status():
     return jsonify({"ok": True})
 
 
+@app.get("/artist-ratings")
+def list_artist_ratings():
+    """Every rated artist: {channel_name: rating}, 1 to 10 (half stars)."""
+    conn = get_conn()
+    rows = conn.execute("SELECT channel_name, rating FROM artist_ratings").fetchall()
+    conn.close()
+    return jsonify({r["channel_name"]: r["rating"] for r in rows})
+
+
+@app.post("/artist-ratings")
+def set_artist_rating():
+    """Rate an artist 1 to 10 (half stars: 7 is three and a half); a null
+    rating clears it."""
+    body         = request.get_json(silent=True) or {}
+    channel_name = _body_name(body, "channel_name")
+    rating       = body.get("rating")
+    if not channel_name:
+        return jsonify({"ok": False, "error": "channel_name required"}), 400
+    if rating is not None and (not isinstance(rating, int) or isinstance(rating, bool)
+                               or not 1 <= rating <= MAX_RATING):
+        return jsonify({"ok": False, "error": f"rating must be a whole number from 1 to {MAX_RATING}, or null"}), 400
+    with _db_lock:
+        conn = get_conn()
+        if rating is not None and not _known_artist(conn, channel_name):
+            conn.close()
+            return jsonify({"ok": False, "error": f"no videos from {channel_name}"}), 404
+        if rating is None:
+            conn.execute("DELETE FROM artist_ratings WHERE channel_name = ?", (channel_name,))
+        else:
+            conn.execute('''
+                INSERT INTO artist_ratings (channel_name, rating) VALUES (?, ?)
+                ON CONFLICT(channel_name) DO UPDATE SET rating = excluded.rating, rated_at = CURRENT_TIMESTAMP
+            ''', (channel_name, rating))
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True, "rating": rating})
+
+
 # ---------------------------------------------------------------------------
 # Upload feed
 #
@@ -6443,6 +6559,7 @@ def _rename_artist(conn, src, dst):
 
     _merge_row(conn, "creators", src, dst, [f for f in _CREATOR_FIELDS])
     _merge_row(conn, "channel_status", src, dst, [])
+    _merge_row(conn, "artist_ratings", src, dst, [])
     _merge_row(conn, "artist_avatars", src, dst, [])
     _merge_row(conn, "channel_ids", src, dst, [])
     _merge_row(conn, "download_prefs", src, dst, [])
