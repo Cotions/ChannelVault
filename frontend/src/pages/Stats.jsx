@@ -21,7 +21,7 @@ function RecordCard({ video, label, statText, delay }) {
       className="record-card"
       style={{ animationDelay: `${delay}ms` }}
     >
-      <img className="record-card-bg" src={thumbUrl(video.video_id)} alt="" onError={e => { e.target.style.display = "none"; }} />
+      <img className="record-card-bg" src={thumbUrl(video.video_id, "card")} alt="" onError={e => { e.target.style.display = "none"; }} />
       <div className="record-card-overlay" />
       <div className="record-card-content">
         <span className="record-card-label">{label}</span>

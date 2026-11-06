@@ -11,17 +11,20 @@ export const SORT_OPTIONS = [
 ];
 
 // Case-insensitive match across title, channel, description and tag names.
+// The library list carries no descriptions: `descHits` holds the ids whose
+// description the backend found the query in (useDescriptionHits).
 // Empty/blank query matches everything.
 // Accents don't count: "beyonce" finds "Beyoncé".
-const fold = (s) => (s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+export const fold = (s) => (s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
-export function videoMatches(v, query) {
+export function videoMatches(v, query, descHits) {
   const q = fold(query).trim();
   if (!q) return true;
   return (
     fold(v.title).includes(q) ||
     fold(v.channel_name).includes(q) ||
     fold(v.description).includes(q) ||
+    !!descHits?.has(v.video_id) ||
     (v.tags || []).some(t => fold(t.name).includes(q))
   );
 }

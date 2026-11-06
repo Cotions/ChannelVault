@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Routes, Route, NavLink, useLocation } from "react-router-dom";
-import { getConfig, getVideos, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, getProfiles, shutdownApp, getFeedCount } from "./lib/api";
+import { getConfig, getVideos, getVideo, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, getProfiles, shutdownApp, getFeedCount } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
 import ScrollManager   from "./components/ScrollManager";
@@ -25,6 +25,7 @@ import WantedPage      from "./pages/WantedPage";
 import DownloadQueue from "./components/DownloadQueue";
 import SideDownloads from "./components/SideDownloads";
 import { onDownloadDone } from "./lib/downloads";
+import { clearDescriptionHits } from "./lib/descSearch";
 
 // A deleted tag must leave the Home filter too, or the grid filters on an id
 // nothing carries.
@@ -82,10 +83,37 @@ export default function App() {
 
   const [libVer, setLibVer] = useState(0);
 
+  async function fetchVideos() {
+    clearDescriptionHits();          // a reload may follow an edit or a scan
+    return getVideos();
+  }
+
+  // After an action on one video, that card alone is refetched (with its
+  // description) instead of the whole library. One no longer in the library
+  // leaves; anything unexpected falls back to the full list.
+  async function refreshVideo(id) {
+    try {
+      const v = await getVideo(id);
+      setVideos(prev => prev.some(x => x.video_id === id)
+        ? prev.map(x => (x.video_id === id ? v : x))
+        : [v, ...prev]);
+    } catch (e) {
+      if (e.status === 404) setVideos(prev => prev.filter(x => x.video_id !== id));
+      else setVideos(await fetchVideos());
+    }
+  }
+
+  // The list carries no descriptions, and the edit form saves every field it
+  // shows: it opens on the video fetched whole, or it would save one blank.
+  async function handleEdit(v) {
+    try { setEditVideo(await getVideo(v.video_id)); }
+    catch { setEditVideo(v.description != null ? v : null); }   // offline: no form, rather than a blanking one
+  }
+
   async function load() {
     try {
       const [c, v, w, i, p, t] = await Promise.all([
-        getConfig(), getVideos(), getWanted(), getIgnored(), getPlaylists(), getTags(),
+        getConfig(), fetchVideos(), getWanted(), getIgnored(), getPlaylists(), getTags(),
       ]);
       setCfg(c);
       setVideos(v);
@@ -117,8 +145,7 @@ export default function App() {
     try { setInboxCount((await getFeedCount()).count || 0); } catch { /* offline: load() reports it */ }
   }
   useEffect(() => {
-    loadInboxCount();
-    const t = setInterval(loadInboxCount, 5 * 60 * 1000);
+    const t = setInterval(loadInboxCount, 5 * 60 * 1000);   // load() asks once at mount
     return () => clearInterval(t);
   }, []);
 
@@ -140,20 +167,26 @@ export default function App() {
 
   async function handleFetchMeta(id) {
     const r = await fetchMetadata(id);
-    setVideos(await getVideos());
+    clearDescriptionHits();          // the fetch may have brought a new description
+    await refreshVideo(id);
     // A detected private/deleted video returns ok:false WITH availability — not a
     // transient error, so refresh (to show the badge) but don't surface a failure.
     if (!r.ok && !r.availability) throw new Error(r.error || "fetch failed");
   }
 
-  async function handleWatched() {
-    setVideos(await getVideos());
+  // Its watch count went up: refresh that card alone.
+  async function handleWatched(id) {
+    if (id) await refreshVideo(id);
+    else setVideos(await fetchVideos());
   }
 
-  // Tag or segment edits change what the cards show, so refetch both lists.
-  async function handleTagsChanged() {
-    const [v, t] = await Promise.all([getVideos(), getTags()]);
-    setVideos(v);
+  // Tag or segment edits change what the cards show, so refetch that video
+  // (or the whole library, when the change was not to one video) and the tags.
+  async function handleTagsChanged(id) {
+    const [, t] = await Promise.all([
+      id ? refreshVideo(id) : fetchVideos().then(setVideos),
+      getTags(),
+    ]);
     setTags(t);
     setTagIds(prev => dropDeletedTags(prev, t));
   }
@@ -320,7 +353,7 @@ export default function App() {
                   query={query}
                   onAddToPlaylist={handleAddToPlaylist}
                   onDelete={handleDelete}
-                  onEdit={setEditVideo}
+                  onEdit={handleEdit}
                   onFetchMeta={handleFetchMeta}
                 />
               }
@@ -330,7 +363,7 @@ export default function App() {
               element={
                 <Rediscover
                   videos={videos}
-                  cardProps={{ onDelete: handleDelete, onEdit: setEditVideo, onFetchMeta: handleFetchMeta, playlists, onAddToPlaylist: handleAddToPlaylist }}
+                  cardProps={{ onDelete: handleDelete, onEdit: handleEdit, onFetchMeta: handleFetchMeta, playlists, onAddToPlaylist: handleAddToPlaylist }}
                 />
               }
             />
@@ -348,21 +381,21 @@ export default function App() {
             <Route path="/tags" element={<TagsPage tags={tags} query={query} onChanged={handleTagsChanged} />} />
             <Route
               path="/tag/:id"
-              element={<TagPage libraryVersion={libVer} query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
+              element={<TagPage libraryVersion={libVer} query={query} onEdit={handleEdit} onFetchMeta={handleFetchMeta} onDelete={handleDelete} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
             />
             <Route path="/stats" element={<Stats videos={videos} wanted={wanted} ignored={ignored} />} />
             <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
             <Route
               path="/artist/:name"
-              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} onScanDone={load} />}
+              element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={handleEdit} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} onScanDone={load} />}
             />
             <Route
               path="/video/:id"
-              element={<VideoPage videos={videos} tags={tags} onTagsChanged={handleTagsChanged} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onDelete={handleDelete} />}
+              element={<VideoPage videos={videos} tags={tags} onTagsChanged={handleTagsChanged} onEdit={handleEdit} onFetchMeta={handleFetchMeta} onDelete={handleDelete} />}
             />
             <Route
               path="/playlist/:id"
-              element={<PlaylistPage libraryVersion={libVer} query={query} onEdit={setEditVideo} onFetchMeta={handleFetchMeta} onPlaylistsChanged={async () => setPlaylists(await getPlaylists())} />}
+              element={<PlaylistPage libraryVersion={libVer} query={query} onEdit={handleEdit} onFetchMeta={handleFetchMeta} onPlaylistsChanged={async () => setPlaylists(await getPlaylists())} />}
             />
           </Routes>
         </main>

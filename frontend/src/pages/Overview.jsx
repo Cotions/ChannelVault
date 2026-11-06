@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { sortVideos, videoMatches, hasAllTags } from "../lib/sort";
+import { useDescriptionHits } from "../lib/descSearch";
 import { useSortPins } from "../lib/sortPins";
 import { useRememberedPage, useRememberedState } from "../lib/usePagination";
 import SortControls from "../components/SortControls";
@@ -15,11 +16,12 @@ export default function Overview({ videos, playlists, tags = [], tagIds = [], on
   const q = (query || "").trim();
   const tagKey = tagIds.join(",");   // primitives only for the page-reset deps
   const [page, setPage] = useRememberedPage("home", [q, browseSort, browseDir, tagKey]);
+  const descHits = useDescriptionHits(q);
   const browse = useMemo(() => {
-    let filtered = q ? videos.filter(v => videoMatches(v, q)) : videos;
+    let filtered = q ? videos.filter(v => videoMatches(v, q, descHits)) : videos;
     if (tagIds.length) filtered = filtered.filter(v => hasAllTags(v, tagIds));
     return sortVideos(filtered, q ? "upload" : browseSort, q ? "desc" : browseDir, pins);
-  }, [videos, browseSort, browseDir, q, tagIds, pins]);
+  }, [videos, browseSort, browseDir, q, tagIds, pins, descHits]);
 
   // What the header's tag menu has switched on, in the order it was picked.
   const activeTags = tagIds.map(id => tags.find(t => t.id === id)).filter(Boolean);

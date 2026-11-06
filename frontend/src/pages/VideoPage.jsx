@@ -4,7 +4,7 @@ import { goBack } from "../lib/nav";
 import {
   thumbUrl, artistThumbUrl, getThumbnails, fetchThumbnail, thumbnailVersionUrl,
   getSegments, createSegment, updateSegment, deleteSegment, addSegmentTag, removeSegmentTag,
-  addVideoTag, removeVideoTag, importChapters, getTagSegments,
+  addVideoTag, removeVideoTag, importChapters, getTagSegments, getVideo,
 } from "../lib/api";
 import { artistsOf } from "../lib/artists";
 import { isYouTube, sourceLabel } from "../lib/source";
@@ -70,6 +70,19 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
 
   const video = videos.find(v => v.video_id === id);
 
+  // The library list carries no descriptions; this video's comes on its own.
+  // Asked again when the list hands over a new copy of the video (an edit, a
+  // fetch), so it never shows one that changed since.
+  const [desc, setDesc] = useState(null);           // { id, text }
+  useEffect(() => {
+    if (!video || video.description !== undefined) return;
+    let alive = true;
+    getVideo(id).then(v => { if (alive) setDesc({ id, text: v.description || null }); }, () => {});
+    return () => { alive = false; };
+  }, [id, video]);
+  const description = video?.description !== undefined ? video.description
+                    : desc?.id === id ? desc.text : null;
+
   const loadSegments = useCallback(async () => {
     try {
       const r = await getSegments(id);
@@ -105,7 +118,7 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
       const r = await fn();
       if (r && r.ok === false) return false;
       await loadSegments();
-      onTagsChanged?.();
+      onTagsChanged?.(id);
       return true;
     } catch { return false; } finally { setSegBusy(false); }
   }
@@ -417,10 +430,10 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
           />
         </div>
 
-        {video.description && (
+        {description && (
           <div className="vp-desc" style={{ animationDelay: "350ms" }}>
             <div className="vp-desc-label">Description</div>
-            <div className="vp-desc-body">{video.description}</div>
+            <div className="vp-desc-body">{description}</div>
           </div>
         )}
       </div>

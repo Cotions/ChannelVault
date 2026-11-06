@@ -20,6 +20,7 @@ a = Analysis(
         "watchdog.observers.polling",
         "PIL.Image",
         "PIL._imaging",
+        "waitress",
     ],
     excludes=["tkinter", "matplotlib", "numpy", "pytest"],
     noarchive=False,
