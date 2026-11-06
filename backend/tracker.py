@@ -2518,7 +2518,7 @@ def get_library_video(video_id):
     return jsonify(video)
 
 
-def _fold(s):
+def _search_fold(s):
     """Text as search compares it: accents dropped, lower case. Same as the
     page's fold() in lib/sort.js, so "beyonce" finds "Beyoncé" both sides."""
     return "".join(c for c in unicodedata.normalize("NFD", s or "")
@@ -2546,7 +2546,7 @@ def _folded_descriptions():
     rows = conn.execute("SELECT video_id, description FROM downloaded_videos "
                         "WHERE description IS NOT NULL AND description != ''").fetchall()
     conn.close()
-    folded = [(r["video_id"], _fold(r["description"])) for r in rows]
+    folded = [(r["video_id"], _search_fold(r["description"])) for r in rows]
     _folded_desc_cache = (key, folded)
     return folded
 
@@ -2554,7 +2554,7 @@ def _folded_descriptions():
 def search_descriptions():
     """Ids of the videos whose description holds q. Titles, channels and tags
     are matched in the page; descriptions stay here (see list_videos)."""
-    q = _fold((request.args.get("q") or "")[:200]).strip()
+    q = _search_fold((request.args.get("q") or "")[:200]).strip()
     if len(q) < 2:
         return jsonify({"ids": []})
     return jsonify({"ids": [vid for vid, text in _folded_descriptions() if q in text]})
