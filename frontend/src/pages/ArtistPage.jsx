@@ -161,6 +161,9 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
   const pageVideos = artistVideos.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const artistWanted  = wanted.filter(v => artistsOf(v).includes(artist));
   const artistIgnored = ignored.filter(v => artistsOf(v).includes(artist));
+  // A YouTube channel even with nothing downloaded yet: wanted or skipped
+  // entries are enough to follow it (the userscript can already have).
+  const onYouTube = [...artistVideos, ...artistWanted, ...artistIgnored].some(isYouTube);
 
   // Videos / Wanted / Skipped. In the URL so Back and a refresh keep the tab;
   // a tab with nothing left in it falls back to the first that has something.
@@ -293,10 +296,10 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
             <Icon name="plus" size={12} />Link channel
           </button>
         )}
-        {!channelMark && videos.some(v => isYouTube(v) && artistsOf(v).includes(artist)) && (
+        {!channelMark && onYouTube && (
           <FeedFollow key={artist} artist={artist} />
         )}
-        {!channelMark && videos.some(v => isYouTube(v) && artistsOf(v).includes(artist)) && (
+        {!channelMark && onYouTube && (
           <DownloadPrefs artist={artist} />
         )}
       </div>

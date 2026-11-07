@@ -127,7 +127,7 @@ https://raw.githubusercontent.com/Cotions/ChannelVault/master/userscript/channel
 
 A badge appears on YouTube video pages and on video thumbnails everywhere: home, channel pages, the watch-page sidebar, search results and Shorts tiles. Green **In Vault** means downloaded, blue **Wanted** means on your wanted list, red **Skip** means skipped, and the title takes the same color. Each card's ⋯ menu gets **Wanted** and **Skipped** entries (search results included), and **Download** when the video isn't in the vault yet (see [Downloading from the app](#3c--downloading-from-the-app)).
 
-The script also tells the dashboard which YouTube channel id a video or channel page belongs to, so the Inbox can follow that channel (see below). It only reads the page you already have open.
+The script also tells the dashboard which YouTube channel id a video or channel page belongs to, so you can follow that channel in the Inbox with one click (see below). It only reads the page you already have open.
 
 ---
 
@@ -137,7 +137,7 @@ The **Inbox** lists videos your channels posted that aren't in the vault yet. Cl
 
 It reads each channel's public RSS feed (`youtube.com/feeds/videos.xml`), the one YouTube publishes for feed readers: no account, cookie or API key, one request per channel every few hours (change the interval or turn it off on the Inbox page). Channels marked abandoned, deleted or banned are not checked.
 
-A channel is followed once the app knows its YouTube id. It learns it when you open one of the channel's videos (or its page) on YouTube with the userscript, when you use **Fetch metadata** on one of its videos, or when you paste the id on the artist page. The app never loads YouTube pages to look ids up.
+Only channels you follow are checked. Click **Follow uploads** on the artist page. Following needs the channel's YouTube id. The app learns it when you open one of the channel's videos (or its page) on YouTube with the userscript, or when you use **Fetch metadata** on one of its videos; after that, following is one click. You can also paste the id on the artist page. Learning an id never follows a channel on its own, and the app never loads YouTube pages to look ids up.
 
 The first check of a channel only counts uploads from the last few days as new; anything older sits under **Show older uploads**. Shorts are hidden unless you tick **Show Shorts**.
 
