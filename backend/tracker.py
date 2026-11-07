@@ -3592,11 +3592,10 @@ def fetch_metadata(video_id):
         channel_id = _channel_id_from(info.get("channel_id"))
         uploader = _clean_name(info.get("channel") or info.get("uploader"))
         name = channel_id and _name_for_upload(conn, video_id, uploader)
-        linked = bool(name) and _link_channel_id(conn, name, channel_id, "ytdlp", uploader)
+        if name:
+            _link_channel_id(conn, name, channel_id, "ytdlp", uploader)
         conn.commit()
         conn.close()
-    if linked:
-        _feed_wake.set()
 
     return jsonify({"ok": True, "video_id": video_id})
 
@@ -5619,17 +5618,21 @@ def _link_channel_id(conn, channel_name, channel_id, via, youtube_name=None):
     channel keeps its id through a rename, so a different id reported later is
     more likely wrong than new. Only a link made by hand replaces one. The
     YouTube name is kept only when it comes with the stored id. True when the
-    stored id changed."""
+    stored id changed.
+
+    Knowing the id is not following: a link found automatically starts
+    unfollowed, so the Inbox only polls channels the user chose (the artist
+    page's Follow button, one click once the id is known)."""
     row = conn.execute("SELECT channel_id FROM channel_ids WHERE channel_name = ?",
                        (channel_name,)).fetchone()
     changed = not row or (row["channel_id"] != channel_id and via == "manual")
     if changed:
         conn.execute('''
-            INSERT INTO channel_ids (channel_name, channel_id, found_via) VALUES (?, ?, ?)
+            INSERT INTO channel_ids (channel_name, channel_id, found_via, unfollowed) VALUES (?, ?, ?, ?)
             ON CONFLICT(channel_name) DO UPDATE SET
                 channel_id = excluded.channel_id, found_via = excluded.found_via,
                 unfollowed = 0, youtube_name = NULL, updated_at = CURRENT_TIMESTAMP
-        ''', (channel_name, channel_id, via))
+        ''', (channel_name, channel_id, via, 0 if via == "manual" else 1))
     if youtube_name:
         conn.execute("UPDATE channel_ids SET youtube_name = ? WHERE channel_name = ? AND channel_id = ?",
                      (youtube_name, channel_name, channel_id))
@@ -6448,11 +6451,10 @@ def report_channel_id():
     with _db_lock:
         conn = get_conn()
         name = _name_for_upload(conn, video_id, uploader)
-        changed = bool(name) and _link_channel_id(conn, name, channel_id, "userscript", uploader)
+        if name:
+            _link_channel_id(conn, name, channel_id, "userscript", uploader)
         conn.commit()
         conn.close()
-    if changed:
-        _feed_wake.set()                   # a newly linked channel gets its first poll now
     return jsonify({"ok": True, "channel_name": name})
 
 

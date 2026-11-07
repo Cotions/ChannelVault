@@ -173,7 +173,7 @@ export default function InboxPage({ query, onMarked }) {
         {shown.length === 0 ? (
           <div className="empty" style={{ marginTop: 14 }}>
             {q ? "No matching uploads."
-              : linked === 0 ? "No channels followed yet — see below for how to link them."
+              : linked === 0 ? "No channels followed yet. Follow one from its artist page."
               : checking ? "Checking your channels…"
               : older && !showOlder ? "Nothing new since the last check. Older uploads you never saved are under “Show older uploads”."
               : "Nothing new since the last check."}
@@ -226,10 +226,11 @@ export default function InboxPage({ query, onMarked }) {
                 {data.unlinked.length.toLocaleString()} channel{data.unlinked.length !== 1 ? "s" : ""} not followed yet
               </summary>
               <p className="inbox-help">
-                The feed needs each channel's YouTube id, and ChannelVault never looks it up on its own.
-                It learns it when you open one of the channel's videos or its page on YouTube with the
-                userscript installed, when you use “Fetch metadata” on one of its videos, or when you paste
-                the id on the artist page.
+                Only channels you follow are checked: use “Follow uploads” on the artist page. Following
+                needs the channel's YouTube id, and ChannelVault never looks it up on its own. It learns it
+                when you open one of the channel's videos or its page on YouTube with the userscript
+                installed, or when you use “Fetch metadata” on one of its videos; then following is one
+                click. You can also paste the id there.
               </p>
               <div className="inbox-names-search">
                 <Icon name="search" size={13} />

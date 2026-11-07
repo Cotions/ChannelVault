@@ -5,8 +5,9 @@ import Icon from "./Icon";
 const VIA = { userscript: "seen by the userscript", ytdlp: "from Fetch metadata", manual: "pasted by hand" };
 
 /* Whether the Inbox follows this artist's uploads. Following needs the
-   channel's YouTube id; the userscript and Fetch metadata usually supply it,
-   and this lets the user paste one (or fix a wrong one). */
+   channel's YouTube id; the userscript and Fetch metadata usually supply it
+   (without following), and this lets the user paste one (or fix a wrong one).
+   Once the id is known, following is one click. */
 export default function FeedFollow({ artist }) {
   const [info,    setInfo]    = useState(undefined);   // undefined = loading, null = not linked
   const [editing, setEditing] = useState(false);
@@ -71,14 +72,21 @@ export default function FeedFollow({ artist }) {
   }
 
   if (!info || info.unfollowed) {
+    const known = info?.channel_id;
     return (
-      <button
-        className="artist-link-add feed-follow-add"
-        onClick={() => { setText(info?.channel_id || ""); setEditing(true); }}
-        title="Show this channel's new uploads in the Inbox. Opening one of its videos on YouTube with the userscript does this too."
-      >
-        <Icon name="inbox" size={12} />Follow uploads
-      </button>
+      <>
+        <button
+          className="artist-link-add feed-follow-add"
+          disabled={busy}
+          onClick={() => known ? save(known) : (setText(""), setEditing(true))}
+          title={known
+            ? `Show this channel's new uploads in the Inbox (channel ${known}, ${VIA[info.found_via] || "known"})`
+            : "Show this channel's new uploads in the Inbox. Needs its channel id: paste it, or open one of its videos on YouTube with the userscript first."}
+        >
+          <Icon name="inbox" size={12} />Follow uploads
+        </button>
+        {err && <span className="feed-follow-err">{err}</span>}
+      </>
     );
   }
 
