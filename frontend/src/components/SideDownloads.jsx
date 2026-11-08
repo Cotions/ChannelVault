@@ -1,4 +1,4 @@
-import { useDownloads, cancelJob, qualityLabel } from "../lib/downloads";
+import { useDownloads, cancelJob, pauseQueue, resumeQueue, qualityLabel } from "../lib/downloads";
 import Icon from "./Icon";
 
 const UP_NEXT = 4;     // queued downloads listed by name; the rest are counted
@@ -8,9 +8,13 @@ const shortQuality = q => (!q || q === "best" ? "Best" : qualityLabel(q).replace
 
 /* The download queue at the foot of the sidebar: the running download with
    its bar, size, speed and time left, then what's queued after it. Only
-   there while something is queued or running. */
+   there while something is queued or running.
+
+   Pause stops the running download midway (it resumes from where it got
+   to) and starts nothing after it; "Pause after this one" lets it finish
+   first. Paused while one is still running means exactly that. */
 export default function SideDownloads() {
-  const { jobs } = useDownloads();
+  const { jobs, paused } = useDownloads();
   const running = jobs.find(j => j.status === "running");
   // The worker takes the oldest queued job first.
   const queued = jobs.filter(j => j.status === "queued")
@@ -26,6 +30,16 @@ export default function SideDownloads() {
       <div className="side-dl-head">
         <Icon name="download" size={12} />Downloads
         <span className="side-dl-count">{total}</span>
+        {paused ? (
+          <button className="side-dl-x side-dl-toggle" title="Resume downloads" onClick={resumeQueue}>
+            <Icon name="play" size={11} />
+          </button>
+        ) : (
+          <button className="side-dl-x side-dl-toggle" title="Pause downloads: stops this one midway (it picks up where it left off) and holds the rest"
+                  onClick={() => pauseQueue(true)}>
+            <Icon name="pause" size={11} />
+          </button>
+        )}
       </div>
 
       {running && (
@@ -58,12 +72,24 @@ export default function SideDownloads() {
               <span>{shortQuality(running.quality)}</span>
             </div>
           )}
+          {paused ? (
+            <div className="side-dl-hold">
+              Queue stops after this one
+              <button className="side-dl-link" onClick={() => pauseQueue(true)} title="Stop it now too; it picks up where it left off">Pause now</button>
+            </div>
+          ) : queued.length > 0 && (
+            <div className="side-dl-hold">
+              <button className="side-dl-link" onClick={() => pauseQueue(false)} title="Let this one finish, then start nothing else">
+                Pause after this one
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       {queued.length > 0 && (
         <div className="side-dl-next">
-          <div className="side-dl-label">Up next</div>
+          <div className="side-dl-label">{paused && !running ? "Paused" : "Up next"}</div>
           {queued.slice(0, UP_NEXT).map(j => (
             <div key={j.id} className="side-dl-item">
               <span className="side-dl-item-title" title={j.title || j.video_id}>{j.title || j.video_id}</span>

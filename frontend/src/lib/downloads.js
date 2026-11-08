@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { getDownloads, addDownload, cancelDownload, retryDownload, clearDownloads,
+import { getDownloads, addDownload, cancelDownload, retryDownload, clearDownloads, pauseDownloads,
          getDownloadPrefs, setDownloadPref } from "./api";
 
 /* One shared view of the download queue: the header indicator and every
@@ -7,7 +7,7 @@ import { getDownloads, addDownload, cancelDownload, retryDownload, clearDownload
    queued or running, else every 30 s (the userscript queues downloads too)
    and when the tab comes back into view; not at all while the tab is hidden. */
 
-let state = { installed: false, jobs: [], loaded: false, prefs: {} };
+let state = { installed: false, jobs: [], loaded: false, prefs: {}, paused: false };
 const listeners = new Set();
 const doneListeners = new Set();
 let timer = null;
@@ -30,7 +30,7 @@ export const isActive = j => j.status === "queued" || j.status === "running";
 export async function refreshDownloads() {
   try {
     const d = await getDownloads();
-    emit({ ...state, installed: !!d.installed, jobs: d.jobs || [], loaded: true });
+    emit({ ...state, installed: !!d.installed, jobs: d.jobs || [], paused: !!d.paused, loaded: true });
   } catch { /* offline: keep what we had */ }
   clearTimeout(timer);
   // A hidden tab does not poll: coming back into view asks right away.
@@ -78,6 +78,19 @@ export async function queueDownload(v, quality) {
 export async function cancelJob(id) { await cancelDownload(id).catch(() => {}); await refreshDownloads(); }
 export async function retryJob(id)  { await retryDownload(id).catch(() => {}); await refreshDownloads(); }
 export async function clearJobs()   { await clearDownloads().catch(() => {}); await refreshDownloads(); }
+
+/* Hold the queue: now = stop the running download midway too (it resumes
+   from where it got to); now = false lets it finish first. */
+export async function pauseQueue(now = true) {
+  emit({ ...state, paused: true });
+  await pauseDownloads(true, now).catch(() => {});
+  await refreshDownloads();
+}
+export async function resumeQueue() {
+  emit({ ...state, paused: false });
+  await pauseDownloads(false).catch(() => {});
+  await refreshDownloads();
+}
 
 /* Per creator: the quality a Download uses, and auto-download of new uploads. */
 let prefsSeq = 0;      // a reload started before the latest change doesn't undo it

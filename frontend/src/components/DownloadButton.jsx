@@ -12,7 +12,7 @@ import Icon from "./Icon";
    preselected, and yt-dlp is asked what this video really has); nothing
    starts until the dialog's Download is clicked. A failed job retries as is. */
 export default function DownloadButton({ video, className = "btn-ghost" }) {
-  const { installed, jobs, prefs } = useDownloads();
+  const { installed, jobs, prefs, paused } = useDownloads();
   const [busy, setBusy] = useState(false);
   const [err,  setErr]  = useState(null);
   const [open, setOpen] = useState(false);
@@ -41,7 +41,11 @@ export default function DownloadButton({ video, className = "btn-ghost" }) {
 
   let label = "Download", icon = "download", off = busy;
   let title = "Pick a quality and download it into the library with yt-dlp";
-  if (job?.status === "queued")  { label = "Queued"; off = true; title = `Waiting for the download before it (${qualityLabel(job.quality)})`; }
+  if (job?.status === "queued")  {
+    label = paused ? "Paused" : "Queued"; off = true;
+    title = paused ? `Downloads are paused: resume them from the sidebar (${qualityLabel(job.quality)})`
+                   : `Waiting for the download before it (${qualityLabel(job.quality)})`;
+  }
   if (job?.status === "running") {
     label = !job.progress ? "Starting…" : job.progress.finishing ? "Finishing…" : `${Math.floor(job.progress.percent)}%`;
     off = true; title = `Downloading (${qualityLabel(job.quality)})`;
