@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useDownloads, isActive, cancelJob, retryJob, clearJobs, qualityLabel } from "../lib/downloads";
 import Icon from "./Icon";
 
-function statusLine(j) {
-  const line = status(j);
+function statusLine(j, paused) {
+  const line = j.status === "queued" && paused ? "Paused" : status(j);
   // What it asked for, while that still matters; "auto": the feed queued it.
   return isActive(j) ? [line, qualityLabel(j.quality || "best"), j.auto && "auto"].filter(Boolean).join("  ·  ") : line;
 }
@@ -24,7 +24,7 @@ function status(j) {
 /* Header indicator for the download queue. Only there while something is
    queued, running or failed (or the list is open): an idle queue shows nothing. */
 export default function DownloadQueue() {
-  const { jobs } = useDownloads();
+  const { jobs, paused } = useDownloads();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
 
@@ -67,7 +67,7 @@ export default function DownloadQueue() {
                     <a className="dl-job-title" href={`https://www.youtube.com/watch?v=${j.video_id}`} target="_blank" rel="noreferrer">
                       {j.title || j.video_id}
                     </a>
-                    <div className="dl-job-status" title={statusLine(j)}>{statusLine(j)}</div>
+                    <div className="dl-job-status" title={statusLine(j, paused)}>{statusLine(j, paused)}</div>
                     {j.status === "running" && (
                       <div className="dl-job-bar"><span style={{ width: `${j.progress?.percent || 0}%` }} /></div>
                     )}

@@ -391,6 +391,10 @@ input[type="text"].header-search:focus {
 .side-dl-item .side-dl-q { padding-top: 1px; }
 .side-dl-q { font-family: var(--mono); font-size: 10px; color: var(--muted); white-space: nowrap; }
 .side-dl-more { font-size: 11px; color: var(--muted); }
+.side-dl-toggle:hover { color: var(--accent-text); background: rgba(var(--glow-rgb), 0.12); }
+.side-dl-hold { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 10.5px; color: #f0ad4e; }
+.side-dl-link { all: unset; cursor: pointer; font-size: 10.5px; color: var(--muted); text-decoration: underline dotted; text-underline-offset: 2px; }
+.side-dl-link:hover { color: var(--accent-text); }
 
 .side-quit-confirm {
   display: flex;

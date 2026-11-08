@@ -1079,6 +1079,14 @@ def init_db():
         conn.execute("ALTER TABLE download_jobs ADD COLUMN quality TEXT NOT NULL DEFAULT 'best'")
     if "auto" not in cols:
         conn.execute("ALTER TABLE download_jobs ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+    # The queue as a whole: "paused" = "1" while the user holds it. Kept in
+    # the library's own DB, so each profile's queue pauses on its own.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS download_state (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
     # Per creator: the quality a Download uses unless another is picked, and
     # whether new uploads from the feed download on their own (off unless set).
     conn.execute('''
@@ -5964,6 +5972,16 @@ class _DlStopped(Exception):
     """The app is quitting: leave the job "running" so the next launch redoes it."""
 
 
+class _DlPaused(Exception):
+    """The user paused the queue midway: the job goes back in line, its partial
+    download kept so yt-dlp picks up where it stopped."""
+
+
+def _dl_paused(conn):
+    row = conn.execute("SELECT value FROM download_state WHERE key='paused'").fetchone()
+    return bool(row and row["value"] == "1")
+
+
 def _dl_flag(name):
     with _dl_state:
         return bool(_dl_live.get(name))
@@ -5994,7 +6012,7 @@ def _dl_run(job):
                                 bufsize=1, start_new_session=True)
         with _dl_state:
             _dl_live["proc"] = proc
-            if _dl_live.get("cancel") or _dl_live.get("stopping"):
+            if _dl_live.get("cancel") or _dl_live.get("stopping") or _dl_live.get("pausing"):
                 _dl_kill(proc)
         try:
             for line in proc.stdout:
@@ -6029,6 +6047,9 @@ def _dl_run(job):
             raise _DlStopped()
         if _dl_flag("cancel"):
             return {"status": "canceled"}
+        # Paused after yt-dlp was already done: nothing to lose, file it.
+        if proc.returncode != 0 and _dl_flag("pausing"):
+            raise _DlPaused()
         text = "\n".join(tail)
         if job.get("auto") and ("does not pass filter" in text
                                 or re.search(r"Premieres in|live event will begin|is_upcoming", text)):
@@ -6096,8 +6117,10 @@ def _dl_next():
             # Only this thread runs jobs, so one still "running" was cut off
             # by a quit or crash: it goes back in line.
             conn.execute("UPDATE download_jobs SET status='queued' WHERE status='running'")
-            row = conn.execute("SELECT * FROM download_jobs WHERE status='queued' "
-                               "ORDER BY added_at, id LIMIT 1").fetchone()
+            # Paused: nothing starts. Checked under _db_lock, as the pause is
+            # set, so a job either starts before it (and is stopped) or not at all.
+            row = None if _dl_paused(conn) else conn.execute(
+                "SELECT * FROM download_jobs WHERE status='queued' ORDER BY added_at, id LIMIT 1").fetchone()
             if row:
                 conn.execute("UPDATE download_jobs SET status='running', error=NULL, "
                              "started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE id=?", (row["id"],))
@@ -6117,6 +6140,17 @@ def _dl_next():
             else:
                 done = _dl_run(job)
         except _DlStopped:
+            return False
+        except _DlPaused:
+            # Back in line, at the front (its added_at is unchanged); the
+            # folder and its .part files stay for the resume.
+            with _db_lock:
+                conn = get_conn()
+                conn.execute("UPDATE download_jobs SET status='queued', started_at=NULL "
+                             "WHERE id=? AND status='running'", (job["id"],))
+                conn.commit()
+                conn.close()
+            print(f"[downloads] {job['video_id']}: paused")
             return False
         except Exception as e:
             done = {"status": "failed", "error": _clean_err(e)[:300] or "download failed"}
@@ -6171,8 +6205,35 @@ def _dl_jobs(conn):
 def list_downloads():
     conn = get_conn()
     jobs = _dl_jobs(conn)
+    paused = _dl_paused(conn)
     conn.close()
-    return jsonify({"ok": True, "installed": bool(shutil.which("yt-dlp")), "jobs": jobs})
+    return jsonify({"ok": True, "installed": bool(shutil.which("yt-dlp")), "jobs": jobs, "paused": paused})
+
+
+@app.post("/downloads/pause")
+def pause_downloads():
+    """Hold or release the queue. {"paused": true} stops the running download
+    midway (it resumes from where it got to) and starts nothing after it;
+    {"paused": true, "now": false} lets the running one finish first."""
+    body   = request.get_json(silent=True) or {}
+    paused = body.get("paused") is True
+    now    = body.get("now", True) is not False
+    pid    = load_config()["active_profile"]
+    # Same lock order as _dl_next, so a job can't start between the two steps.
+    with _db_lock:
+        conn = get_conn()
+        conn.execute("INSERT INTO download_state (key, value) VALUES ('paused', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value", ("1" if paused else "0",))
+        conn.commit()
+        conn.close()
+        with _dl_state:
+            if paused and now and _dl_live.get("id") and _dl_live.get("profile") == pid:
+                _dl_live["pausing"] = True
+                if _dl_live.get("proc"):
+                    _dl_kill(_dl_live["proc"])
+    if not paused:
+        _dl_wake.set()
+    return jsonify({"ok": True, "paused": paused})
 
 
 @app.post("/downloads")
