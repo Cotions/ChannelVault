@@ -165,7 +165,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
   // entries are enough to follow it (the userscript can already have).
   const onYouTube = [...artistVideos, ...artistWanted, ...artistIgnored].some(isYouTube);
 
-  // Videos / Wanted / Skipped. In the URL so Back and a refresh keep the tab;
+  // Videos / Wanted / Ignored (still "skipped" in the URL, so old links work). In the URL so Back and a refresh keep the tab;
   // a tab with nothing left in it falls back to the first that has something.
   const counts = { videos: artistVideos.length, wanted: artistWanted.length, skipped: artistIgnored.length };
   const asked  = params.get("tab");
@@ -218,8 +218,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
         )}
         {artistIgnored.length > 0 && (
           <button type="button" className="artist-badge artist-badge-btn" style={{ background: "#b71c1c33", color: "#ef9a9a" }}
-                  onClick={() => openTab("skipped")} title="Show the Skipped tab">
-            <Icon name="close" size={12} />{artistIgnored.length} skipped
+                  onClick={() => openTab("skipped")} title="Show the Ignored tab">
+            <Icon name="close" size={12} />{artistIgnored.length} ignored
           </button>
         )}
         {artistVideos.length > 0 && (
@@ -392,7 +392,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
 
       {showTabs && (
         <div className="artist-tabs" role="tablist">
-          {[["videos", "Videos"], ["wanted", "Wanted"], ["skipped", "Skipped"]].map(([k, label]) => (
+          {[["videos", "Videos"], ["wanted", "Wanted"], ["skipped", "Ignored"]].map(([k, label]) => (
             <button key={k} type="button" role="tab" aria-selected={tab === k}
                     className={`artist-tab artist-tab-${k}${tab === k ? " is-on" : ""}`}
                     disabled={!counts[k]} onClick={() => openTab(k)}>

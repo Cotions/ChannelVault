@@ -4,7 +4,7 @@ import { fmtDuration, safeUrl } from "../lib/fmt";
 import { isYouTube } from "../lib/source";
 import Icon from "./Icon";
 
-// One wanted or skipped video: its thumbnail and title (to YouTube), its
+// One wanted or ignored video: its thumbnail and title (to YouTube), its
 // actions, and the button that drops the mark. `showChannel` adds the
 // artist link(s) under the title, for lists that mix channels.
 export default function MarkRow({ video: v, onRemoveMark, showChannel = false, children }) {

@@ -86,7 +86,7 @@ export default function WantedPage({ wanted, ignored, query, onRemoveMark }) {
   return (
     <div className="card">
       <div className="page-head">
-        <h2 className="page-title">{tab === "skipped" ? "Skipped" : "Wanted"}</h2>
+        <h2 className="page-title">{tab === "skipped" ? "Ignored" : "Wanted"}</h2>
         <span className="page-count">{shown.length.toLocaleString()}</span>
         <span className="page-head-spacer" />
         <div className="sort-controls">
@@ -104,7 +104,7 @@ export default function WantedPage({ wanted, ignored, query, onRemoveMark }) {
       </div>
 
       <div className="artist-tabs" role="tablist">
-        {[["wanted", "Wanted", wanted.length], ["skipped", "Skipped", ignored.length]].map(([k, label, n]) => (
+        {[["wanted", "Wanted", wanted.length], ["skipped", "Ignored", ignored.length]].map(([k, label, n]) => (
           <button key={k} type="button" role="tab" aria-selected={tab === k}
                   className={`artist-tab artist-tab-${k}${tab === k ? " is-on" : ""}`}
                   onClick={() => openTab(k)}>
@@ -129,7 +129,7 @@ export default function WantedPage({ wanted, ignored, query, onRemoveMark }) {
         <div className="empty">
           {query?.trim()
             ? `No ${tab} videos match the search.`
-            : tab === "skipped" ? "Nothing skipped." : "Nothing wanted yet. Mark videos on YouTube or from the Inbox."}
+            : tab === "skipped" ? "Nothing ignored." : "Nothing wanted yet. Mark videos on YouTube or from the Inbox."}
         </div>
       ) : (
         <>

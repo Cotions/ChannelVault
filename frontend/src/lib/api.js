@@ -172,6 +172,7 @@ export function unlinkArtist(name)   { return del(`/artist-links/${encodeURIComp
 export function getFeed()            { return get("/feed"); }
 export function getFeedCount()       { return get("/feed/count"); }
 export function checkFeed()          { return post("/feed/check", {}); }
+export function dismissFeedItem(video_id, dismissed = true) { return post("/feed/dismiss", { video_id, dismissed }); }
 export function saveFeedSettings(opts) { return post("/config", opts); }
 export function getChannelIds()      { return get("/channel-ids"); }
 export function setChannelId(name, channelId) { return post("/channel-ids", { channel_name: name, channel_id: channelId }); }

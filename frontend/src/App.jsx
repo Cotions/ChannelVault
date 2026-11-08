@@ -149,7 +149,7 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  // Want or Skip in the inbox adds an entry the artist pages and Stats list.
+  // Want or Ignore in the inbox adds an entry the artist pages and Stats list.
   async function handleInboxMarked(kind) {
     loadInboxCount();
     if (kind === "count") return;

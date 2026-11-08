@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.11.0
+// @version      1.12.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -206,7 +206,7 @@ async function checkAndAnnotate() {
   } else if (status === "wanted") {
     waitForTitle(() => { injectBadge("⬇ Wanted", COLOR_WANTED, COLOR_WANTED_TEXT); colorTitle(COLOR_WANTED); });
   } else if (status === "ignored") {
-    waitForTitle(() => { injectBadge("✕ Skip", COLOR_IGNORED, COLOR_IGNORED_TEXT); colorTitle(COLOR_IGNORED); });
+    waitForTitle(() => { injectBadge("✕ Ignored", COLOR_IGNORED, COLOR_IGNORED_TEXT); colorTitle(COLOR_IGNORED); });
   }
 }
 
@@ -314,7 +314,7 @@ function annotateCards(downloaded, wanted, ignored) {
       let color, text, textColor;
       if (isDownloaded) { color = COLOR_DOWNLOADED; text = "✓ In Vault";  textColor = "#fff"; }
       else if (isWanted){ color = COLOR_WANTED;     text = "⬇ Wanted";    textColor = COLOR_WANTED_TEXT; }
-      else              { color = COLOR_IGNORED;    text = "✕ Skip";       textColor = COLOR_IGNORED_TEXT; }
+      else              { color = COLOR_IGNORED;    text = "✕ Ignored";       textColor = COLOR_IGNORED_TEXT; }
 
       const cvClass = isDownloaded ? "cv-title-downloaded" : isWanted ? "cv-title-wanted" : "cv-title-ignored";
       link.classList.add(cvClass);
@@ -528,7 +528,7 @@ function injectCVMenuItems(container) {
   );
 
   const skipItem = makeCVMenuItemPopup(
-    "Skipped",
+    "Ignored",
     "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
     async (e) => {
       e.stopPropagation();
@@ -638,7 +638,7 @@ function injectCVMenuItemsPopup(popup) {
     }
   );
   const skipItem = makeCVMenuItemPopup(
-    "Skipped",
+    "Ignored",
     "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
     async (e) => {
       e.stopPropagation();

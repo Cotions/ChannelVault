@@ -1087,6 +1087,10 @@ def init_db():
             value TEXT
         )
     ''')
+    # dismissed: taken out of the Inbox by hand, without marking the video
+    # (it isn't wanted or ignored, just not something to see there again).
+    if "dismissed" not in [r[1] for r in conn.execute("PRAGMA table_info(feed_items)")]:
+        conn.execute("ALTER TABLE feed_items ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0")
     # Per creator: the quality a Download uses unless another is picked, and
     # whether new uploads from the feed download on their own (off unless set).
     conn.execute('''
@@ -5825,16 +5829,33 @@ def _feed_artists(conn):
 
 
 def _inbox_rows(conn, where="1"):
-    """Feed uploads not in the library under any status, newest first, each
-    with the library name of its channel."""
+    """Feed uploads not in the library under any status and not removed from
+    the inbox, newest first, each with the library name of its channel."""
     return conn.execute(f'''
         SELECT f.*, n.channel_name FROM feed_items f
         JOIN (SELECT channel_id, MIN(channel_name) AS channel_name FROM channel_ids
               WHERE unfollowed = 0 AND channel_name NOT IN (SELECT channel_name FROM channel_status)
               GROUP BY channel_id) n ON n.channel_id = f.channel_id
-        WHERE f.video_id NOT IN (SELECT video_id FROM downloaded_videos) AND {where}
+        WHERE f.video_id NOT IN (SELECT video_id FROM downloaded_videos) AND f.dismissed = 0 AND {where}
         ORDER BY f.published_at DESC
     ''').fetchall()
+
+
+@app.post("/feed/dismiss")
+def feed_dismiss():
+    """Take an upload out of the Inbox, or put it back ({"dismissed": false},
+    the Undo). Nothing else changes: the video isn't marked anywhere."""
+    body     = request.get_json(silent=True) or {}
+    video_id = str(body.get("video_id") or "").strip()
+    if not _valid_video_id(video_id):
+        return jsonify({"ok": False, "error": "bad video id"}), 400
+    with _db_lock:
+        conn = get_conn()
+        n = conn.execute("UPDATE feed_items SET dismissed = ? WHERE video_id = ?",
+                         (0 if body.get("dismissed") is False else 1, video_id)).rowcount
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": bool(n)}), (200 if n else 404)
 
 
 @app.get("/feed")
