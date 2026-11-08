@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getFeed, checkFeed, saveFeedSettings, markWanted, markIgnored } from "../lib/api";
+import { getFeed, checkFeed, saveFeedSettings, markWanted, markIgnored, dismissFeedItem } from "../lib/api";
 import Icon from "../components/Icon";
 import DownloadButton from "../components/DownloadButton";
 
@@ -40,6 +40,7 @@ export default function InboxPage({ query, onMarked }) {
   const [busy,      setBusy]      = useState({});       // video_id -> true while marking
   const [copied,    setCopied]    = useState(null);
   const [failed,    setFailed]    = useState(null);     // { id, msg } of the last refused mark
+  const [removed,   setRemoved]   = useState(null);     // the last upload taken out, for Undo
   const [nameQuery, setNameQuery] = useState("");       // filter for the not-followed list
 
   function load() {
@@ -87,6 +88,29 @@ export default function InboxPage({ query, onMarked }) {
     }
     setData(d => ({ ...d, items: d.items.filter(x => x.video_id !== it.video_id) }));
     onMarked?.(kind);
+  }
+
+  // Out of the inbox and nothing else: not wanted, not ignored, just gone.
+  async function handleRemove(it) {
+    setFailed(null);
+    setData(d => ({ ...d, items: d.items.filter(x => x.video_id !== it.video_id) }));
+    const r = await dismissFeedItem(it.video_id).catch(() => null);
+    if (!r?.ok) {
+      setFailed({ id: it.video_id, msg: r?.error || "Could not remove it — is the backend running?" });
+      load();
+      return;
+    }
+    setRemoved(it);
+    onMarked?.("count");
+  }
+
+  async function handleUndo() {
+    const it = removed;
+    setRemoved(null);
+    if (!it) return;
+    await dismissFeedItem(it.video_id, false).catch(() => {});
+    await load();
+    onMarked?.("count");
   }
 
   async function handleCopy(it) {
@@ -169,6 +193,13 @@ export default function InboxPage({ query, onMarked }) {
         </div>
 
         {failed && <div className="msg show err">{failed.msg}</div>}
+        {removed && (
+          <div className="inbox-removed">
+            <span>Removed <b>{removed.title || removed.video_id}</b> from the inbox.</span>
+            <button className="btn-ghost" onClick={handleUndo}>Undo</button>
+            <button className="inbox-removed-x" title="Dismiss" onClick={() => setRemoved(null)}><Icon name="close" size={12} /></button>
+          </div>
+        )}
 
         {shown.length === 0 ? (
           <div className="empty" style={{ marginTop: 14 }}>
@@ -192,6 +223,10 @@ export default function InboxPage({ query, onMarked }) {
                   {it.is_short ? <span className="inbox-tag">Short</span> : null}
                   {it.backlog ? <span className="inbox-tag inbox-tag-old">Older</span> : null}
                 </a>
+                <button className="inbox-remove" onClick={() => handleRemove(it)}
+                        title="Remove from the inbox. It isn't marked anywhere: not wanted, not ignored">
+                  <Icon name="close" size={14} />
+                </button>
                 <div className="inbox-meta">
                   <a className="inbox-title" href={watchUrl(it)} target="_blank" rel="noreferrer">{it.title || it.video_id}</a>
                   <div className="inbox-sub">
@@ -204,8 +239,8 @@ export default function InboxPage({ query, onMarked }) {
                       <Icon name="download" size={13} />Want
                     </button>
                     <DownloadButton video={it} />
-                    <button className="btn-ghost" disabled={busy[it.video_id]} onClick={() => handleMark(it, "skip")} title="Mark as skipped: it leaves the inbox and YouTube shows it as Skip">
-                      <Icon name="close" size={13} />Skip
+                    <button className="btn-ghost" disabled={busy[it.video_id]} onClick={() => handleMark(it, "skip")} title="Not for me: it leaves the inbox, goes on your Ignored list, and YouTube shows it as Ignored">
+                      <Icon name="dislike" size={13} />Ignore
                     </button>
                     <button className="btn-ghost" onClick={() => handleCopy(it)} title="Copy the video link (for your downloader)">
                       <Icon name={copied === it.video_id ? "check" : "copy"} size={13} />{copied === it.video_id ? "Copied" : "Copy link"}

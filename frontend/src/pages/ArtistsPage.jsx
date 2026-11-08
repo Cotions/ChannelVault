@@ -45,7 +45,7 @@ const SORTS = [
                                                  line: s => s.lenCount && `${fmtSpan(s.runtime / s.lenCount)} avg` },
   { value: "size",     label: "Library size",    key: s => s.size || null,     line: s => s.size && fmtBytes(s.size) },
   { value: "wanted",   label: "Wanted",          key: s => s.wanted || null,   line: s => s.wanted && `${s.wanted} wanted` },
-  { value: "skipped",  label: "Skipped",         key: s => s.ignored || null,  line: s => s.ignored && `${s.ignored} skipped` },
+  { value: "skipped",  label: "Ignored",         key: s => s.ignored || null,  line: s => s.ignored && `${s.ignored} ignored` },
   { value: "archived", label: "% of channel archived",
     key: s => s.creator?.video_count ? Math.min(1, s.onChannel / s.creator.video_count) : null,
     line: s => s.creator?.video_count && `${Math.round(100 * Math.min(1, s.onChannel / s.creator.video_count))}% of ${fmt(s.creator.video_count)}` },
@@ -123,7 +123,7 @@ function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
             </span>
           )}
           {stats.ignored > 0 && (
-            <span className="creator-count-ignored" title={`${stats.ignored} skipped`}>
+            <span className="creator-count-ignored" title={`${stats.ignored} ignored`}>
               <Icon name="close" size={11} />{stats.ignored}
             </span>
           )}
