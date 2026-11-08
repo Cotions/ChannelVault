@@ -3160,6 +3160,16 @@ a.creator-profile-handle:hover { text-decoration: underline; }
   text-decoration: none;
 }
 .inbox-name:hover { border-color: rgba(var(--glow-rgb), 0.45); color: var(--accent-text); }
+.inbox-followed { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 4px 16px; }
+.inbox-follow-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 4px 0; border-bottom: 1px solid var(--border-soft); }
+.inbox-follow-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 600; text-decoration: none; }
+.inbox-follow-name:hover { color: var(--accent-text); }
+.inbox-follow-new { font-family: var(--mono); font-size: 10.5px; color: var(--accent-text); text-shadow: 0 0 8px rgba(var(--glow-rgb), 0.45); white-space: nowrap; }
+.inbox-follow-checked { display: inline-flex; align-items: center; gap: 4px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.inbox-follow-checked.is-bad { color: #f0ad4e; }
+.inbox-unfollow { padding: 2px 8px; font-size: 11.5px; }
+.stats-hero-cell.is-link { cursor: pointer; }
+.stats-hero-cell.is-link:hover .stats-hero-label { color: var(--accent-text); }
 .inbox-errors { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .inbox-errors a { color: var(--text-dim); }
 .feed-follow-add { margin-left: auto; }

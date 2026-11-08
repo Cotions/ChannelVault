@@ -5869,9 +5869,16 @@ def get_feed():
         LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
         WHERE c.unfollowed = 0''')}
     last = conn.execute("SELECT MAX(checked_at) FROM feed_channels").fetchone()[0]
+    # Who the poller checks: the same rows as _due_feed_channels.
+    followed = [dict(r) for r in conn.execute('''
+        SELECT c.channel_name, c.channel_id, f.checked_at, f.check_error FROM channel_ids c
+        LEFT JOIN feed_channels f ON f.channel_id = c.channel_id
+        WHERE c.unfollowed = 0 AND c.channel_name NOT IN (SELECT channel_name FROM channel_status)''')]
+    followed.sort(key=lambda r: r["channel_name"].casefold())
     conn.close()
     return jsonify({
         "items":        items,
+        "followed":     followed,
         "artists":      len(artists),
         "unlinked":     [n for n in artists if n not in linked],
         "errors":       [{"channel_name": n, "error": linked[n]["check_error"]}
