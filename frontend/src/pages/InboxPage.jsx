@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getFeed, checkFeed, saveFeedSettings, markWanted, markIgnored, dismissFeedItem } from "../lib/api";
+import { getFeed, checkFeed, saveFeedSettings, markWanted, markIgnored, dismissFeedItem, setChannelId } from "../lib/api";
 import Icon from "../components/Icon";
 import DownloadButton from "../components/DownloadButton";
 
@@ -42,6 +42,9 @@ export default function InboxPage({ query, onMarked }) {
   const [failed,    setFailed]    = useState(null);     // { id, msg } of the last refused mark
   const [removed,   setRemoved]   = useState(null);     // the last upload taken out, for Undo
   const [nameQuery, setNameQuery] = useState("");       // filter for the not-followed list
+  const [followOpen,  setFollowOpen]  = useState(false);  // the Followed list, opened by its stat too
+  const [followQuery, setFollowQuery] = useState("");
+  const [unfollowing, setUnfollowing] = useState(null);   // channel name while it's being unfollowed
 
   function load() {
     return getFeed().then(d => { setData(d); setError(false); }, () => setError(true));
@@ -113,6 +116,21 @@ export default function InboxPage({ query, onMarked }) {
     onMarked?.("count");
   }
 
+  function showFollowed() {
+    setFollowOpen(true);
+    requestAnimationFrame(() => document.getElementById("inbox-followed")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
+  // Stops checking the channel; the id stays known, so following again from
+  // the artist page is one click.
+  async function handleUnfollow(name) {
+    setUnfollowing(name);
+    await setChannelId(name, null).catch(() => {});
+    await load();
+    setUnfollowing(null);
+    onMarked?.("count");
+  }
+
   async function handleCopy(it) {
     try {
       await navigator.clipboard.writeText(watchUrl(it));
@@ -135,12 +153,18 @@ export default function InboxPage({ query, onMarked }) {
   }
   if (!data) return <div className="card"><div className="empty">Loading…</div></div>;
 
-  const linked = data.artists - data.unlinked.length;
+  const followed = data.followed || [];
+  const linked = followed.length;
+  const fq = fold(followQuery.trim());
+  const shownFollowed = fq ? followed.filter(f => fold(f.channel_name).includes(fq)) : followed;
+  const newBy = {};
+  for (const it of items) if (!it.backlog && (data.shorts || !it.is_short)) newBy[it.channel_name] = (newBy[it.channel_name] || 0) + 1;
   const nq = fold(nameQuery.trim());
   const shownUnlinked = nq ? data.unlinked.filter(n => fold(n).includes(nq)) : data.unlinked;
   const stats = [
     { num: fresh.length.toLocaleString(), label: "new uploads" },
-    { num: `${linked}/${data.artists}`,   label: "channels followed" },
+    { num: `${linked}/${data.artists}`,   label: "channels followed", onClick: linked ? showFollowed : null,
+      title: "Show who you follow" },
     { num: checking ? "…" : ago(data.last_checked), label: "last checked", small: true },
   ];
 
@@ -159,7 +183,10 @@ export default function InboxPage({ query, onMarked }) {
 
         <div className="stats-hero is-compact inbox-hero">
           {stats.map((s, i) => (
-            <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${i * 60}ms` }}>
+            <div key={s.label} className={`stats-hero-cell${s.onClick ? " is-link" : ""}`} style={{ animationDelay: `${i * 60}ms` }}
+                 onClick={s.onClick || undefined} title={s.onClick ? s.title : undefined}
+                 role={s.onClick ? "button" : undefined} tabIndex={s.onClick ? 0 : undefined}
+                 onKeyDown={s.onClick ? e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); s.onClick(); } } : undefined}>
               <span className={`stats-hero-num${s.small ? " inbox-hero-small" : ""}`}>{s.num}</span>
               <span className="stats-hero-label">{s.label}</span>
             </div>
@@ -253,8 +280,49 @@ export default function InboxPage({ query, onMarked }) {
         )}
       </div>
 
-      {(data.unlinked.length > 0 || data.errors.length > 0) && (
+      {(followed.length > 0 || data.unlinked.length > 0 || data.errors.length > 0) && (
         <div className="card inbox-footer">
+          {followed.length > 0 && (
+            <details id="inbox-followed" open={followOpen} onToggle={e => setFollowOpen(e.currentTarget.open)}>
+              <summary>
+                {followed.length.toLocaleString()} channel{followed.length !== 1 ? "s" : ""} followed
+              </summary>
+              <p className="inbox-help">
+                These channels are checked for new uploads{data.enabled ? ` every ${data.interval_hours === 168 ? "week" : data.interval_hours % 24 === 0 ? `${data.interval_hours / 24} d` : `${data.interval_hours} h`}` : " when you press Check now"}.
+                Unfollowing keeps the channel id, so following again from the artist page is one click.
+              </p>
+              {followed.length > 12 && (
+                <div className="inbox-names-search">
+                  <Icon name="search" size={13} />
+                  <input
+                    type="search"
+                    value={followQuery}
+                    onChange={e => setFollowQuery(e.target.value)}
+                    placeholder="Filter channels…"
+                    aria-label="Filter followed channels"
+                  />
+                  {followQuery && <span className="inbox-names-count">{shownFollowed.length} of {followed.length}</span>}
+                </div>
+              )}
+              <div className="inbox-followed">
+                {shownFollowed.map(f => (
+                  <div key={f.channel_name} className="inbox-follow-row">
+                    <Link className="inbox-follow-name" to={`/artist/${encodeURIComponent(f.channel_name)}`}>{f.channel_name}</Link>
+                    {newBy[f.channel_name] ? <span className="inbox-follow-new">{newBy[f.channel_name]} new</span> : null}
+                    <span className={`inbox-follow-checked${f.check_error ? " is-bad" : ""}`}
+                          title={f.check_error || (f.checked_at ? toDate(f.checked_at)?.toLocaleString() : "Not checked yet")}>
+                      {f.check_error ? <><Icon name="warn" size={12} />check failed</> : f.checked_at ? `checked ${ago(f.checked_at)}` : "not checked yet"}
+                    </span>
+                    <button className="btn-ghost inbox-unfollow" disabled={unfollowing === f.channel_name}
+                            onClick={() => handleUnfollow(f.channel_name)} title={`Stop checking ${f.channel_name} for new uploads`}>
+                      {unfollowing === f.channel_name ? "…" : "Unfollow"}
+                    </button>
+                  </div>
+                ))}
+                {shownFollowed.length === 0 && <span className="inbox-help">No channel matches “{followQuery}”.</span>}
+              </div>
+            </details>
+          )}
           {data.unlinked.length > 0 && (
             <details>
               <summary>
