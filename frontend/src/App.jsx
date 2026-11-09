@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Routes, Route, NavLink, useLocation } from "react-router-dom";
+import { Routes, Route, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { getConfig, getVideos, getVideo, getWanted, getIgnored, deleteVideo, removeMark, fetchMetadata, getPlaylists, createPlaylist, deletePlaylist, addToPlaylist, getTags, getProfiles, shutdownApp, getFeedCount } from "./lib/api";
 import Icon            from "./components/Icon";
 import CyberBackground from "./components/CyberBackground";
@@ -18,6 +18,7 @@ import PlaylistsPage   from "./pages/PlaylistsPage";
 import DataQualityPage from "./pages/DataQualityPage";
 import VideoPage       from "./pages/VideoPage";
 import Stats           from "./pages/Stats";
+import UploadsPage     from "./pages/UploadsPage";
 import TagsPage        from "./pages/TagsPage";
 import TagPage         from "./pages/TagPage";
 import InboxPage       from "./pages/InboxPage";
@@ -34,13 +35,30 @@ function dropDeletedTags(ids, tags) {
   return next.length === ids.length ? ids : next;
 }
 
+function searchScope(path) {
+  if (path === "/") return "Search your videos";
+  if (path === "/artists") return "Search artists";
+  if (path.startsWith("/artist/")) {
+    // Sub-pages (/stats, /uploads) belong to the artist; a "/" in a name is encoded.
+    let name = path.slice(8).split("/")[0];
+    try { name = decodeURIComponent(name); } catch { /* keep it raw */ }
+    return path.endsWith("/uploads") ? `Search ${name}'s uploads` : `Search ${name}`;
+  }
+  if (path === "/tags") return "Search tags";
+  if (path.startsWith("/tag/")) return "Search this tag";
+  if (path === "/playlists") return "Search playlists";
+  if (path.startsWith("/playlist/")) return "Search this playlist";
+  if (path === "/inbox") return "Search the inbox";
+  if (path === "/wanted-videos") return "Search wanted videos";
+  return null;
+}
+
 export default function App() {
-  const [online,  setOnline]  = useState(false);
+  const [online,  setOnline]  = useState(null);   // null until the first answer
   const [cfg,     setCfg]     = useState({});
   const [showWatchFolder, setShowWatchFolder] = useState(false);
   const [showAddVideo,    setShowAddVideo]    = useState(false);
   const [editVideo,       setEditVideo]       = useState(null);
-  const [query,   setQuery]   = useState("");
   const [videos,  setVideos]  = useState([]);
   const [wanted,  setWanted]  = useState([]);
   const [ignored, setIgnored] = useState([]);
@@ -50,11 +68,28 @@ export default function App() {
   // The tag filter belongs to the library grid but its control sits in the
   // header next to search, so the selection lives up here.
   const [tagIds,    setTagIds]    = useState([]);
-  const [confirmQuit, setConfirmQuit] = useState(false);
   const [quit,        setQuit]        = useState(false);
   const searchRef = useRef(null);
-  const onLibrary = useLocation().pathname === "/";
-  const quitRef   = useRef(null);
+  const location  = useLocation();
+  const navigate  = useNavigate();
+  const onLibrary = location.pathname === "/";
+  // The header search filters whatever list the page shows, so it says which,
+  // and a query belongs to the page it was typed on. Pages with no list send
+  // the typing to the library.
+  const scope = searchScope(location.pathname);
+  const [search, setSearch] = useState({ q: "", path: "/" });
+  const query = search.path === location.pathname ? search.q : "";
+  // A detail page lights up the section it belongs to (/artist/x under Artists).
+  const inTabs = /^\/($|inbox|artists?(\/|$)|tags?(\/|$))/.test(location.pathname) || location.pathname.startsWith("/video/");
+  const sectionCls = (base, prefix) => ({ isActive }) =>
+    `${base}${isActive || location.pathname.startsWith(prefix) ? " active" : ""}`;
+  function setQuery(q) {
+    if (scope) { setSearch({ q, path: location.pathname }); return; }
+    setSearch({ q, path: "/" });
+    navigate("/");
+  }
+  // Phones get a bottom tab bar; "More" opens the full sidebar as a sheet.
+  const [navOpen, setNavOpen] = useState(false);
 
   // "/" and ⌘/Ctrl-K jump to search from anywhere, Esc drops focus.
   useEffect(() => {
@@ -72,14 +107,6 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  useEffect(() => {
-    if (!confirmQuit) return;
-    quitRef.current?.focus();
-    function onKey(e) { if (e.key === "Escape") setConfirmQuit(false); }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [confirmQuit]);
 
   const [libVer, setLibVer] = useState(0);
 
@@ -203,16 +230,22 @@ export default function App() {
     setPlaylists(prev => prev.filter(p => p.id !== id));
   }
 
-  async function handleAddToPlaylist(playlistId, videoId) {
+  // No id: make the playlist first (named from a card or video menu), then add.
+  async function handleAddToPlaylist(playlistId, videoId, newName) {
+    if (playlistId == null) {
+      const c = await createPlaylist(newName);
+      if (!c.ok) throw new Error(c.error || "create failed");
+      playlistId = c.id;
+    }
     const r = await addToPlaylist(playlistId, videoId);
     if (!r.ok) throw new Error(r.error || "add failed");
     setPlaylists(await getPlaylists());
+    return r;
   }
 
   // The backend exits right after answering, so the response may never land.
   // Either way the app is going down: show the farewell screen regardless.
   async function handleQuit() {
-    setConfirmQuit(false);
     setQuit(true);
     setOnline(false);
     try { await shutdownApp(); } catch { /* connection dropped as it exited */ }
@@ -251,7 +284,7 @@ export default function App() {
             ref={searchRef}
             type="text"
             className="header-search"
-            placeholder="Search title, channel, description…"
+            placeholder={scope || "Search your videos"}
             value={query}
             onChange={e => setQuery(e.target.value)}
           />
@@ -273,12 +306,14 @@ export default function App() {
         )}
         </div>
         <div className="header-right">
+          <button className="btn-secondary header-add" onClick={() => setShowAddVideo(true)} title="Add a video by its link or file">
+            <Icon name="plus" size={15} />Add video
+          </button>
           <DownloadQueue />
           <ProfileSwitch profiles={profiles} onManage={() => setShowWatchFolder("profiles")} />
-          <span className="header-count" title="Videos in vault">{videos.length.toLocaleString()}</span>
           <span
             className={`status-dot ${online ? "online" : ""}`}
-            title={online ? "Backend connected" : "Backend offline"}
+            title={online ? "Backend connected" : online === null ? "Connecting…" : "Backend offline"}
           />
         </div>
       </header>
@@ -294,6 +329,7 @@ export default function App() {
           rating={cfg.rating}
           onRatingSaved={r => setCfg(c => ({ ...c, rating: r }))}
           initialTab={showWatchFolder === "profiles" ? "profiles" : "library"}
+          onQuit={handleQuit}
         />
       )}
       {showAddVideo && (
@@ -304,41 +340,41 @@ export default function App() {
       )}
 
       <div className="app-body">
-        <nav className="sidebar">
-          <NavLink to="/" end className="side-link"><Icon name="home" />Home</NavLink>
-          <NavLink to="/rediscover" className="side-link"><Icon name="sparkle" />Rediscover</NavLink>
-          <NavLink to="/inbox" className="side-link">
+        {navOpen && <div className="nav-scrim" onClick={() => setNavOpen(false)} />}
+        <nav className={`sidebar${navOpen ? " is-open" : ""}`} onClick={e => { if (e.target.closest("a")) setNavOpen(false); }}>
+          <NavLink to="/" end className="side-link side-dup"><Icon name="home" />Home</NavLink>
+          <NavLink to="/inbox" className="side-link side-dup">
             <Icon name="inbox" />Inbox
-            {inboxCount > 0 && <span className="side-badge" title="New uploads from your channels">{inboxCount > 99 ? "99+" : inboxCount}</span>}
+            {inboxCount > 0 && <span className="side-badge" title="New uploads from channels you follow">{inboxCount > 99 ? "99+" : inboxCount}</span>}
           </NavLink>
+          <NavLink to="/rediscover" className="side-link"><Icon name="sparkle" />Rediscover</NavLink>
+          <div className="side-sep side-dup" />
+          <NavLink to="/artists" className={sectionCls("side-link side-dup", "/artist/")}><Icon name="users" />Artists</NavLink>
+          <NavLink to="/tags" className={sectionCls("side-link side-dup", "/tag/")}><Icon name="tag" />Tags</NavLink>
+          <NavLink to="/playlists" className={sectionCls("side-link", "/playlist/")}><Icon name="playlist" />Playlists</NavLink>
           <NavLink to="/wanted-videos" className="side-link">
             <Icon name="download" />Wanted
             {wanted.length > 0 && <span className="side-badge side-badge-quiet" title="Videos marked to download">{wanted.length > 999 ? "999+" : wanted.length}</span>}
           </NavLink>
-          <NavLink to="/playlists" className="side-link"><Icon name="playlist" />Playlists</NavLink>
-          <NavLink to="/artists" className="side-link"><Icon name="users" />Artists</NavLink>
-          <NavLink to="/tags" className="side-link"><Icon name="tag" />Tags</NavLink>
-          <NavLink to="/data-quality" className="side-link"><Icon name="pulse" />Data Quality</NavLink>
-          <NavLink to="/stats" className="side-link"><Icon name="chart" />Stats</NavLink>
           <div className="side-sep" />
-          <button className="side-link" onClick={() => setShowAddVideo(true)}><Icon name="plus" />Add Video</button>
+          <button className="side-link side-phone" onClick={() => { setNavOpen(false); setShowAddVideo(true); }}><Icon name="plus" />Add video</button>
+          <NavLink to="/stats" className="side-link"><Icon name="chart" />Stats</NavLink>
+          <NavLink to="/data-quality" className="side-link"><Icon name="pulse" />Library check</NavLink>
           <button className="side-link" onClick={() => setShowWatchFolder(true)}><Icon name="settings" />Settings</button>
-          {confirmQuit ? (
-            <div className="side-quit-confirm">
-              <span className="del-confirm-label">Quit ChannelVault?</span>
-              <button ref={quitRef} className="del-btn del-btn-confirm" onClick={handleQuit} title="Confirm quit">
-                <Icon name="check" />
-              </button>
-              <button className="del-btn" onClick={() => setConfirmQuit(false)} title="Cancel (Esc)">
-                <Icon name="close" />
-              </button>
-            </div>
-          ) : (
-            <button className="side-link side-link-quit" onClick={() => setConfirmQuit(true)} title="Stop the backend and close the app">
-              <Icon name="power" />Quit
-            </button>
-          )}
           <SideDownloads />
+        </nav>
+
+        <nav className="tabbar" aria-label="Main" onClick={e => { if (e.target.closest("a")) setNavOpen(false); }}>
+          <NavLink to="/" end className="tab-link"><Icon name="home" size={20} /><span>Home</span></NavLink>
+          <NavLink to="/inbox" className="tab-link">
+            <Icon name="inbox" size={20} /><span>Inbox</span>
+            {inboxCount > 0 && <span className="tab-badge">{inboxCount > 99 ? "99+" : inboxCount}</span>}
+          </NavLink>
+          <NavLink to="/artists" className={sectionCls("tab-link", "/artist/")}><Icon name="users" size={20} /><span>Artists</span></NavLink>
+          <NavLink to="/tags" className={sectionCls("tab-link", "/tag/")}><Icon name="tag" size={20} /><span>Tags</span></NavLink>
+          <button className={`tab-link${navOpen || !inTabs ? " active" : ""}`} onClick={() => setNavOpen(o => !o)} aria-expanded={navOpen}>
+            <Icon name="more" size={20} /><span>More</span>
+          </button>
         </nav>
 
         <main>
@@ -357,6 +393,7 @@ export default function App() {
                   onDelete={handleDelete}
                   onEdit={handleEdit}
                   onFetchMeta={handleFetchMeta}
+                  loading={libVer === 0}
                 />
               }
             />
@@ -387,13 +424,14 @@ export default function App() {
             />
             <Route path="/stats" element={<Stats videos={videos} wanted={wanted} ignored={ignored} />} />
             <Route path="/artist/:name/stats" element={<Stats videos={videos} />} />
+            <Route path="/artist/:name/uploads" element={<UploadsPage query={query} />} />
             <Route
               path="/artist/:name"
               element={<ArtistPage videos={videos} wanted={wanted} ignored={ignored} query={query} rating={cfg.rating} onDelete={handleDelete} onRemoveMark={handleRemoveMark} onEdit={handleEdit} onFetchMeta={handleFetchMeta} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} onScanDone={load} />}
             />
             <Route
               path="/video/:id"
-              element={<VideoPage videos={videos} tags={tags} onTagsChanged={handleTagsChanged} onEdit={handleEdit} onFetchMeta={handleFetchMeta} onDelete={handleDelete} />}
+              element={<VideoPage videos={videos} tags={tags} onTagsChanged={handleTagsChanged} onEdit={handleEdit} onFetchMeta={handleFetchMeta} onDelete={handleDelete} playlists={playlists} onAddToPlaylist={handleAddToPlaylist} />}
             />
             <Route
               path="/playlist/:id"

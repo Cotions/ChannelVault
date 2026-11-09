@@ -161,12 +161,6 @@ export default function InboxPage({ query, onMarked }) {
   for (const it of items) if (!it.backlog && (data.shorts || !it.is_short)) newBy[it.channel_name] = (newBy[it.channel_name] || 0) + 1;
   const nq = fold(nameQuery.trim());
   const shownUnlinked = nq ? data.unlinked.filter(n => fold(n).includes(nq)) : data.unlinked;
-  const stats = [
-    { num: fresh.length.toLocaleString(), label: "new uploads" },
-    { num: `${linked}/${data.artists}`,   label: "channels followed", onClick: linked ? showFollowed : null,
-      title: "Show who you follow" },
-    { num: checking ? "…" : ago(data.last_checked), label: "last checked", small: true },
-  ];
 
   return (
     <div className="inbox-page">
@@ -181,16 +175,13 @@ export default function InboxPage({ query, onMarked }) {
           </button>
         </div>
 
-        <div className="stats-hero is-compact inbox-hero">
-          {stats.map((s, i) => (
-            <div key={s.label} className={`stats-hero-cell${s.onClick ? " is-link" : ""}`} style={{ animationDelay: `${i * 60}ms` }}
-                 onClick={s.onClick || undefined} title={s.onClick ? s.title : undefined}
-                 role={s.onClick ? "button" : undefined} tabIndex={s.onClick ? 0 : undefined}
-                 onKeyDown={s.onClick ? e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); s.onClick(); } } : undefined}>
-              <span className={`stats-hero-num${s.small ? " inbox-hero-small" : ""}`}>{s.num}</span>
-              <span className="stats-hero-label">{s.label}</span>
-            </div>
-          ))}
+        <div className="inbox-summary">
+          {linked ? (
+            <button type="button" className="inbox-summary-link" onClick={showFollowed} title="Show who you follow">
+              <b>{linked}</b> of <b>{data.artists}</b> channels followed
+            </button>
+          ) : <span><b>0</b> of <b>{data.artists}</b> channels followed</span>}
+          <span>{checking ? "Checking now…" : data.last_checked ? `Checked ${ago(data.last_checked)}` : "Never checked"}</span>
         </div>
 
         <div className="inbox-controls">
@@ -233,8 +224,8 @@ export default function InboxPage({ query, onMarked }) {
             {q ? "No matching uploads."
               : linked === 0 ? "No channels followed yet. Follow one from its artist page."
               : checking ? "Checking your channels…"
-              : older && !showOlder ? "Nothing new since the last check. Older uploads you never saved are under “Show older uploads”."
-              : "Nothing new since the last check."}
+              : older && !showOlder ? "You're all caught up. Older uploads you never saved are under “Show older uploads”."
+              : "You're all caught up."}
           </div>
         ) : (
           <div className="inbox-grid">
@@ -285,7 +276,7 @@ export default function InboxPage({ query, onMarked }) {
           {followed.length > 0 && (
             <details id="inbox-followed" open={followOpen} onToggle={e => setFollowOpen(e.currentTarget.open)}>
               <summary>
-                {followed.length.toLocaleString()} channel{followed.length !== 1 ? "s" : ""} followed
+                Channels you follow
               </summary>
               <p className="inbox-help">
                 These channels are checked for new uploads{data.enabled ? ` every ${data.interval_hours === 168 ? "week" : data.interval_hours % 24 === 0 ? `${data.interval_hours / 24} d` : `${data.interval_hours} h`}` : " when you press Check now"}.

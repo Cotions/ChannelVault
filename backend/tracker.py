@@ -13,6 +13,7 @@ import functools
 import queue
 import errno
 import contextlib
+import configparser
 import tempfile
 import sqlite3
 import base64
@@ -1058,6 +1059,27 @@ def init_db():
             found_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    # Every video a channel tab showed when the userscript scanned it: the
+    # link outlives the video. `gone_at` is set when a full scan of the same
+    # tab no longer lists it (unlisted, private or deleted). Only for keeping
+    # links; nothing here is wanted or downloaded.
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS channel_uploads (
+            video_id   TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL,
+            title      TEXT,
+            tab        TEXT,
+            pos        INTEGER,
+            first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            gone_at    TIMESTAMP
+        )
+    ''')
+    # Links kept from removed vault entries carry the credit they had, since
+    # the channel id may never have been learned.
+    if "channel_name" not in [r[1] for r in conn.execute("PRAGMA table_info(channel_uploads)")]:
+        conn.execute("ALTER TABLE channel_uploads ADD COLUMN channel_name TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_channel_uploads_ch ON channel_uploads(channel_id)")
     conn.execute('''
         CREATE TABLE IF NOT EXISTS download_jobs (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1664,6 +1686,7 @@ def ytdlp_status():
         "installed":     bool(version),
         "version":       version,
         "cookies_from":  cfg.get("ytdlp_cookies_from_browser") or None,
+        "firefox_profiles": _firefox_profiles(),
         "js_runtime":    cfg.get("ytdlp_js_runtime") or None,
         "js_available":  {k: v for k, v in runtimes.items() if v},
         "js_args":       _js_runtime_args(),
@@ -2262,6 +2285,46 @@ def _oembed_status(video_id):
         return None
 
 
+def _oembed_author(video_id):
+    """The channel name YouTube's public oEmbed endpoint gives for a video, or
+    None (gone, private, embedding off, or no network)."""
+    req = urllib.request.Request(_OEMBED_URL.format(video_id),
+                                 headers={"User-Agent": f"ChannelVault/{__version__} (oembed)"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return _clean_name(_text(json.loads(r.read(65536)).get("author_name"), 200)) or None
+    except Exception:
+        return None
+
+
+# Ids asked about this run, so one oEmbed can't answer (members-only, gone)
+# isn't asked again until the next start.
+_channel_asked = set()
+
+
+def _fill_missing_channels(video_ids=None):
+    """Wanted/ignored entries saved without a channel (the page didn't show
+    one) get it from oEmbed, so they land under an artist and their link in
+    that artist's All uploads. One small request per entry."""
+    conn = get_conn()
+    rows = [r["video_id"] for r in conn.execute(
+        "SELECT video_id FROM downloaded_videos WHERE status IN ('wanted', 'ignored') "
+        "AND (channel_name IS NULL OR channel_name = '') AND COALESCE(source, 'youtube') = 'youtube'")]
+    conn.close()
+    for vid in rows:
+        if (video_ids is not None and vid not in video_ids) or vid in _channel_asked:
+            continue
+        _channel_asked.add(vid)
+        name = _oembed_author(vid)
+        if name:
+            conn = get_conn()
+            conn.execute("UPDATE downloaded_videos SET channel_name = ? WHERE video_id = ? "
+                         "AND (channel_name IS NULL OR channel_name = '')", (_alias_credit(name, conn), vid))
+            conn.commit()
+            conn.close()
+        time.sleep(0.3)
+
+
 @app.post("/channel-scan")
 def channel_scan():
     """The userscript read a channel tab's grid (Videos/Shorts/Live) while the
@@ -2275,16 +2338,37 @@ def channel_scan():
     raw        = body.get("items")
     if not isinstance(raw, list):
         return jsonify({"ok": False, "error": "items required"}), 400
-    views = {}
+    views, titles = {}, {}
     for it in raw[:_SCAN_MAX_ITEMS]:
         vid = _valid_video_id(it.get("video_id")) if isinstance(it, dict) else None
         if vid:
             n = _count(it.get("views"))
             views[vid] = max(n, views.get(vid) or 0) if n is not None else views.get(vid)
+            titles[vid] = _text(it.get("title"), 300) or titles.get(vid)
     complete = body.get("complete") is True and bool(channel_id) and bool(tab)
 
     with _db_lock:
         conn = get_conn()
+        # Keep every link the tab showed. A full scan that no longer lists one
+        # it showed before marks it gone; one seen again is back.
+        gone = 0
+        if channel_id and tab:
+            scan_at = conn.execute("SELECT CURRENT_TIMESTAMP").fetchone()[0]
+            # The grid lists newest first and tiles carry no date, so its
+            # order is what the list sorts by.
+            for pos, vid in enumerate(views):
+                conn.execute('''
+                    INSERT INTO channel_uploads (video_id, channel_id, title, tab, pos, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(video_id) DO UPDATE SET
+                        title = COALESCE(excluded.title, channel_uploads.title),
+                        pos = excluded.pos, last_seen = excluded.last_seen, gone_at = NULL
+                ''', (vid, channel_id, titles.get(vid), tab, pos, scan_at, scan_at))
+            if complete:
+                gone = conn.execute(
+                    "UPDATE channel_uploads SET gone_at = ? WHERE channel_id = ? AND tab = ? AND gone_at IS NULL "
+                    "AND video_id NOT IN (SELECT value FROM json_each(?))",
+                    (scan_at, channel_id, tab, json.dumps(list(views)))).rowcount
         rows = conn.execute(
             "SELECT video_id, view_count, availability FROM downloaded_videos "
             "WHERE status = 'downloaded' AND video_id IN (SELECT value FROM json_each(?))",
@@ -2349,7 +2433,86 @@ def channel_scan():
         "still_up":   still_up,
         "deleted":    deleted,
         "not_public": not_public,
+        "kept":       len(views) if channel_id and tab else 0,
+        "gone":       gone,
     })
+
+
+@app.get("/artist-uploads/<path:name>")
+def artist_uploads(name):
+    """Every YouTube link known for an artist: what channel scans kept, what
+    the feed brought in, the artist's vault entries (downloaded, wanted,
+    ignored) and the ones removed from the vault since. For keeping links, so
+    gone videos are listed too."""
+    conn = get_conn()
+    ids = [r["channel_id"] for r in conn.execute(
+        "SELECT channel_id FROM channel_ids WHERE channel_name = ?", (name,))]
+    marks = ",".join("?" * len(ids)) or "NULL"
+    like = f"%{name}%"
+    credited = lambda credit: name in _artist_names(credit)
+    rows = [r for r in conn.execute(f'''
+        SELECT u.video_id, u.title, u.tab, u.pos, u.first_seen, u.gone_at, NULL AS published_at,
+               u.channel_id IN ({marks}) AS on_channel, u.channel_name
+          FROM channel_uploads u WHERE u.channel_id IN ({marks}) OR u.channel_name LIKE ?
+        UNION ALL
+        SELECT f.video_id, f.title, CASE WHEN f.is_short THEN 'shorts' ELSE 'videos' END,
+               NULL, f.found_at, NULL, f.published_at, 1, NULL
+          FROM feed_items f WHERE f.channel_id IN ({marks})
+    ''', ids + ids + [like] + ids).fetchall() if r["on_channel"] or credited(r["channel_name"])]
+    vault = {r["video_id"]: r for r in conn.execute(
+        "SELECT video_id, title, channel_name, status, availability, "
+        "       COALESCE(recorded_date, downloaded_at) AS dated "
+        "FROM downloaded_videos WHERE channel_name LIKE ? AND COALESCE(source, 'youtube') = 'youtube' "
+        "AND status IN ('downloaded', 'wanted', 'ignored')", (like,)) if credited(r["channel_name"])}
+    # Entries filed under another credit can still be on this channel.
+    seen = {r["video_id"] for r in rows} - set(vault)
+    if seen:
+        for r in conn.execute(
+                "SELECT video_id, title, channel_name, status, availability, "
+                "       COALESCE(recorded_date, downloaded_at) AS dated "
+                "FROM downloaded_videos WHERE video_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(list(seen)),)):
+            vault[r["video_id"]] = r
+    conn.close()
+
+    by_id = {}
+    for r in rows:
+        cur = by_id.get(r["video_id"])
+        if cur is None:
+            by_id[r["video_id"]] = {k: r[k] for k in ("video_id", "title", "tab", "pos", "first_seen", "gone_at", "published_at")}
+        else:   # in both: keep the scan's gone mark and place, the feed's date, any title
+            cur["title"] = cur["title"] or r["title"]
+            cur["published_at"] = cur["published_at"] or r["published_at"]
+            cur["gone_at"] = cur["gone_at"] or r["gone_at"]
+            cur["pos"] = cur["pos"] if cur["pos"] is not None else r["pos"]
+    for vid, v in vault.items():
+        if vid[-1] not in _YT_LAST_CHARS:
+            continue
+        by_id.setdefault(vid, {"video_id": vid, "title": None, "tab": "videos", "pos": None,
+                               "first_seen": None, "gone_at": None, "published_at": None})
+    out = []
+    for u in by_id.values():
+        v = vault.get(u["video_id"])
+        u["status"] = v["status"] if v else None
+        u["title"] = u["title"] or (v["title"] if v else None)
+        u["dated"] = (v["dated"] if v else None) or u["first_seen"] or ""
+        # The vault learned it's gone some other way (a fetch, the oEmbed check).
+        if not u["gone_at"] and v and v["availability"] in ("deleted", "private", "unavailable"):
+            u["gone_at"] = u["first_seen"] or v["dated"] or "1"
+        out.append(u)
+    # Feed-only uploads are the newest (the feed lists the latest few), by
+    # date; then each scanned tab in its grid order (videos, live, shorts);
+    # then what no scan has placed, newest first.
+    tabs = {"videos": 0, "streams": 1, "shorts": 2}
+    feed = sorted((u for u in out if u["pos"] is None and u["published_at"]),
+                  key=lambda u: u["published_at"], reverse=True)
+    grid = sorted((u for u in out if u["pos"] is not None), key=lambda u: (tabs.get(u["tab"], 3), u["pos"]))
+    rest = sorted((u for u in out if u["pos"] is None and not u["published_at"]),
+                  key=lambda u: u["dated"], reverse=True)
+    out = feed + grid + rest
+    for u in out:
+        del u["pos"], u["dated"]
+    return jsonify({"ok": True, "linked": bool(ids), "uploads": out})
 
 
 @app.get("/videos/ids")
@@ -2434,6 +2597,8 @@ def _upsert_mark(video_id, title, channel_name, url, status, duration=None):
     ''', (video_id, title, channel_name, url, status, _duration(duration)))
     conn.commit()
     conn.close()
+    if not channel_name:
+        threading.Thread(target=_fill_missing_channels, args=({video_id},), daemon=True).start()
 
 @app.post("/want-to-download")
 def add_wanted():
@@ -3082,7 +3247,12 @@ def list_playlists():
         return _spa()  # browser navigating to the playlists page, not an API call
     conn = get_conn()
     rows = conn.execute('''
-        SELECT p.id, p.name, p.created_at, COUNT(v.video_id) AS video_count
+        SELECT p.id, p.name, p.created_at, COUNT(v.video_id) AS video_count,
+               GROUP_CONCAT(v.video_id, char(31)) AS video_ids_joined,
+               (SELECT pi2.video_id FROM playlist_items pi2
+                JOIN downloaded_videos v2 ON v2.video_id = pi2.video_id AND v2.status = 'downloaded'
+                WHERE pi2.playlist_id = p.id
+                ORDER BY pi2.added_at ASC, pi2.rowid ASC LIMIT 1) AS cover_id
         FROM playlists p
         LEFT JOIN playlist_items pi ON pi.playlist_id = p.id
         LEFT JOIN downloaded_videos v ON v.video_id = pi.video_id AND v.status = 'downloaded'
@@ -3090,7 +3260,14 @@ def list_playlists():
         ORDER BY p.created_at ASC
     ''').fetchall()
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    # Which videos each one holds, so an "Add to playlist" menu can tick them.
+    out = []
+    for r in rows:
+        d = dict(r)
+        joined = d.pop("video_ids_joined")
+        d["video_ids"] = joined.split(chr(31)) if joined else []
+        out.append(d)
+    return jsonify(out)
 
 @app.post("/playlists")
 def create_playlist():
@@ -3151,13 +3328,13 @@ def add_playlist_video(playlist_id):
     if not conn.execute("SELECT 1 FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone():
         conn.close()
         return jsonify({"ok": False, "error": "video not found"}), 404
-    conn.execute(
+    cur = conn.execute(
         "INSERT OR IGNORE INTO playlist_items (playlist_id, video_id) VALUES (?, ?)",
         (playlist_id, video_id)
     )
     conn.commit()
     conn.close()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "added": cur.rowcount > 0})  # False: it was already there
 
 @app.delete("/playlists/<int:playlist_id>/videos/<vid:video_id>")
 def remove_playlist_video(playlist_id, video_id):
@@ -3470,6 +3647,79 @@ _COOKIE_BROWSER_RE = re.compile(
     r"(?:brave|chrome|chromium|edge|firefox|opera|safari|vivaldi|whale)(?::[^\x00-\x1f]+)?")
 
 
+# Where Firefox keeps profiles.ini: the classic folder, the newer XDG one, the
+# Snap and Flatpak sandboxes, then macOS and Windows.
+_FIREFOX_ROOTS = (
+    "~/.mozilla/firefox",
+    "~/.config/mozilla/firefox",
+    "~/snap/firefox/common/.mozilla/firefox",
+    "~/.var/app/org.mozilla.firefox/.mozilla/firefox",
+    "~/Library/Application Support/Firefox",
+    os.path.join(os.environ.get("APPDATA", "~"), "Mozilla", "Firefox"),
+)
+
+
+def _youtube_signed_in(profile_dir):
+    """True if this Firefox profile holds a YouTube login cookie.
+
+    Firefox keeps the file open, so read a copy (with its write-ahead log,
+    where the newest cookies sit) rather than the live one.
+    """
+    src = os.path.join(profile_dir, "cookies.sqlite")
+    if not os.path.isfile(src):
+        return False
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            for ext in ("", "-wal"):
+                if os.path.isfile(src + ext):
+                    shutil.copyfile(src + ext, os.path.join(tmp, "cookies.sqlite" + ext))
+            con = sqlite3.connect(os.path.join(tmp, "cookies.sqlite"))
+            try:
+                return con.execute(
+                    "SELECT 1 FROM moz_cookies WHERE host LIKE '%youtube.com' AND name = 'LOGIN_INFO' LIMIT 1"
+                ).fetchone() is not None
+            finally:
+                con.close()
+    except Exception:
+        return False
+
+
+def _firefox_profiles():
+    """Firefox profiles on this machine: [{name, path, signed_in}].
+
+    yt-dlp given plain "firefox" reads whichever profile was used last, which
+    is the wrong one as soon as there is more than one. Naming the folder pins it.
+    """
+    out, seen = [], set()
+    for root in _FIREFOX_ROOTS:
+        root = os.path.expanduser(root)
+        ini = os.path.join(root, "profiles.ini")
+        if not os.path.isfile(ini):
+            continue
+        cp = configparser.ConfigParser(interpolation=None)
+        try:
+            cp.read(ini, encoding="utf-8")
+        except Exception:
+            continue
+        # [Install…] Default= is the profile a plain "firefox" launch opens. Its
+        # Name is often not "default" (that is usually an old, unused one).
+        opens = {os.path.realpath(os.path.join(root, cp.get(sec, "Default")))
+                 for sec in cp.sections() if sec.startswith("Install") and cp.has_option(sec, "Default")}
+        for sec in cp.sections():
+            if not sec.startswith("Profile") or not cp.has_option(sec, "Path"):
+                continue
+            rel  = cp.get(sec, "Path")
+            path = os.path.join(root, rel) if cp.get(sec, "IsRelative", fallback="1") == "1" else rel
+            path = os.path.realpath(path)
+            if path in seen or not os.path.isdir(path):
+                continue
+            seen.add(path)
+            out.append({"name": cp.get(sec, "Name", fallback=os.path.basename(path)),
+                        "path": path, "signed_in": _youtube_signed_in(path),
+                        "opens_by_default": path in opens})
+    return out
+
+
 def _cookie_args():
     """--cookies-from-browser flags, if a browser is configured.
 
@@ -3612,8 +3862,29 @@ def fetch_metadata(video_id):
     return jsonify({"ok": True, "video_id": video_id})
 
 
+def _keep_link(conn, video_id):
+    """Before a YouTube entry leaves the vault (wanted, ignored or downloaded),
+    keep its link in the artist's All uploads list."""
+    r = conn.execute("SELECT title, channel_name, availability, COALESCE(source, 'youtube') AS source "
+                     "FROM downloaded_videos WHERE video_id = ?", (video_id,)).fetchone()
+    if not r or r["source"] != "youtube" or video_id[-1] not in _YT_LAST_CHARS:
+        return
+    names = _artist_names(r["channel_name"])
+    ch = names and conn.execute("SELECT channel_id FROM channel_ids WHERE channel_name = ?", (names[0],)).fetchone()
+    gone = r["availability"] in ("deleted", "private", "unavailable")
+    conn.execute('''
+        INSERT INTO channel_uploads (video_id, channel_id, channel_name, title, tab, gone_at)
+        VALUES (?, ?, ?, ?, 'videos', CASE WHEN ? THEN CURRENT_TIMESTAMP END)
+        ON CONFLICT(video_id) DO UPDATE SET
+            title = COALESCE(channel_uploads.title, excluded.title),
+            channel_name = COALESCE(channel_uploads.channel_name, excluded.channel_name),
+            gone_at = COALESCE(channel_uploads.gone_at, excluded.gone_at)
+    ''', (video_id, ch["channel_id"] if ch else "", r["channel_name"], r["title"], 1 if gone else 0))
+
+
 def _purge_entry(conn, video_id):
     """Delete an entry and every row hanging off it, in the caller's transaction."""
+    _keep_link(conn, video_id)
     tracks = conn.execute("SELECT file_path FROM audio_tracks WHERE video_id = ?", (video_id,)).fetchall()
     conn.execute("DELETE FROM audio_tracks WHERE video_id = ?", (video_id,))
     # Its soundtracks were hidden audio entries; unhide the ones it was the last user of.
@@ -7545,6 +7816,7 @@ if __name__ == "__main__":
     threading.Thread(target=_feed_loop, daemon=True).start()
     threading.Thread(target=_download_loop, daemon=True).start()
     threading.Thread(target=_warm_thumb_cache, daemon=True).start()
+    threading.Thread(target=_fill_missing_channels, daemon=True).start()
     atexit.register(_dl_stop_live)       # Ctrl+C
     if "--no-browser" not in sys.argv and os.environ.get("CHANNELVAULT_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()

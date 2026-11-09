@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
 import {
   getAudioTracks, addAudioTrack, updateAudioTrack, deleteAudioTrack, browseAudioFile,
@@ -17,7 +17,10 @@ const NUDGE = 0.1;   // one tap of the sync buttons, in seconds
    the mini player and from fullscreen, which a row on this page cannot. This is
    the library side of it: one toolbar button carrying the count, and a panel
    that attaches, renames, detaches and nudges the sound against the picture. */
-export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
+// `hideTrigger` drops the toolbar button: the video page opens the panel from
+// its ⋮ menu through the ref (open(rect)), and keeps this mounted so the
+// player still learns the track list.
+const AudioTracks = forwardRef(function AudioTracks({ videoId, duration, onLibraryChanged, hideTrigger = false, onCount }, ref) {
   const { audioTrack, selectAudioTrack, setAudioTracks } = usePlayer();
   const [tracks,   setTracks]   = useState([]);
   const [suggest,  setSuggest]  = useState(null);   // null = not looked yet
@@ -50,6 +53,7 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
   // The player chrome offers the same switch from mini and from fullscreen, so
   // it reads the list from context rather than fetching it a second time.
   useEffect(() => { setAudioTracks(videoId, tracks); }, [videoId, tracks, setAudioTracks]);
+  useEffect(() => { onCount?.(tracks.length); }, [tracks.length, onCount]);
 
   // Scanning the library for look-alike files is the expensive half, so it only
   // runs when the panel is actually opened.
@@ -62,11 +66,11 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
     } catch { setSuggest([]); }
   }, [videoId]);
 
-  function openPanel() {
+  function openPanel(rect) {
     const next = !panel;
     setPanel(next);
     if (next) {
-      const r = btnRef.current.getBoundingClientRect();
+      const r = rect || btnRef.current.getBoundingClientRect();
       setAnchor({ top: r.bottom + 8, right: Math.max(12, window.innerWidth - r.right) });
       if (suggest == null) loadSuggestions();
     }
@@ -194,19 +198,21 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
   // second mix of this one — worth flagging before it gets played.
   const mismatch = secs => !!(duration && secs && Math.abs(secs - duration) > 5);
 
+  useImperativeHandle(ref, () => ({ open: rect => { if (!panel) openPanel(rect); }, count: tracks.length }));
+
   return (
     <div className="audio-tools">
-      <button
+      {!hideTrigger && <button
         ref={btnRef}
         className={`icon-btn${tracks.length ? " icon-btn-wide" : ""}${panel ? " is-on" : ""}`}
-        onClick={openPanel}
+        onClick={() => openPanel()}
         title={tracks.length
           ? `${tracks.length} alternate soundtrack${tracks.length > 1 ? "s" : ""} — add, rename or detach (switch in the player)`
           : "Add an alternate soundtrack"}
       >
         <Icon name="volume" size={16} />
         {tracks.length > 0 && <span className="icon-btn-num">{tracks.length}</span>}
-      </button>
+      </button>}
 
       {panel && anchor && createPortal(
         <div className="audio-panel" ref={panelRef} style={{ top: anchor.top, right: anchor.right }}>
@@ -295,4 +301,6 @@ export default function AudioTracks({ videoId, duration, onLibraryChanged }) {
       )}
     </div>
   );
-}
+});
+
+export default AudioTracks;

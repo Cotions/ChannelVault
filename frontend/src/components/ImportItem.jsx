@@ -117,7 +117,7 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
 
   return (
     <div style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, opacity: done ? 0.5 : 1 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", fontSize: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", fontSize: 13 }}>
         <input
           type="checkbox"
           checked={checked}
@@ -132,10 +132,10 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
             {it.artist ? `→ ${it.artist}/` : "— no artist tag"}{it.in_db && " · already in DB"}
           </div>
         </div>
-        <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>
+        <span style={{ fontSize: 12.5, color: "var(--muted)", whiteSpace: "nowrap" }}>
           {done ? "done" : (STATUS_LABEL[it.status] || it.status)}
         </span>
-        <button className="btn-ghost" style={{ fontSize: 11 }} onClick={toggle}>
+        <button className="btn-ghost" style={{ fontSize: 12.5 }} onClick={toggle}>
           {open ? "▾" : "▸"}
         </button>
       </div>
@@ -152,10 +152,10 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
             ) : (
               <div style={{ width: 160, height: 90, borderRadius: 4, background: "#000",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                color: "var(--muted)", fontSize: 11 }}>no thumbnail</div>
+                color: "var(--muted)", fontSize: 12.5 }}>no thumbnail</div>
             )}
             {meta && (
-              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
+              <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
                 <div>id: {meta.video_id || "— write to file"}</div>
                 {meta.source && <div>from: {sourceLabel(meta.source)}</div>}
                 <div>dest: {fields?.artist ? `${fields.artist}/` : "— need artist"}</div>
@@ -164,40 +164,40 @@ export default function ImportItem({ it, checked, onCheck, source, mode, onTrans
           </div>
 
           <div style={{ flex: 1, minWidth: 0 }}>
-            {busy === "inspect" && <div style={{ fontSize: 12, color: "var(--muted)" }}>Reading…</div>}
+            {busy === "inspect" && <div style={{ fontSize: 13, color: "var(--muted)" }}>Reading…</div>}
             {fields && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {FIELDS.map(f => (
-                  <label key={f.key} style={{ fontSize: 11, color: "var(--muted)" }}>
+                  <label key={f.key} style={{ fontSize: 12.5, color: "var(--muted)" }}>
                     {f.label}
                     {f.area ? (
                       <textarea
                         value={fields[f.key]}
                         onChange={e => setField(f.key, e.target.value)}
                         rows={2}
-                        style={{ width: "100%", fontSize: 12, marginTop: 2, resize: "vertical" }}
+                        style={{ width: "100%", fontSize: 13, marginTop: 2, resize: "vertical" }}
                       />
                     ) : (
                       <input
                         type="text"
                         value={fields[f.key]}
                         onChange={e => setField(f.key, e.target.value)}
-                        style={{ width: "100%", fontSize: 12, marginTop: 2 }}
+                        style={{ width: "100%", fontSize: 13, marginTop: 2 }}
                       />
                     )}
                   </label>
                 ))}
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
-                  <button className="btn-secondary" style={{ fontSize: 12, padding: "4px 10px" }}
+                  <button className="btn-secondary" style={{ fontSize: 13, padding: "4px 10px" }}
                     onClick={autoFetch} disabled={!!busy || !canFetch}
                     title={canFetch ? "" : "Not a YouTube link — fill in by hand"}>
                     {busy === "fetch" ? "Fetching…" : "Auto-fetch from YouTube"}
                   </button>
-                  <button className="btn-secondary" style={{ fontSize: 12, padding: "4px 10px" }}
+                  <button className="btn-secondary" style={{ fontSize: 13, padding: "4px 10px" }}
                     onClick={writeToFile} disabled={!!busy}>
                     {busy === "write" ? "Writing…" : "Write to file"}
                   </button>
-                  <button className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
+                  <button className="btn-primary" style={{ fontSize: 13, padding: "4px 10px" }}
                     onClick={transferThis} disabled={!!busy || done || !canImport || locked}
                     title={canImport ? "" : "Write the artist into the file first"}>
                     {busy === "transfer" ? "Transferring…" : (mode === "copy" ? "Copy & Add" : "Move & Add")}

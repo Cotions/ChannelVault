@@ -20,10 +20,10 @@ import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
 import DownloadButton from "../components/DownloadButton";
 import MarkRow from "../components/MarkRow";
-import DownloadPrefs from "../components/DownloadPrefs";
+import { useDownloads, prefFor, savePref, QUALITIES, qualityLabel } from "../lib/downloads";
 import ChannelLinker from "../components/ChannelLinker";
 import SocialIcon from "../components/SocialIcon";
-import ChannelStatusMenu from "../components/ChannelStatusMenu";
+import Menu from "../components/Menu";
 import FeedFollow from "../components/FeedFollow";
 import ArtistRename from "../components/ArtistRename";
 import AvatarPicker from "../components/AvatarPicker";
@@ -48,6 +48,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
   const [dir,    setDir]    = useRememberedState(`artist:${name}:dir`, "desc");
   const [creator, setCreator] = useState(null);
   const [scanMsg, setScanMsg] = useState(null);   // null = idle
+  const dl = useDownloads();
+  const dlPref = prefFor(dl.prefs, artist);
   const [scanning, setScanning] = useState(false);
 
   const [linked, setLinked] = useState([]);
@@ -200,61 +202,43 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
           {ratingsOn(ratingSettings) && (
             <RatingInput value={rating} busy={ratingBusy} onChange={handleRate} size={18} />
           )}
-          <button className="artist-rename-btn" onClick={() => setRenaming(true)} title="Rename this artist, or merge it into another">
-            <Icon name="pencil" size={13} />
-          </button>
-          <button className="artist-rename-btn" onClick={() => setPickingPicture(true)} title="Choose this artist's picture">
-            <Icon name="image" size={13} />
-          </button>
         </h2>
-        {artistVideos.length > 0 && (
-          <span className="artist-badge">{artistVideos.length} video{artistVideos.length !== 1 ? "s" : ""}</span>
-        )}
-        {artistWanted.length > 0 && (
-          <button type="button" className="artist-badge artist-badge-btn" style={{ background: "#1565c033", color: "#90caf9" }}
-                  onClick={() => openTab("wanted")} title="Show the Wanted tab">
-            <Icon name="download" size={12} />{artistWanted.length} wanted
-          </button>
-        )}
-        {artistIgnored.length > 0 && (
-          <button type="button" className="artist-badge artist-badge-btn" style={{ background: "#b71c1c33", color: "#ef9a9a" }}
-                  onClick={() => openTab("skipped")} title="Show the Ignored tab">
-            <Icon name="close" size={12} />{artistIgnored.length} ignored
-          </button>
-        )}
-        {artistVideos.length > 0 && (
-          <Link to={`/artist/${encodeURIComponent(artist)}/stats`} className="btn-secondary btn-export">Stats</Link>
-        )}
-        <button
-          className="btn-secondary btn-export"
-          onClick={handleScan}
-          disabled={scanning}
-          title="Scan this artist's folders for new files"
-        >
-          <Icon name="refresh" size={13} />{scanMsg || "Scan folder"}
-        </button>
-        <ChannelStatusMenu status={channelMark?.status || null} onChange={handleStatus} />
-        {tab === "videos" && artistVideos.length > 1 && (
-          <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />
-        )}
-        {tab === "videos" && artistVideos.length > 0 && (
-          <div className="layout-toggle">
-            <button
-              className={`btn-ghost${layout === "grid" ? " active" : ""}`}
-              onClick={() => switchLayout("grid")}
-              title="Grid view"
-            >
-              <Icon name="grid" size={15} />
-            </button>
-            <button
-              className={`btn-ghost${layout === "list" ? " active" : ""}`}
-              onClick={() => switchLayout("list")}
-              title="List view"
-            >
-              <Icon name="list" size={15} />
-            </button>
-          </div>
-        )}
+        {!channelMark && onYouTube && <FeedFollow key={artist} artist={artist} />}
+        <Menu
+          label="More actions"
+          items={[
+            artistVideos.length > 0 && { label: "Stats", icon: "chart", onClick: () => navigate(`/artist/${encodeURIComponent(artist)}/stats`) },
+            onYouTube && { label: "All uploads", icon: "list", title: "Every video seen on the channel, with links, including ones later unlisted or deleted",
+              onClick: () => navigate(`/artist/${encodeURIComponent(artist)}/uploads`) },
+            { label: scanMsg || "Scan for new files", icon: "refresh", spin: scanning, disabled: scanning, keepOpen: true, onClick: handleScan },
+            !channelMark && onYouTube && dl.installed && {
+              label: "Download quality", icon: "download",
+              hint: [qualityLabel(dlPref.quality), dlPref.auto && "auto"].filter(Boolean).join(" · "),
+              items: [
+                ...QUALITIES.map(q => ({
+                  key: q, label: qualityLabel(q), hint: q === "best" ? "usually 1080p" : null, checked: q === dlPref.quality,
+                  keepOpen: true, onClick: () => savePref(artist, { ...dlPref, quality: q }),
+                })),
+                { divider: true },
+                { key: "auto", label: "Download new uploads automatically", checked: dlPref.auto, keepOpen: true,
+                  title: "When the Inbox finds a new upload from this creator, download it at this quality. Only for followed channels; Shorts are skipped.",
+                  onClick: () => savePref(artist, { ...dlPref, auto: !dlPref.auto }) },
+              ],
+            },
+            { divider: true },
+            { label: "Rename or merge", icon: "pencil", onClick: () => setRenaming(true) },
+            { label: "Choose picture", icon: "image", onClick: () => setPickingPicture(true) },
+            { label: "Link another channel", icon: "plus", title: "Mark another channel as the same person", onClick: () => setLinking(true) },
+            { label: "Channel status", icon: "warn", hint: channelMark?.status ? CHANNEL_STATUS[channelMark.status]?.label : "Active",
+              items: [
+                { key: "active", label: "Active", checked: !channelMark?.status, onClick: () => channelMark?.status && handleStatus(null) },
+                ...Object.entries(CHANNEL_STATUS).map(([value, st]) => ({
+                  key: value, label: st.label, title: st.hint, checked: channelMark?.status === value,
+                  onClick: () => channelMark?.status !== value && handleStatus(value),
+                })),
+              ] },
+          ]}
+        />
       </div>
       <ArtistRename
         artist={artist}
@@ -266,7 +250,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
         }}
         onAlias={next => navigate(`/artist/${encodeURIComponent(next)}`, { replace: true })}
       />
-      <div className="artist-links-row">
+      {(linked.length > 0 || linking) && <div className="artist-links-row">
         {linked.length > 0 && <span className="artist-links-label">Also on</span>}
         {linked.map(n => (
           <span key={n} className="artist-link-chip">
@@ -291,18 +275,8 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
             onPick={handleLink}
             onClose={() => setLinking(false)}
           />
-        ) : (
-          <button className="artist-link-add" onClick={() => setLinking(true)} title="Mark another channel as the same person">
-            <Icon name="plus" size={12} />Link channel
-          </button>
-        )}
-        {!channelMark && onYouTube && (
-          <FeedFollow key={artist} artist={artist} />
-        )}
-        {!channelMark && onYouTube && (
-          <DownloadPrefs artist={artist} />
-        )}
-      </div>
+        ) : null}
+      </div>}
 
       {creator && (
         <div className="creator-profile">
@@ -320,7 +294,6 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
               <span className="creator-profile-avatar-edit"><Icon name="image" size={14} /></span>
             </button>
             <div className="creator-profile-id">
-              <div className="creator-profile-name">{artist}</div>
               {safeUrl(creator.channel_url) ? (
                 <a className="creator-profile-handle" href={safeUrl(creator.channel_url)} target="_blank" rel="noreferrer">
                   {creator.handle || creator.channel_url}
@@ -341,7 +314,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
             {creator.video_count != null && (
               <div className="creator-profile-stat">
                 <span className="cp-num">{fmt(creator.video_count)}</span>
-                <span className="cp-label">Videos</span>
+                <span className="cp-label">On YouTube</span>
               </div>
             )}
             {creator.total_views != null && (
@@ -404,6 +377,19 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
 
       {tab === "videos" && artistVideos.length > 0 && (
         <>
+          <div className="grid-toolbar">
+            <span className="grid-toolbar-count">{artistVideos.length.toLocaleString()} video{artistVideos.length !== 1 ? "s" : ""}</span>
+            <span className="page-head-spacer" />
+            {artistVideos.length > 1 && <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />}
+            <div className="layout-toggle">
+              <button className={`btn-ghost${layout === "grid" ? " active" : ""}`} onClick={() => switchLayout("grid")} title="Grid view" aria-label="Grid view">
+                <Icon name="grid" size={16} />
+              </button>
+              <button className={`btn-ghost${layout === "list" ? " active" : ""}`} onClick={() => switchLayout("list")} title="List view" aria-label="List view">
+                <Icon name="list" size={16} />
+              </button>
+            </div>
+          </div>
           <div className={layout === "list" ? "video-list" : "video-grid"}>
             {pageVideos.map(v => (
               <VideoCard
@@ -415,6 +401,7 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
                 playlists={playlists}
                 onAddToPlaylist={onAddToPlaylist}
                 layout={layout}
+                hideChannel
               />
             ))}
           </div>

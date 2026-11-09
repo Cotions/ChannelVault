@@ -27,7 +27,6 @@ export default function MarkRow({ video: v, onRemoveMark, showChannel = false, c
                 <Link className="mark-channel" to={`/artist/${encodeURIComponent(a)}?tab=${v.status === "ignored" ? "skipped" : "wanted"}`}>{a}</Link>
               </span>
             ))}
-            {v.duration_secs > 0 && <span className="mark-length">{fmtDuration(v.duration_secs)}</span>}
           </div>
         )}
       </div>

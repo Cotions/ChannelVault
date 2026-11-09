@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { latestThumbUrl } from "../lib/api";
 import { pinSortSlot, releaseSortSlot, PIN_MS } from "../lib/sortPins";
@@ -6,38 +6,28 @@ import { artistsOf } from "../lib/artists";
 import { isYouTube, sourceLabel } from "../lib/source";
 import { fmt, fmtDuration, fmtRecordedDate } from "../lib/fmt";
 import Icon from "./Icon";
+import Menu from "./Menu";
 import TagChip from "./TagChip";
 
 const AUDIO_FILE_RE = /\.(mp3|m4a|aac|opus|ogg|oga|flac|wav|weba)$/i;
 
-export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid" }) {
+export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playlists, onAddToPlaylist, onRemoveFromList, layout = "grid", hideTagId, hideChannel = false }) {
   const [thumbOk,    setThumbOk]    = useState(true);
-  const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
   const [fetching,   setFetching]   = useState(false);
-  // Holds yt-dlp's own reason ("Sign in to confirm your age", …) so the button
-  // tooltip says why instead of a bare "Fetch failed".
+  // Holds yt-dlp's own reason ("Sign in to confirm your age", …) so the card
+  // says why instead of a bare "Fetch failed".
   const [fetchErr,   setFetchErr]   = useState(null);
   const [elapsed,    setElapsed]    = useState(null);
-  const [plOpen,     setPlOpen]     = useState(false);
   const [plAdded,    setPlAdded]    = useState(null);
-  const plRef = useRef(null);
+  const [menuOpen,   setMenuOpen]   = useState(false);
 
-  useEffect(() => {
-    if (!plOpen) return;
-    function onDown(e) {
-      if (plRef.current && !plRef.current.contains(e.target)) setPlOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
-  }, [plOpen]);
-
-  async function handleAddToPlaylist(plId) {
-    setPlOpen(false);
+  async function handleAddToPlaylist(plId, newName) {
     try {
-      await onAddToPlaylist(plId, video.video_id);
-      setPlAdded(plId);
-      setTimeout(() => setPlAdded(null), 2000);
+      const r = await onAddToPlaylist(plId, video.video_id, newName);
+      const name = newName || playlists.find(p => p.id === plId)?.name || "playlist";
+      setPlAdded(r?.added === false ? `Already in ${name}` : `Added to ${name}`);
+      setTimeout(() => setPlAdded(null), 2500);
     } catch {}
   }
 
@@ -48,23 +38,8 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
     const id = setInterval(() => setElapsed((Date.now() - start) / 1000), 100);
     return () => clearInterval(id);
   }, [fetching]);
-  const confirmRef = useRef(null);
-
-  useEffect(() => {
-    if (confirming && confirmRef.current) confirmRef.current.focus();
-  }, [confirming]);
-
-  useEffect(() => {
-    if (!confirming) return;
-    function onKey(e) {
-      if (e.key === "Escape") setConfirming(false);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [confirming]);
 
   async function handleDelete() {
-    setConfirming(false);
     setDeleting(true);
     try {
       await onDelete(video.video_id);
@@ -106,8 +81,34 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
   const dead       = video.availability && video.availability !== "available";
   const availLabel = dead ? (AVAIL_LABELS[video.availability] || "Unavailable") : null;
 
+  // On a tag's own page every card would repeat that tag.
+  const shownTags = (video.tags || []).filter(t => t.id !== hideTagId);
+
+  const menuItems = [
+    onAddToPlaylist && playlists && {
+      label: "Add to playlist", icon: "playlist",
+      items: [
+        ...playlists.map(pl => ({ key: pl.id, label: pl.name, checked: pl.video_ids?.includes(video.video_id), onClick: () => handleAddToPlaylist(pl.id) })),
+        { divider: true },
+        { key: "new", input: { placeholder: "New playlist…" }, onSubmit: n => handleAddToPlaylist(null, n) },
+      ],
+    },
+    onEdit && { label: "Edit details", icon: "pencil", onClick: () => onEdit(video) },
+    onRemoveFromList && { label: "Remove from this playlist", icon: "minus", onClick: () => onRemoveFromList(video.video_id) },
+    onFetchMeta && fromYT && { divider: true },
+    onFetchMeta && fromYT && {
+      label: dead ? `Refresh from YouTube (${availLabel.toLowerCase()})` : "Refresh from YouTube",
+      icon: "refresh", disabled: fetching, onClick: handleFetchMeta,
+    },
+    onDelete && { divider: true },
+    onDelete && {
+      label: "Remove from library", icon: "trash", danger: true, disabled: deleting, onClick: handleDelete,
+      confirm: { text: "Remove this video from the library? Its tags, playlists and watch history go too. The file stays on disk, and a scan adds it back.", yes: "Remove" },
+    },
+  ].filter(Boolean);
+
   return (
-    <div className={`video-card${layout === "list" ? " list" : ""}`}>
+    <div className={`video-card${layout === "list" ? " list" : ""}${menuOpen ? " menu-open" : ""}`}>
       <Link to={`/video/${video.video_id}`} className="video-thumb-link">
         {thumbOk ? (
           <img
@@ -122,7 +123,7 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         )}
         <span className="thumb-play"><Icon name="play" size={20} className="icon-fill" /></span>
         {availLabel && (
-          <span className={`avail-badge avail-${video.availability}`} title={`${availLabel} on YouTube`}>
+          <span className={`avail-badge avail-${video.availability}`} title={`${availLabel} on YouTube. Your copy is safe here.`}>
             {availLabel}
           </span>
         )}
@@ -144,117 +145,38 @@ export default function VideoCard({ video, onDelete, onEdit, onFetchMeta, playli
         {dur && <span className="dur-badge">{dur}</span>}
       </Link>
       <div className="video-info">
+        {menuItems.length > 0 && (
+          <div className="video-more">
+            <Menu items={menuItems} className="video-more-btn" label="More actions" onOpenChange={setMenuOpen} />
+          </div>
+        )}
         <div className="video-title">
           <Link to={`/video/${video.video_id}`}>{video.title || video.video_id}</Link>
         </div>
-        <Link className="video-channel" to={`/artist/${encodeURIComponent(artists[0])}`} title={artists.join(", ")}>
-          {artists[0]}{artists.length > 1 ? ` +${artists.length - 1}` : ""}
-        </Link>
+        {!hideChannel && (
+          <Link className="video-channel" to={`/artist/${encodeURIComponent(artists[0])}`} title={artists.join(", ")}>
+            {artists[0]}{artists.length > 1 ? ` +${artists.length - 1}` : ""}
+          </Link>
+        )}
         <div className="video-meta">
           {date && <span>{date}</span>}
           {video.view_count != null && <span>{fmt(video.view_count)} views</span>}
-          {video.like_count  != null && <span>{fmt(video.like_count)} likes</span>}
         </div>
-        {video.tags?.length > 0 && (
+        {shownTags.length > 0 && (
           <div className="video-tags">
-            {video.tags.slice(0, 3).map(t => <TagChip key={t.id} tag={t} size="sm" link />)}
-            {video.tags.length > 3 && (
-              <span className="video-tags-more" title={video.tags.slice(3).map(t => t.name).join(", ")}>+{video.tags.length - 3}</span>
+            {shownTags.slice(0, 3).map(t => <TagChip key={t.id} tag={t} size="sm" link />)}
+            {shownTags.length > 3 && (
+              <span className="video-tags-more" title={shownTags.slice(3).map(t => t.name).join(", ")}>+{shownTags.length - 3}</span>
             )}
           </div>
         )}
       </div>
-      <div className="video-actions">
-        {confirming ? (
-          <>
-            <span className="del-confirm-label">Remove entry?</span>
-            <button
-              ref={confirmRef}
-              className="del-btn del-btn-confirm"
-              onClick={handleDelete}
-              disabled={deleting}
-              title="Remove (Enter): tags, playlists and watch history go with it; the file stays on disk and a scan adds it back"
-            >
-              <Icon name="check" />
-            </button>
-            <button
-              className="del-btn"
-              onClick={() => setConfirming(false)}
-              title="Cancel (Esc)"
-            >
-              <Icon name="close" />
-            </button>
-          </>
-        ) : (
-          <>
-            <div className="va-left">
-              {onFetchMeta && fromYT && (
-                <button
-                  className={`del-btn fetch-btn${fetching ? " spinning" : ""}${fetchErr ? " fetch-err" : ""}${dead ? " fetch-dead" : ""}`}
-                  title={fetchErr || (dead ? `${availLabel} — fetch may fail` : "Fetch metadata from YouTube")}
-                  disabled={fetching}
-                  onClick={handleFetchMeta}
-                >
-                  <Icon name={fetchErr ? "warn" : "refresh"} />
-                </button>
-              )}
-              {onFetchMeta && fromYT && elapsed != null && (
-                <span className="fetch-timer">{elapsed.toFixed(1)}s</span>
-              )}
-            </div>
-            <div className="va-right">
-            {onAddToPlaylist && playlists && (
-              <div className="pl-menu-wrap" ref={plRef}>
-                <button
-                  className={`del-btn pl-btn${plAdded ? " pl-added" : ""}`}
-                  title="Add to playlist"
-                  onClick={() => setPlOpen(o => !o)}
-                >
-                  <Icon name={plAdded ? "check" : "plus"} />
-                </button>
-                {plOpen && (
-                  <div className="pl-menu">
-                    {playlists.length === 0 ? (
-                      <div className="pl-menu-empty">No playlists yet</div>
-                    ) : (
-                      playlists.map(pl => (
-                        <button key={pl.id} className="pl-menu-item" onClick={() => handleAddToPlaylist(pl.id)}>
-                          {pl.name}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-            {onEdit && (
-              <button className="del-btn" title="Edit metadata" onClick={() => onEdit(video)}>
-                <Icon name="pencil" />
-              </button>
-            )}
-            {onRemoveFromList && (
-              <button
-                className="del-btn"
-                title="Remove from playlist"
-                onClick={() => onRemoveFromList(video.video_id)}
-              >
-                <Icon name="minus" />
-              </button>
-            )}
-            {onDelete && (
-              <button
-                className="del-btn del-btn-danger"
-                title="Remove from vault (the file stays on disk)"
-                disabled={deleting}
-                onClick={() => setConfirming(true)}
-              >
-                <Icon name="trash" />
-              </button>
-            )}
-            </div>
-          </>
-        )}
-      </div>
+      {(fetching || fetchErr || plAdded || elapsed != null) && (
+        <span className={`card-status${fetchErr ? " is-bad" : ""}`} title={fetchErr || ""}>
+          {fetching && <Icon name="refresh" size={12} className="spin" />}
+          {fetchErr ? "Couldn't refresh" : plAdded ? plAdded : fetching ? `Refreshing ${elapsed?.toFixed(1) ?? "0.0"}s` : "Refreshed"}
+        </span>
+      )}
     </div>
   );
 }

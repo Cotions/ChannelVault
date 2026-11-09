@@ -175,7 +175,7 @@ export default function ProfileSettings({ onChanged }) {
         <button className="btn-secondary" onClick={() => pickFolder("data_directory", browseData)}>Browse…</button>
         <button className="btn-primary" onClick={handleCreate}>Create</button>
       </div>
-      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "6px" }}>
+      <div className="field-hint" style={{ marginTop: "6px" }}>
         Each profile is its own library: videos, tags, playlists and stats stay inside it.
         Pick an empty data directory to start fresh, or one an earlier profile used to bring
         it back. Media roots are set in the Library tab after switching. Removing a profile

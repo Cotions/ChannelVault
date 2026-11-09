@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { artistThumbUrl, getCreators, getChannelStatuses, getArtistRatings } from "../lib/api";
-import { ratingStyle, ratingsOn } from "../lib/rating";
+import { ratingStyle, ratingsOn, starsShort } from "../lib/rating";
 import { CHANNEL_STATUS } from "../lib/channelStatus";
 import { artistsOf } from "../lib/artists";
 import { recDate } from "../lib/sort";
@@ -97,6 +97,7 @@ function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
     <div
       className={`creator-card${gone ? " is-gone" : ""}${rated.className}`}
       style={{ ...rated.style, animationDelay: `${Math.min(index, 24) * 22}ms` }}
+      title={rated.className && stats.rating ? `Your rating: ${stats.rating / 2} star${stats.rating === 2 ? "" : "s"}` : undefined}
     >
       <Link to={`/artist/${encodeURIComponent(name)}`} className="creator-card-link">
         <span className="creator-avatar-wrap">
@@ -128,7 +129,10 @@ function ArtistCard({ name, stats, line, index, onPickPicture, rating }) {
             </span>
           )}
         </span>
-        <span className="creator-metric">{line || " "}</span>
+        <span className="creator-metric">
+          {rated.className && stats.rating ? <span className="creator-stars" style={{ color: "var(--rating-color)" }}>★ {starsShort(stats.rating)}</span> : null}
+          {line || " "}
+        </span>
       </Link>
       <button
         type="button"
@@ -243,7 +247,7 @@ export default function ArtistsPage({ videos, wanted, ignored, query, rating }) 
     <div className="card">
       <div className="page-head">
         <h2 className="page-title">Artists</h2>
-        <span className="page-count">
+        <span className="page-count" title="Every channel in your library, including ones with only wanted or ignored videos">
           {q ? `${artists.length.toLocaleString()} for “${query.trim()}”` : artists.length.toLocaleString()}
         </span>
         <span className="page-head-spacer" />

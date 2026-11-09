@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
 import { createPortal } from "react-dom";
 import { writeTags } from "../lib/api";
 import { usePlayer } from "../player/playerContext";
@@ -14,7 +14,7 @@ function short(v) {
    video file's own tags, so another player or a fresh database reads the
    same thing. Never automatic: the button shows what would change first, and
    only "Write" touches the file. */
-export default function WriteTags({ videoId }) {
+const WriteTags = forwardRef(function WriteTags({ videoId, hideTrigger = false }, ref) {
   const { reloadSource } = usePlayer();
   const [open,   setOpen]   = useState(false);
   const [anchor, setAnchor] = useState(null);
@@ -24,9 +24,9 @@ export default function WriteTags({ videoId }) {
   const btnRef   = useRef(null);
   const panelRef = useRef(null);
 
-  async function toggle() {
+  async function toggle(rect) {
     if (open) { setOpen(false); return; }
-    const r = btnRef.current.getBoundingClientRect();
+    const r = rect || btnRef.current.getBoundingClientRect();
     setAnchor({ top: r.bottom + 8, right: Math.max(12, window.innerWidth - r.right) });
     setOpen(true);
     setPlan(null);
@@ -80,16 +80,18 @@ export default function WriteTags({ videoId }) {
 
   const changes = plan?.changes || [];
 
+  useImperativeHandle(ref, () => ({ open: rect => { if (!open) toggle(rect); } }));
+
   return (
     <>
-      <button
+      {!hideTrigger && <button
         ref={btnRef}
         className={`icon-btn${open ? " is-on" : ""}`}
-        onClick={toggle}
+        onClick={() => toggle()}
         title="Write the library's details into the file's tags"
       >
         <Icon name="tag" size={16} />
-      </button>
+      </button>}
       {open && anchor && createPortal(
         <div className="audio-panel write-tags" ref={panelRef} style={{ top: anchor.top, right: anchor.right }}>
           <div className="audio-panel-head">
@@ -129,4 +131,6 @@ export default function WriteTags({ videoId }) {
       )}
     </>
   );
-}
+});
+
+export default WriteTags;

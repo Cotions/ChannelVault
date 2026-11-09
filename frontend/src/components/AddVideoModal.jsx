@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { addVideoManual, browseFile, fetchMetadata, readFileTags } from "../lib/api";
 import Icon from "./Icon";
+import { useEscape } from "../lib/useEscape";
 import { isYouTube } from "../lib/source";
 
 function extractVideoId(input) {
@@ -20,6 +21,7 @@ function extractVideoId(input) {
 }
 
 export default function AddVideoModal({ onClose, onAdded, initialVideo = null }) {
+  useEscape(onClose);
   const isEdit = !!initialVideo;
   // Editing a Twitch VOD / local file: the link is just a link, no fetching.
   const editingOther = isEdit && !isYouTube(initialVideo);
@@ -152,6 +154,82 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
     }
   }
 
+  const urlField = (
+    <label>
+              {isEdit ? (editingOther ? "Video link" : "YouTube URL") : <>YouTube URL or Video ID <span className="required">*</span></>}
+              <div className="fetch-row">
+                <input
+                  type="text"
+                  placeholder={editingOther ? "https://… (optional)" : "https://www.youtube.com/watch?v=… or video ID"}
+                  value={urlInput}
+                  onChange={e => { setUrlInput(e.target.value); setFetchStatus(null); }}
+                  onBlur={handleUrlBlur}
+                  onPaste={e => {
+                    const pasted = e.clipboardData.getData("text");
+                    setUrlInput(pasted);
+                    setFetchStatus(null);
+                    if (!isEdit) setTimeout(() => fetchMeta(pasted), 0);
+                    e.preventDefault();
+                  }}
+                  autoFocus={!isEdit}
+                />
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => fetchMeta()}
+                  disabled={editingOther || fetchStatus === "loading" || !urlInput.trim()}
+                >
+                  {fetchStatus === "loading" ? "…" : "Fetch"}
+                </button>
+              </div>
+              {fetchStatus === "ok"  && <span className="field-hint" style={{color:"#81c784"}}>Metadata fetched</span>}
+              {fetchStatus === "err" && <span className="field-hint" style={{color:"#ef9a9a"}}>Could not fetch — edit fields manually</span>}
+              {fetchStatus === "other" && <span className="field-hint">Not a YouTube link — saved as-is; fill in title and artist, and pick the file</span>}
+              {!fetchStatus          && <span className="field-hint">{
+                editingOther ? "Where this video lives online, if anywhere"
+                  : isEdit ? "Fetch to refresh metadata from YouTube"
+                  : "Paste a URL or ID — metadata will auto-fill. Not on YouTube? Paste its link, or leave empty and pick the file"
+              }</span>}
+            </label>
+  );
+  const fileField = (
+    <label>
+              File on disk
+              <div className="fetch-row">
+                <input
+                  type="text"
+                  placeholder="/home/user/Downloads/video.mp4"
+                  value={form.file_path}
+                  onChange={e => set("file_path", e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={async () => {
+                    try {
+                      const data = await browseFile();
+                      if (data.ok && data.file) {
+                        set("file_path", data.file);
+                        applyFileTags(data.file);
+                      }
+                    } catch {}
+                  }}
+                >
+                  Browse…
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={!form.file_path.trim()}
+                  onClick={() => applyFileTags(form.file_path)}
+                  title="Fill the fields from the details saved in the file"
+                >
+                  Read file details
+                </button>
+              </div>
+            </label>
+  );
+
   return (
     // Close only on a click that starts and ends on the backdrop: selecting
     // text in a field and releasing outside must not lose the input.
@@ -162,93 +240,22 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
     >
       <div className="modal">
         <div className="modal-header">
-          <span className="modal-title">{isEdit ? "Edit Video Metadata" : "Add Video Manually"}</span>
+          <span className="modal-title">{isEdit ? "Edit details" : "Add a video"}</span>
           <button className="modal-close" onClick={onClose}><Icon name="close" /></button>
         </div>
 
         <form className="modal-form" onSubmit={handleSubmit}>
 
-          <label>
-            {isEdit ? (editingOther ? "Video link" : "YouTube URL") : <>YouTube URL or Video ID <span className="required">*</span></>}
-            <div className="fetch-row">
-              <input
-                type="text"
-                placeholder={editingOther ? "https://… (optional)" : "https://www.youtube.com/watch?v=… or video ID"}
-                value={urlInput}
-                onChange={e => { setUrlInput(e.target.value); setFetchStatus(null); }}
-                onBlur={handleUrlBlur}
-                onPaste={e => {
-                  const pasted = e.clipboardData.getData("text");
-                  setUrlInput(pasted);
-                  setFetchStatus(null);
-                  if (!isEdit) setTimeout(() => fetchMeta(pasted), 0);
-                  e.preventDefault();
-                }}
-                autoFocus={!isEdit}
-              />
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={() => fetchMeta()}
-                disabled={editingOther || fetchStatus === "loading" || !urlInput.trim()}
-              >
-                {fetchStatus === "loading" ? "…" : "Fetch"}
-              </button>
-            </div>
-            {fetchStatus === "ok"  && <span className="field-hint" style={{color:"#81c784"}}>Metadata fetched</span>}
-            {fetchStatus === "err" && <span className="field-hint" style={{color:"#ef9a9a"}}>Could not fetch — edit fields manually</span>}
-            {fetchStatus === "other" && <span className="field-hint">Not a YouTube link — saved as-is; fill in title and artist, and pick the file</span>}
-            {!fetchStatus          && <span className="field-hint">{
-              editingOther ? "Where this video lives online, if anywhere"
-                : isEdit ? "Fetch to refresh metadata from YouTube"
-                : "Paste a URL or ID — metadata will auto-fill. Not on YouTube? Paste its link, or leave empty and pick the file"
-            }</span>}
-          </label>
-
+          {!isEdit && urlField}
           <label>
             Title
-            <input type="text" placeholder="Video title" value={form.title} onChange={e => set("title", e.target.value)} autoFocus={isEdit} />
+            <input type="text" placeholder="Video title" value={form.title} onChange={e => set("title", e.target.value)} autoFocus={isEdit}
+              onFocus={e => { if (isEdit && !e.target.dataset.seen) { e.target.dataset.seen = "1"; e.target.setSelectionRange(0, 0); e.target.scrollLeft = 0; } }} />
           </label>
 
           <label>
-            Channel / Artist
+            Channel
             <input type="text" placeholder="Channel name" value={form.channel_name} onChange={e => set("channel_name", e.target.value)} />
-          </label>
-
-          <label>
-            Local File Path
-            <div className="fetch-row">
-              <input
-                type="text"
-                placeholder="/home/user/Downloads/video.mp4"
-                value={form.file_path}
-                onChange={e => set("file_path", e.target.value)}
-              />
-              <button
-                type="button"
-                className="btn-secondary"
-                onClick={async () => {
-                  try {
-                    const data = await browseFile();
-                    if (data.ok && data.file) {
-                      set("file_path", data.file);
-                      applyFileTags(data.file);
-                    }
-                  } catch {}
-                }}
-              >
-                Browse…
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={!form.file_path.trim()}
-                onClick={() => applyFileTags(form.file_path)}
-                title="Read metadata from file tags"
-              >
-                Read Tags
-              </button>
-            </div>
           </label>
 
           <div className="modal-row">
@@ -272,12 +279,20 @@ export default function AddVideoModal({ onClose, onAdded, initialVideo = null })
             />
           </label>
 
+          {isEdit ? (
+            <details className="modal-advanced">
+              <summary>Link and file</summary>
+              {urlField}
+              {fileField}
+            </details>
+          ) : fileField}
+
           {err && <div className="msg show err">{err}</div>}
 
           <div className="modal-actions">
             <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
             <button type="submit" className="btn-primary" disabled={busy}>
-              {busy ? "Saving…" : isEdit ? "Save Changes" : "Add Video"}
+              {busy ? "Saving…" : isEdit ? "Save" : "Add video"}
             </button>
           </div>
         </form>

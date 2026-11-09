@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createTag, updateTag, deleteTag, addTagRule, deleteTagRule, applyTagRules, backfillSegments, getTagSegments } from "../lib/api";
+import { playableItems } from "../lib/tagQueue";
 import Icon from "../components/Icon";
 import { usePlayer } from "../player/playerContext";
 
@@ -88,8 +89,8 @@ export default function TagsPage({ tags = [], query, onChanged }) {
 
   async function handleApplyRules() {
     const r = await run(applyTagRules);
-    if (r?.ok) setToast(`Rules applied: ${r.segments} segment${r.segments === 1 ? "" : "s"}, ${r.videos} video${r.videos === 1 ? "" : "s"} newly tagged.`);
-    else setToast("Applying rules failed.");
+    if (r?.ok) setToast(`Auto-tag done: ${r.segments} part${r.segments === 1 ? "" : "s"} and ${r.videos} video${r.videos === 1 ? "" : "s"} newly tagged.`);
+    else setToast("Auto-tag failed.");
   }
 
   async function handleBackfill() {
@@ -99,7 +100,7 @@ export default function TagsPage({ tags = [], query, onChanged }) {
         if (ev.type === "start") setBackfill(b => ({ ...b, total: ev.total }));
         else setBackfill(b => ({ ...b, ...ev }));
         if (ev.type === "done") {
-          setToast(`Chapters imported from ${ev.with_chapters} video${ev.with_chapters === 1 ? "" : "s"}: ${ev.segments} segment${ev.segments === 1 ? "" : "s"}.`);
+          setToast(`Chapters read from ${ev.with_chapters} video${ev.with_chapters === 1 ? "" : "s"}: ${ev.segments} new part${ev.segments === 1 ? "" : "s"}.`);
         }
       });
       await onChanged?.();
@@ -115,7 +116,7 @@ export default function TagsPage({ tags = [], query, onChanged }) {
     try { r = await getTagSegments(t.id); }
     catch { setToast("Request failed. Is the backend running?"); return; }
     if (!r.ok || !r.items?.length) { setToast(`Nothing tagged ${t.name} to play yet.`); return; }
-    playQueue(r.items, { tagId: t.id, tagName: t.name, color: t.color });
+    playQueue(playableItems(r.items), { tagId: t.id, tagName: t.name, color: t.color });
   }
 
   const totalRules = tags.reduce((n, t) => n + t.rules.length, 0);
@@ -127,11 +128,11 @@ export default function TagsPage({ tags = [], query, onChanged }) {
         <span className="page-count">{shown.length.toLocaleString()}</span>
         <div className="page-head-spacer" />
         {toast && <span className="fetch-timer">{toast}</span>}
-        <button className="btn-secondary btn-export" onClick={handleApplyRules} disabled={busy || totalRules === 0} title="Run every keyword rule over the whole library. Only adds tags.">
-          <Icon name="refresh" size={14} className={busy ? "spin" : ""} /> Apply rules
+        <button className="btn-secondary btn-export" onClick={handleApplyRules} disabled={busy || totalRules === 0} title={totalRules ? "Run every tag's auto-tag words over the whole library. Only adds tags." : "Add auto-tag words to a tag first"}>
+          <Icon name="sparkle" size={14} className={busy ? "spin" : ""} /> Auto-tag all
         </button>
-        <button className="btn-secondary btn-export" onClick={handleBackfill} disabled={busy || backfill != null} title="Read embedded chapters from every file that has no segments yet">
-          <Icon name="scissors" size={14} /> {backfill ? `Importing ${backfill.done}/${backfill.total || "…"}` : "Import chapters"}
+        <button className="btn-secondary btn-export" onClick={handleBackfill} disabled={busy || backfill != null} title="Turn the chapters inside your video files into parts, for videos with no parts yet">
+          <Icon name="scissors" size={14} /> {backfill ? `Reading ${backfill.done}/${backfill.total || "…"}` : "Import chapters"}
         </button>
       </div>
 
@@ -142,7 +143,7 @@ export default function TagsPage({ tags = [], query, onChanged }) {
 
       {shown.length === 0 ? (
         <div className="empty" style={{ marginTop: 14 }}>
-          {q ? "No matching tags." : "No tags yet. Create one here, or type a tag on any video or segment."}
+          {q ? "No matching tags." : "No tags yet. Create one here, or type a tag on any video or part."}
         </div>
       ) : (
         <div className="tag-list">
@@ -172,14 +173,14 @@ export default function TagsPage({ tags = [], query, onChanged }) {
 
                   <span className="tag-counts">
                     <span title="Videos carrying this tag">{t.video_count} video{t.video_count === 1 ? "" : "s"}</span>
-                    <span title="Segments carrying this tag">{t.segment_count} segment{t.segment_count === 1 ? "" : "s"}</span>
+                    <span title="Parts carrying this tag">{t.segment_count} part{t.segment_count === 1 ? "" : "s"}</span>
                   </span>
 
-                  <button className="icon-btn" onClick={() => playTag(t)} disabled={t.video_count === 0} title={`Play every part tagged ${t.name}`}>
-                    <Icon name="play" size={14} className="icon-fill" />
+                  <button className="btn-ghost tag-play" onClick={() => playTag(t)} disabled={t.video_count === 0} title={`Play every part tagged ${t.name}`}>
+                    <Icon name="play" size={12} className="icon-fill" /> Play
                   </button>
-                  <button className={`btn-ghost tag-rules-toggle${t.rules.length ? " has-rules" : ""}`} onClick={() => { setOpenId(open ? null : t.id); setRuleText(""); }} title="Keyword rules">
-                    <Icon name="search" size={13} /> {t.rules.length ? `${t.rules.length} rule${t.rules.length === 1 ? "" : "s"}` : "rules"}
+                  <button className={`btn-ghost tag-rules-toggle${t.rules.length ? " has-rules" : ""}`} onClick={() => { setOpenId(open ? null : t.id); setRuleText(""); }} title="Words that tag a part or video automatically when its title has one">
+                    <Icon name="sparkle" size={13} /> <span className="tag-rules-label">Auto-tag words</span>{t.rules.length ? ` · ${t.rules.length}` : ""}
                   </button>
                   <button className="icon-btn" onClick={() => { setEditId(t.id); setEditName(t.name); }} title="Rename"><Icon name="pencil" size={14} /></button>
                   {confirmId === t.id ? (
@@ -189,16 +190,15 @@ export default function TagsPage({ tags = [], query, onChanged }) {
                       <button className="icon-btn" onClick={() => setConfirmId(null)} title="Cancel (Esc)"><Icon name="close" size={14} /></button>
                     </>
                   ) : (
-                    <button className="icon-btn icon-btn-danger" onClick={() => setConfirmId(t.id)} title="Delete tag (segments stay, just untagged)"><Icon name="trash" size={14} /></button>
+                    <button className="icon-btn icon-btn-danger" onClick={() => setConfirmId(t.id)} title="Delete tag (parts stay, just untagged)"><Icon name="trash" size={14} /></button>
                   )}
                 </div>
 
                 {open && (
                   <div className="tag-rules">
                     <div className="field-hint">
-                      Any chapter title or video title containing one of these words gets this tag, when a file is
-                      imported and whenever you press <b>Apply rules</b>. Rules only add; a tag you removed by hand
-                      stays removed until the next apply.
+                      A part or video whose title has one of these words gets this tag when it's added, and
+                      whenever you press <b>Auto-tag all</b>. Auto-tag only adds tags, never removes them.
                     </div>
                     <div className="tag-rules-list">
                       {t.rules.map(r => (

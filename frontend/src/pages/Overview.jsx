@@ -8,7 +8,7 @@ import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import TagChip from "../components/TagChip";
 
-export default function Overview({ videos, playlists, tags = [], tagIds = [], onTagIds, query, onAddToPlaylist, onDelete, onEdit, onFetchMeta }) {
+export default function Overview({ videos, playlists, tags = [], tagIds = [], onTagIds, query, onAddToPlaylist, onDelete, onEdit, onFetchMeta, loading = false }) {
   const [browseSort, setBrowseSort] = useRememberedState("home:sort", "upload");
   const [browseDir,  setBrowseDir]  = useRememberedState("home:dir", "desc");
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
@@ -20,7 +20,7 @@ export default function Overview({ videos, playlists, tags = [], tagIds = [], on
   const browse = useMemo(() => {
     let filtered = q ? videos.filter(v => videoMatches(v, q, descHits)) : videos;
     if (tagIds.length) filtered = filtered.filter(v => hasAllTags(v, tagIds));
-    return sortVideos(filtered, q ? "upload" : browseSort, q ? "desc" : browseDir, pins);
+    return sortVideos(filtered, browseSort, browseDir, pins);
   }, [videos, browseSort, browseDir, q, tagIds, pins, descHits]);
 
   // What the header's tag menu has switched on, in the order it was picked.
@@ -38,28 +38,26 @@ export default function Overview({ videos, playlists, tags = [], tagIds = [], on
     <div className="card">
       <div className="page-head">
         <h2 className="page-title">{q ? "Results" : "Videos"}</h2>
-        <span className="page-count">
+        {!loading && <span className="page-count" title={q ? "Matches titles, channels, tags and descriptions" : undefined}>
           {q
             ? `${browse.length.toLocaleString()} for “${q}”`
             : browse.length.toLocaleString()}
-        </span>
+        </span>}
         {activeTags.length > 0 && (
           <span className="page-head-tags">
             {activeTags.map(t => <TagChip key={t.id} tag={t} size="sm" onRemove={() => dropTag(t.id)} />)}
           </span>
         )}
         <div className="page-head-spacer" />
-        {!q && (
-          <div className="sort-controls">
-            <SortControls sort={browseSort} dir={browseDir} onSort={setBrowseSort} onDir={setBrowseDir} />
-          </div>
-        )}
+        <div className="sort-controls">
+          <SortControls sort={browseSort} dir={browseDir} onSort={setBrowseSort} onDir={setBrowseDir} />
+        </div>
       </div>
       {browse.length === 0 ? (
         <div className="empty">
           {q ? "No matches." : tagIds.length ? (
             <>No videos carry {tagIds.length > 1 ? "all of" : ""} {tagIds.map(id => tags.find(t => t.id === id)).filter(Boolean).map(t => <TagChip key={t.id} tag={t} size="sm" />)}</>
-          ) : "No videos yet."}
+          ) : loading ? "Loading your library…" : "No videos yet. Add a watch folder in Settings, then scan it."}
         </div>
       ) : (
         <>

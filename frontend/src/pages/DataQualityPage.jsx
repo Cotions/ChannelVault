@@ -115,142 +115,19 @@ export default function DataQualityPage({ onLibraryChanged }) {
     <>
     <div className="card" style={{ marginBottom: 16 }}>
       <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        Organize / Import
+        Library check
         <button
           className="btn-secondary"
-          style={{ fontSize: 12, padding: "3px 10px", marginLeft: "auto" }}
-          onClick={findLoose}
-          disabled={orgStatus === "loading" || orgStatus === "applying"}
-        >
-          {orgStatus === "loading" ? "Scanning…" : (source.trim() ? "Scan Source" : "Find Loose Files")}
-        </button>
-      </div>
-
-      <div className="folder-row" style={{ marginTop: 4 }}>
-        <input
-          type="text"
-          value={source}
-          onChange={e => setSource(e.target.value)}
-          placeholder="Import source folder (leave empty = loose files in library)"
-        />
-        <button className="btn-secondary" onClick={pickSource}>Browse…</button>
-      </div>
-      {source.trim() && (
-        <div className="folder-row" style={{ marginTop: 6, gap: 16 }}>
-          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="radio" name="xfer" checked={mode === "move"} onChange={() => setMode("move")} />
-            Move (remove from source)
-          </label>
-          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="radio" name="xfer" checked={mode === "copy"} onChange={() => setMode("copy")} />
-            Copy (keep source)
-          </label>
-        </div>
-      )}
-
-      {orgStatus === "idle" && (
-        <div className="empty" style={{ padding: "20px" }}>
-          Leave the source empty to file loose videos already in the library. Or pick a source
-          folder to import from — each file is read for its artist tag, transferred into
-          {" "}<code>library/&lt;artist&gt;/</code>, verified on disk, then added to the database.
-        </div>
-      )}
-      {orgStatus === "error" && (
-        <div className="msg show err">{orgError || "Request failed — is the backend running?"}</div>
-      )}
-
-      {(orgStatus === "ready" || orgStatus === "applying") && (
-        loose.length === 0 ? (
-          <div className="empty" style={{ padding: "20px" }}>No loose files in the watch folder.</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 12, color: "var(--muted)" }}>
-              <span>{loose.length} file{loose.length !== 1 ? "s" : ""} · {selectedCount} selected</span>
-              <button className="btn-ghost" style={{ fontSize: 11 }} onClick={selectAll}>Select all</button>
-              <button className="btn-ghost" style={{ fontSize: 11 }} onClick={unselectAll}>Unselect all</button>
-            </div>
-            {loose.map(it => (
-              <ImportItem
-                key={it.file}
-                it={it}
-                checked={!!selected[it.file]}
-                onCheck={setCheck}
-                source={source}
-                mode={mode}
-                onTransferred={onTransferred}
-                locked={orgStatus === "applying"}   // the bulk run may be moving this file
-                onMetaChanged={onMetaChanged}
-              />
-            ))}
-            <button
-              className="btn-primary"
-              style={{ alignSelf: "flex-start", marginTop: 6, fontSize: 12, padding: "5px 14px" }}
-              onClick={applyOrganize}
-              disabled={orgStatus === "applying" || selectedCount === 0}
-            >
-              {orgStatus === "applying"
-                ? (mode === "copy" ? "Copying…" : "Moving…")
-                : `${mode === "copy" ? "Copy" : "Move"} & Add (${selectedCount})`}
-            </button>
-          </div>
-        )
-      )}
-
-      {orgStatus === "done" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-          {(() => {
-            const ok = results.filter(r => r.added).length;
-            const fail = results.length - ok;
-            return (
-              <div style={{ fontSize: 13, fontWeight: 600, color: fail ? "#ffb74d" : "#81c784" }}>
-                {ok} transferred &amp; verified{fail ? ` · ${fail} skipped/failed` : ""}
-              </div>
-            );
-          })()}
-          {results.map(r => {
-            const verb = mode === "copy" ? "copied" : "moved";
-            const success = r.added && r.verified;
-            return (
-              <div key={r.file} style={{
-                background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 12,
-              }}>
-                <div style={{ fontWeight: 600, wordBreak: "break-all" }}>
-                  {success ? "✓ " : "✗ "}{r.dest || r.file}
-                </div>
-                <div style={{ color: success ? "#81c784" : "#ffb74d" }}>
-                  {success
-                    ? `${r.moved ? verb + " · " : ""}verified at destination · added to DB`
-                    : `not added — ${r.status}`}
-                </div>
-              </div>
-            );
-          })}
-          <button
-            className="btn-secondary"
-            style={{ alignSelf: "flex-start", marginTop: 6, fontSize: 12, padding: "5px 14px" }}
-            onClick={findLoose}
-          >
-            Rescan
-          </button>
-        </div>
-      )}
-    </div>
-
-    <div className="card">
-      <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        Data Quality
-        <button
-          className="btn-secondary"
-          style={{ fontSize: 12, padding: "3px 10px", marginLeft: "auto" }}
+          style={{ fontSize: 13, padding: "3px 10px", marginLeft: "auto" }}
           onClick={runScan}
           disabled={status === "scanning"}
         >
-          {status === "scanning" ? "Scanning…" : "Run Scan"}
+          {status === "scanning" ? "Scanning…" : "Check library"}
         </button>
       </div>
 
       {status === "idle" && (
-        <div className="empty" style={{ padding: "20px" }}>Click Run Scan to check for duplicates, missing files, and other library problems.</div>
+        <div className="field-hint" style={{ marginTop: 6 }}>Looks for duplicates, missing files and other problems.</div>
       )}
       {status === "error" && (
         <div className="msg show err">Scan failed — is the backend running?</div>
@@ -269,16 +146,16 @@ export default function DataQualityPage({ onLibraryChanged }) {
             }}>
               {duplicates.length}
             </span>
-            <span style={{ fontSize: 13 }}>duplicate video{duplicates.length !== 1 ? "s" : ""}</span>
+            <span style={{ fontSize: 14 }}>duplicate video{duplicates.length !== 1 ? "s" : ""}</span>
             {duplicates.length > 0 && (
-              <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+              <span style={{ marginLeft: "auto", fontSize: 12.5, color: "var(--muted)" }}>
                 {expanded.dupes ? "▲ hide" : "▼ show"}
               </span>
             )}
           </div>
 
           {expanded.dupes && duplicates.map(d => (
-            <div key={d.video_id} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 12 }}>
+            <div key={d.video_id} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 13 }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 {d.title || d.video_id}
                 {d.channel_name && <span style={{ color: "var(--muted)", fontWeight: 400 }}> — {d.channel_name}</span>}
@@ -299,16 +176,16 @@ export default function DataQualityPage({ onLibraryChanged }) {
             }}>
               {missing.length}
             </span>
-            <span style={{ fontSize: 13 }}>missing file{missing.length !== 1 ? "s" : ""}</span>
+            <span style={{ fontSize: 14 }}>missing file{missing.length !== 1 ? "s" : ""}</span>
             {missing.length > 0 && (
-              <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+              <span style={{ marginLeft: "auto", fontSize: 12.5, color: "var(--muted)" }}>
                 {expanded.missing ? "▲ hide" : "▼ show"}
               </span>
             )}
           </div>
 
           {expanded.missing && missing.map(m => (
-            <div key={m.video_id} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 12 }}>
+            <div key={m.video_id} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 13 }}>
               <div style={{ fontWeight: 600, marginBottom: 4 }}>
                 {m.title || m.video_id}
                 {m.channel_name && <span style={{ color: "var(--muted)", fontWeight: 400 }}> — {m.channel_name}</span>}
@@ -329,15 +206,15 @@ export default function DataQualityPage({ onLibraryChanged }) {
                 }}>
                   {ch.items.length}
                 </span>
-                <span style={{ fontSize: 13 }}>{ch.label}</span>
+                <span style={{ fontSize: 14 }}>{ch.label}</span>
                 {ch.items.length > 0 && (
-                  <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--muted)" }}>
+                  <span style={{ marginLeft: "auto", fontSize: 12.5, color: "var(--muted)" }}>
                     {expanded[ch.key] ? "▲ hide" : "▼ show"}
                   </span>
                 )}
               </div>
               {expanded[ch.key] && ch.items.map((it, i) => (
-                <div key={(it.video_id || it.title) + i} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 12 }}>
+                <div key={(it.video_id || it.title) + i} style={{ background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 13 }}>
                   <div style={{ fontWeight: 600, marginBottom: 4 }}>{it.title}</div>
                   <div style={{ color: "var(--muted)", wordBreak: "break-all" }}>{it.detail}</div>
                 </div>
@@ -345,6 +222,128 @@ export default function DataQualityPage({ onLibraryChanged }) {
             </div>
           ))}
 
+        </div>
+      )}
+    </div>
+
+    <div className="card">
+      <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        Import from a folder
+        <button
+          className="btn-secondary"
+          style={{ fontSize: 13, padding: "3px 10px", marginLeft: "auto" }}
+          onClick={findLoose}
+          disabled={orgStatus === "loading" || orgStatus === "applying"}
+        >
+          {orgStatus === "loading" ? "Looking…" : (source.trim() ? "Import from folder" : "Import loose files")}
+        </button>
+      </div>
+
+      <div className="folder-row" style={{ marginTop: 4 }}>
+        <input
+          type="text"
+          value={source}
+          onChange={e => setSource(e.target.value)}
+          placeholder="Folder to import from"
+        />
+        <button className="btn-secondary" onClick={pickSource}>Browse…</button>
+      </div>
+      {source.trim() && (
+        <div className="folder-row" style={{ marginTop: 6, gap: 16 }}>
+          <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="radio" name="xfer" checked={mode === "move"} onChange={() => setMode("move")} />
+            Move (remove from source)
+          </label>
+          <label style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="radio" name="xfer" checked={mode === "copy"} onChange={() => setMode("copy")} />
+            Copy (keep source)
+          </label>
+        </div>
+      )}
+
+      {orgStatus === "idle" && (
+        <div className="field-hint" style={{ marginTop: 10 }}>
+          Pick a folder to import videos from, or leave it empty to import loose files already in
+          your library folder. Each file goes into its channel's folder and is added to the library.
+        </div>
+      )}
+      {orgStatus === "error" && (
+        <div className="msg show err">{orgError || "Request failed — is the backend running?"}</div>
+      )}
+
+      {(orgStatus === "ready" || orgStatus === "applying") && (
+        loose.length === 0 ? (
+          <div className="empty" style={{ padding: "20px" }}>No loose files in the watch folder.</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13, color: "var(--muted)" }}>
+              <span>{loose.length} file{loose.length !== 1 ? "s" : ""} · {selectedCount} selected</span>
+              <button className="btn-ghost" style={{ fontSize: 12.5 }} onClick={selectAll}>Select all</button>
+              <button className="btn-ghost" style={{ fontSize: 12.5 }} onClick={unselectAll}>Unselect all</button>
+            </div>
+            {loose.map(it => (
+              <ImportItem
+                key={it.file}
+                it={it}
+                checked={!!selected[it.file]}
+                onCheck={setCheck}
+                source={source}
+                mode={mode}
+                onTransferred={onTransferred}
+                locked={orgStatus === "applying"}   // the bulk run may be moving this file
+                onMetaChanged={onMetaChanged}
+              />
+            ))}
+            <button
+              className="btn-primary"
+              style={{ alignSelf: "flex-start", marginTop: 6, fontSize: 13, padding: "5px 14px" }}
+              onClick={applyOrganize}
+              disabled={orgStatus === "applying" || selectedCount === 0}
+            >
+              {orgStatus === "applying"
+                ? (mode === "copy" ? "Copying…" : "Moving…")
+                : `${mode === "copy" ? "Copy" : "Move"} & Add (${selectedCount})`}
+            </button>
+          </div>
+        )
+      )}
+
+      {orgStatus === "done" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+          {(() => {
+            const ok = results.filter(r => r.added).length;
+            const fail = results.length - ok;
+            return (
+              <div style={{ fontSize: 14, fontWeight: 600, color: fail ? "#ffb74d" : "#81c784" }}>
+                {ok} transferred &amp; verified{fail ? ` · ${fail} skipped/failed` : ""}
+              </div>
+            );
+          })()}
+          {results.map(r => {
+            const verb = mode === "copy" ? "copied" : "moved";
+            const success = r.added && r.verified;
+            return (
+              <div key={r.file} style={{
+                background: "var(--surface2, #1e2130)", borderRadius: 6, padding: "8px 12px", fontSize: 13,
+              }}>
+                <div style={{ fontWeight: 600, wordBreak: "break-all" }}>
+                  {success ? "✓ " : "✗ "}{r.dest || r.file}
+                </div>
+                <div style={{ color: success ? "#81c784" : "#ffb74d" }}>
+                  {success
+                    ? `${r.moved ? verb + " · " : ""}verified at destination · added to DB`
+                    : `not added — ${r.status}`}
+                </div>
+              </div>
+            );
+          })}
+          <button
+            className="btn-secondary"
+            style={{ alignSelf: "flex-start", marginTop: 6, fontSize: 13, padding: "5px 14px" }}
+            onClick={findLoose}
+          >
+            Rescan
+          </button>
         </div>
       )}
     </div>

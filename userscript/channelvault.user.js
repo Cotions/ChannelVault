@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.12.0
+// @version      1.14.0
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -679,10 +679,50 @@ function looksLikeStat(s) {
       || /^\d[\d.,\s]*[KMB]?$/i.test(s);
 }
 
+// The page-side twin of an element: the userscript may run in an isolated
+// world, where YouTube's own properties on its elements aren't visible.
+function pageElement(el) {
+  if (pageWin === window) return el;
+  if (el.wrappedJSObject) return el.wrappedJSObject;
+  el.setAttribute("data-cv-pick", "");
+  try { return pageWin.document.querySelector("[data-cv-pick]") || el; }
+  finally { el.removeAttribute("data-cv-pick"); }
+}
+
+// The channel name from the data YouTube drew the card with, which doesn't
+// move when its markup and class names change. Newer lockups hold it as the
+// first part of the first metadata row; classic renderers as the byline.
+function channelFromCardData(card) {
+  try {
+    const el = pageElement(card);
+    let lvm = el.componentProps && el.componentProps.data;
+    if (typeof lvm === "function") lvm = lvm();          // newer lockups hand it out as a signal
+    const d = el.data;
+    if (!(lvm && lvm.metadata)) lvm = d && d.content && d.content.lockupViewModel;
+    let name = null;
+    if (lvm && lvm.metadata) {
+      if (lvm.contentType && lvm.contentType !== "LOCKUP_CONTENT_TYPE_VIDEO") return null;
+      const rows = lvm.metadata.lockupMetadataViewModel?.metadata?.contentMetadataViewModel?.metadataRows || [];
+      name = rows[0]?.metadataParts?.[0]?.text?.content;
+    } else {
+      const v = (d && d.content && d.content.videoRenderer) || d;
+      name = (v && (v.ownerText || v.longBylineText || v.shortBylineText))?.runs?.[0]?.text;
+    }
+    name = (name || "").trim();
+    return name && !looksLikeStat(name) ? name : null;
+  } catch (_) {
+    return null;   // page data out of reach
+  }
+}
+
 function extractChannelFromCard(card) {
   // A channel-link anchor is the reliable source — try it first.
   const anchor = (card.querySelector("a[href*='/@'], a[href*='/channel/'], a[href*='/user/']")?.textContent || "").trim();
   if (anchor && !looksLikeStat(anchor)) return anchor;
+
+  // Then the card's own data, which survives YouTube reshuffling its markup.
+  const fromData = channelFromCardData(card);
+  if (fromData) return fromData;
 
   // A channel's own Videos/Shorts/Live grid leaves the name off its cards:
   // they're all that channel's, so take the page's. Not on a watch page,
@@ -793,7 +833,9 @@ document.addEventListener("click", (e) => {
     _pendingMenuTitle    = document.querySelector(
       "ytd-watch-metadata h1 yt-formatted-string, #above-the-fold h1 yt-formatted-string"
     )?.textContent.trim() || null;
-    _pendingMenuChannel  = document.querySelector(
+    // The player's own record of the video first: it names the channel even
+    // when the page around it is an age gate or a changed layout.
+    _pendingMenuChannel  = channelFromPage()?.channel_name || document.querySelector(
       "#owner ytd-channel-name a, " +
       "ytd-video-owner-renderer ytd-channel-name a, " +
       "#upload-info ytd-channel-name a, " +
@@ -1025,8 +1067,8 @@ function reportChannel(info) {
 // ---------------------------------------------------------------------------
 // Channel scan — on a channel's Videos / Shorts / Live tab, one click scrolls
 // the grid to its end (the page loading its own next batches, as a user
-// scrolling would) and sends every tile's id and view count to the vault.
-// The vault updates view counts and checks whether its videos of that
+// scrolling would) and sends every tile's id, title and view count to the vault.
+// The vault keeps every link, updates view counts and checks whether its videos of that
 // channel that weren't on the tab still exist.
 // ---------------------------------------------------------------------------
 
@@ -1075,13 +1117,15 @@ function tileFromData(d) {
     const parts = rows.flatMap(r => r.metadataParts || []);
     const part = parts.find(p => p.leadingIcon && /\d/.test(p.text?.content || "")) ||
                  parts.find(p => /view/i.test(p.accessibilityLabel || p.text?.content || ""));
-    return { video_id: lvm.contentId, views: part ? parseAbbrevCount(part.text?.content) : null };
+    return { video_id: lvm.contentId, views: part ? parseAbbrevCount(part.text?.content) : null,
+             title: lvm.metadata?.lockupMetadataViewModel?.title?.content || null };
   }
   const s = c && c.shortsLockupViewModel;
   if (s) {
     const id = s.onTap?.innertubeCommand?.reelWatchEndpoint?.videoId ||
                (s.entityId || "").replace(/^shorts-shelf-item-/, "");
-    return { video_id: id, views: parseAbbrevCount(s.overlayMetadata?.secondaryText?.content) };
+    return { video_id: id, views: parseAbbrevCount(s.overlayMetadata?.secondaryText?.content),
+             title: s.overlayMetadata?.primaryText?.content || null };
   }
   return null;
 }
@@ -1095,7 +1139,7 @@ function collectTiles() {
     if (!t) {
       const a = r.querySelector("a[href*='watch?v='], a[href^='/shorts/']");
       const id = a && extractVideoIdFromHref(a.getAttribute("href"));
-      if (id) t = { video_id: id, views: null };
+      if (id) t = { video_id: id, views: null, title: (a.getAttribute("title") || a.textContent || "").trim() || null };
     }
     if (t && /^[\w-]{11}$/.test(t.video_id || "") && !out.has(t.video_id)) out.set(t.video_id, t);
   });
@@ -1140,6 +1184,7 @@ function showScanResult(r, tab) {
   title.textContent = `Vault sync — ${tab}`;
   p.appendChild(title);
   line(`${r.seen} on this tab · ${r.in_vault} in vault · ${r.updated} view counts updated`);
+  if (r.kept) line(`${r.kept} links kept` + (r.gone ? ` · ${r.gone} no longer on this tab (link kept, marked gone)` : ""));
   if (r.restored) line(`${r.restored} marked available again (they're on the channel)`);
   if (!r.complete) {
     line("Didn't reach the end of the tab (or couldn't read the channel id): missing-video check skipped.");
@@ -1190,7 +1235,7 @@ async function runScan(btn) {
   } finally {
     _scan = null;
     btn.classList.remove("cv-running");
-    btn.textContent = "Sync views to Vault";
+    btn.textContent = "Sync channel to Vault";
   }
 }
 
@@ -1205,7 +1250,7 @@ function updateScanButton() {
   if (btn) return;
   const b = el("button", null, { id: SCAN_BTN_ID, type: "button",
     title: "Scroll this whole tab and send every video's view count to ChannelVault" });
-  b.textContent = "Sync views to Vault";
+  b.textContent = "Sync channel to Vault";
   b.addEventListener("click", () => runScan(b));
   document.body.appendChild(b);
 }

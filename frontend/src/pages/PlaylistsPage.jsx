@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Icon from "../components/Icon";
+import { thumbUrl } from "../lib/api";
 
 export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDeletePlaylist }) {
   const navigate = useNavigate();
@@ -40,7 +41,7 @@ export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDe
       </form>
       {shown.length === 0 ? (
         <div className="empty" style={{ marginTop: 14 }}>
-          {q ? "No matching playlists." : "No playlists yet."}
+          {q ? "No matching playlists." : "No playlists yet. Make one here, or use Add to playlist on any video."}
         </div>
       ) : (
         <div className="playlist-list">
@@ -54,9 +55,13 @@ export default function PlaylistsPage({ playlists, query, onCreatePlaylist, onDe
               onClick={() => navigate(`/playlist/${pl.id}`)}
               onKeyDown={e => { if (e.key === "Enter" && e.target === e.currentTarget) navigate(`/playlist/${pl.id}`); }}
             >
-              <Icon name="playlist" size={15} className="playlist-icon" />
+              <span className="playlist-cover">
+                {pl.cover_id
+                  ? <img src={thumbUrl(pl.cover_id, "card")} alt="" loading="lazy" onError={e => { e.currentTarget.style.display = "none"; }} />
+                  : <Icon name="playlist" size={18} className="playlist-icon" />}
+              </span>
               <span className="playlist-name">{pl.name}</span>
-              <span className="playlist-count">{pl.video_count}</span>
+              <span className="playlist-count">{pl.video_count}<span className="playlist-count-label">video{pl.video_count === 1 ? "" : "s"}</span></span>
               <button
                 className="del-btn del-btn-danger"
                 title="Delete playlist"

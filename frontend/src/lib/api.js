@@ -166,6 +166,7 @@ export async function getCreator(name) {
   try { return await get(`/creator/${encodeURIComponent(name)}`); }
   catch { return null; }
 }
+export function getArtistUploads(name) { return get(`/artist-uploads/${encodeURIComponent(name)}`); }
 export function getArtistLinks(name) { return get(`/artist-links/${encodeURIComponent(name)}`); }
 export function linkArtists(a, b)    { return post("/artist-links", { a, b }); }
 export function unlinkArtist(name)   { return del(`/artist-links/${encodeURIComponent(name)}`); }

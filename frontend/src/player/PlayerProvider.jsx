@@ -712,7 +712,7 @@ export default function PlayerProvider({ onCompleted, children }) {
           </div>
           {resumed && resumed.id === activeId && mode !== "mini" && (
             <div className="cv-resume">
-              Resumed at <b>{fmtTime(resumed.secs)}</b>
+              <span className="cv-resume-label">Resumed at</span> <b>{fmtTime(resumed.secs)}</b>
               <button className="cv-resume-btn" onClick={startOver}>Start over</button>
               <button className="cv-resume-x" onClick={() => setResumed(null)} title="Dismiss">
                 <Icon name="close" size={12} />

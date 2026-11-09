@@ -39,6 +39,7 @@ const KEYS = [
   ["F",         "Fullscreen (or double-click)"],
   ["N P",       "Next / previous in the queue"],
   ["?",         "This list"],
+  ["Gear",      "Speed, soundtrack, even out volume"],
 ];
 
 const pct = (v, total) => `${Math.min(100, Math.max(0, total ? (v / total) * 100 : 0))}%`;
@@ -221,7 +222,7 @@ export default function PlayerControls({ compact = false }) {
     const seg = (segments || [])
       .filter(s => at >= s.start_secs && at <= s.end_secs)
       .sort((a, b) => (a.end_secs - a.start_secs) - (b.end_secs - b.start_secs))[0];
-    tip.textContent = seg ? `${fmtTime(at)} · ${seg.title || seg.tags?.[0]?.name || "segment"}` : fmtTime(at);
+    tip.textContent = seg ? `${fmtTime(at)} · ${seg.title || seg.tags?.[0]?.name || "part"}` : fmtTime(at);
     tip.style.left = `${f * 100}%`;
     tip.style.opacity = 1;
   }
@@ -355,11 +356,11 @@ export default function PlayerControls({ compact = false }) {
         </button>
         {!compact && (
           <>
-            <button className="cv-btn" onClick={() => nudge(-10)} title="Back 10s (J)">
-              <Icon name="skipBack" size={15} />
+            <button className="cv-btn cv-skip" onClick={() => nudge(-10)} title="Back 10s (J)" aria-label="Back 10 seconds">
+              <Icon name="back10" size={19} />
             </button>
-            <button className="cv-btn" onClick={() => nudge(10)} title="Forward 10s (L)">
-              <Icon name="skipFwd" size={15} />
+            <button className="cv-btn cv-skip" onClick={() => nudge(10)} title="Forward 10s (L)" aria-label="Forward 10 seconds">
+              <Icon name="fwd10" size={19} />
             </button>
           </>
         )}
@@ -392,81 +393,74 @@ export default function PlayerControls({ compact = false }) {
             aria-label="Volume"
             title="Volume. Past 100% the sound runs through a gain stage — turn the leveller on if it distorts."
           />
-          <span className="cv-vol-num">{volPct}%</span>
+          {(boosted || muted) && <span className="cv-vol-num">{volPct}%</span>}
         </span>
 
-        <button
-          className={`cv-btn cv-btn-text${levelling ? " is-on" : ""}`}
-          onClick={() => setLevelling(!levelling)}
-          title="Leveller: lift quiet passages and hold the peaks down. Worth it on quiet rips and on anything boosted past 100%."
-        >
-          LVL
-        </button>
-
-        {tracks.length > 0 && (
-          <span className="cv-menu-wrap">
-            <button
-              className={`cv-btn cv-btn-text${audioTrack ? " is-on" : ""}${menu === "audio" ? " is-open" : ""}`}
-              onClick={() => setMenu(m => (m === "audio" ? null : "audio"))}
-              title="Soundtrack"
-            >
-              {audioTrack ? audioTrack.label : "Audio"}
-            </button>
-            {menu === "audio" && (
-              <div className="cv-menu">
-                <button
-                  className={`cv-menu-item${audioTrack ? "" : " is-on"}`}
-                  onClick={() => { selectAudioTrack(null); setMenu(null); }}
-                >
-                  {audioTrack ? null : <Icon name="check" size={13} />} Original
-                </button>
-                {tracks.map(t => (
+        {/* One gear for the settings a viewer touches now and then, the way
+            every video player does it, instead of a row of text buttons. */}
+        <span className="cv-menu-wrap">
+          <button
+            className={`cv-btn cv-gear${menu === "settings" ? " is-open" : ""}`}
+            onClick={() => setMenu(m => (m === "settings" ? null : "settings"))}
+            title="Settings: speed, soundtrack, even out volume"
+            aria-label="Settings"
+            aria-expanded={menu === "settings"}
+          >
+            <Icon name="settings" size={16} />
+            {(rate !== 1 || levelling || audioTrack) && <span className="cv-gear-dot" />}
+          </button>
+          {menu === "settings" && (
+            <div className="cv-menu cv-settings">
+              <div className="cv-menu-label">Speed</div>
+              <div className="cv-speeds">
+                {SPEEDS.map(sp => (
                   <button
-                    key={t.id}
-                    className={`cv-menu-item${audioTrack?.id === t.id ? " is-on" : ""}`}
-                    disabled={t.missing}
-                    onClick={() => { selectAudioTrack(t); setMenu(null); }}
+                    key={sp}
+                    className={`cv-speed${sp === rate ? " is-on" : ""}`}
+                    onClick={() => setRate(sp)}
                   >
-                    {audioTrack?.id === t.id ? <Icon name="check" size={13} /> : null} {t.label}
+                    {sp === 1 ? "Normal" : `${sp}×`}
                   </button>
                 ))}
               </div>
-            )}
-          </span>
-        )}
-
-        <span className="cv-menu-wrap">
-          <button
-            className={`cv-btn cv-btn-text${rate !== 1 ? " is-on" : ""}${menu === "speed" ? " is-open" : ""}`}
-            onClick={() => setMenu(m => (m === "speed" ? null : "speed"))}
-            title="Playback speed ([ and ]). Hold the picture for 2×."
-          >
-            {rate}×
-          </button>
-          {menu === "speed" && (
-            <div className="cv-menu">
-              {SPEEDS.map(s => (
-                <button
-                  key={s}
-                  className={`cv-menu-item${s === rate ? " is-on" : ""}`}
-                  onClick={() => { setRate(s); setMenu(null); }}
-                >
-                  {s === rate ? <Icon name="check" size={13} /> : null} {s}×
+              <button
+                className={`cv-menu-item cv-toggle${levelling ? " is-on" : ""}`}
+                onClick={() => setLevelling(!levelling)}
+                title="Lifts quiet passages and holds the peaks down. Worth it on quiet rips and past 100% volume."
+              >
+                <span className="cv-toggle-text">Even out volume</span>
+                <span className={`cv-switch${levelling ? " is-on" : ""}`} aria-hidden="true" />
+              </button>
+              {tracks.length > 0 && (
+                <>
+                  <div className="cv-menu-label">Soundtrack</div>
+                  <button
+                    className={`cv-menu-item${audioTrack ? "" : " is-on"}`}
+                    onClick={() => { selectAudioTrack(null); setMenu(null); }}
+                  >
+                    <span className="cv-check">{audioTrack ? null : <Icon name="check" size={13} />}</span> Original
+                  </button>
+                  {tracks.map(t => (
+                    <button
+                      key={t.id}
+                      className={`cv-menu-item${audioTrack?.id === t.id ? " is-on" : ""}`}
+                      disabled={t.missing}
+                      onClick={() => { selectAudioTrack(t); setMenu(null); }}
+                    >
+                      <span className="cv-check">{audioTrack?.id === t.id ? <Icon name="check" size={13} /> : null}</span> {t.label}
+                    </button>
+                  ))}
+                </>
+              )}
+              {!compact && (
+                <button className="cv-menu-item cv-keys-link" onClick={() => { setHelp(true); setMenu(null); }}>
+                  Keyboard shortcuts <kbd>?</kbd>
                 </button>
-              ))}
+              )}
             </div>
           )}
         </span>
-
-        {!compact && (
-          <button
-            className={`cv-btn cv-btn-text${help ? " is-on" : ""}`}
-            onClick={() => setHelp(h => !h)}
-            title="Keyboard shortcuts (?)"
-          >
-            ?
-          </button>
-        )}
+        {rate !== 1 && <span className="cv-rate">{rate}×</span>}
 
         <button className="cv-btn" onClick={toggleFullscreen} title={fullscreen ? "Leave fullscreen (F)" : "Fullscreen (F)"}>
           <Icon name="expand" size={16} />

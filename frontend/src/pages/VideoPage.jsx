@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef } from "react";
 import { useParams, useNavigate, useSearchParams, Link } from "react-router-dom";
 import { goBack } from "../lib/nav";
 import {
@@ -8,17 +8,47 @@ import {
 } from "../lib/api";
 import { artistsOf } from "../lib/artists";
 import { isYouTube, sourceLabel } from "../lib/source";
-import { fmt, fmtBytes, fmtDuration, fmtRecordedDate, safeUrl } from "../lib/fmt";
+import { fmt, fmtBytes, fmtRecordedDate, safeUrl } from "../lib/fmt";
 import { usePlayer } from "../player/playerContext";
 import { usePlaybackTime } from "../player/usePlaybackTime";
 import QueueBar from "../player/QueueBar";
 import WriteTags from "../components/WriteTags";
 import Icon from "../components/Icon";
+import Menu from "../components/Menu";
 import TagPicker from "../components/TagPicker";
 import SegmentList from "../components/SegmentList";
 import AudioTracks from "../components/AudioTracks";
 
-export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, onFetchMeta, onDelete }) {
+/* Collapsed to three lines like YouTube's, with its links made clickable. */
+const URL_RE = /(https?:\/\/[^\s<>"]+[^\s<>".,;:!?)\]'])/g;
+function Description({ text }) {
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  const ref = useRef(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open) setLong(el.scrollHeight > el.clientHeight + 2);
+  }, [text, open]);
+  const parts = text.split(URL_RE).map((bit, i) => {
+    if (i % 2 === 0) return bit;
+    const href = safeUrl(bit);
+    if (!href) return bit;
+    const shown = bit.replace(/^https?:\/\/(www\.)?/, "");
+    return <a key={i} href={href} target="_blank" rel="noreferrer">{shown.length > 48 ? `${shown.slice(0, 46)}…` : shown}</a>;
+  });
+  return (
+    <div className="vp-desc">
+      <div ref={ref} className={`vp-desc-body${open ? " is-open" : ""}`}>{parts}</div>
+      {(long || open) && (
+        <button type="button" className="vp-desc-more" onClick={() => setOpen(o => !o)}>
+          {open ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, onFetchMeta, onDelete, playlists, onAddToPlaylist }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -38,13 +68,16 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const jumpedRef = useRef(null);
   const [fetching,   setFetching]   = useState(false);
   const [elapsed,    setElapsed]    = useState(null);
-  const [confirming, setConfirming] = useState(false);
   const [deleting,   setDeleting]   = useState(false);
   const [thumbs,     setThumbs]     = useState([]);
   const [thumbIdx,   setThumbIdx]   = useState(0);
   const [thumbBusy,  setThumbBusy]  = useState(false);
   const [thumbMsg,   setThumbMsg]   = useState(null);
   const [dupPrompt,  setDupPrompt]  = useState(null);
+  const audioRef = useRef(null);
+  const writeRef = useRef(null);
+  const toolsRef = useRef(null);
+  const [trackCount, setTrackCount] = useState(0);
 
   // Loads answer late: one for a video we already left must not land on this one.
   const idRef = useRef(id);
@@ -131,6 +164,14 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   const handleRemoveVideoTag = tag          => mutate(() => removeVideoTag(id, tag.id));
   const handleImportChapters = ()           => mutate(() => importChapters(id));
 
+  async function handleAddToPlaylist(pl) {
+    try {
+      const r = await onAddToPlaylist(pl.id, id, pl.name);
+      setThumbMsg(r?.added === false ? `Already in ${pl.name}` : `Added to ${pl.name}`);
+    } catch { setThumbMsg("Couldn't add it"); }
+    setTimeout(() => setThumbMsg(null), 3000);
+  }
+
   // Play just this video's segments that carry one tag, in order.
   const playSegmentsOfTag = useCallback(async (tag) => {
     const r = await getTagSegments(tag.id);
@@ -197,15 +238,6 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   }
 
   useEffect(() => {
-    if (!confirming) return;
-    function onKey(e) {
-      if (e.key === "Escape") setConfirming(false);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [confirming]);
-
-  useEffect(() => {
     if (!fetching) return;
     const start = Date.now();
     setElapsed(0);
@@ -249,7 +281,6 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
   }
 
   async function handleDelete() {
-    setConfirming(false);
     setDeleting(true);
     try {
       closePlayer();
@@ -267,69 +298,55 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
           <Icon name="back" size={15} />Back
         </button>
         <div className="video-page-spacer" />
-        {srcUrl && (
-          <a href={srcUrl} target="_blank" rel="noreferrer" className={fromYT ? "btn-yt" : "btn-yt btn-src"} title={`Open on ${srcName}`}>
-            {fromYT && (
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-                <path d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8zM9.6 15.6V8.4L15.8 12l-6.2 3.6z"/>
-              </svg>
-            )}
-            {srcName}
-          </a>
+        {(elapsed != null || thumbMsg) && (
+          <span className="vp-status">{fetching ? `Refreshing ${elapsed?.toFixed(1)}s` : thumbMsg || "Refreshed"}</span>
         )}
-        {elapsed != null && <span className="fetch-timer">{elapsed.toFixed(1)}s</span>}
-        {thumbMsg && <span className="fetch-timer">{thumbMsg}</span>}
-        <div className="vp-tools">
-          {fromYT && (
-            <>
-              <button className="icon-btn" onClick={handleFetchMeta} disabled={fetching} title="Fetch metadata from YouTube">
-                <Icon name="refresh" size={16} className={fetching ? "spin" : ""} />
-              </button>
-              <button className="icon-btn" onClick={handleFetchThumbnail} disabled={thumbBusy} title="Download the current YouTube thumbnail (keeps the original)">
-                <Icon name="download" size={16} />
-              </button>
-            </>
+        <div className="vp-tools" ref={toolsRef}>
+          {srcUrl && (
+            <a href={srcUrl} target="_blank" rel="noreferrer" className="btn-secondary btn-yt" title={`Open on ${srcName}`}>
+              {fromYT ? (
+                <svg className="yt-logo" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path fill="#ff0033" d="M23.5 6.2a3 3 0 0 0-2.1-2.1C19.5 3.5 12 3.5 12 3.5s-7.5 0-9.4.6A3 3 0 0 0 .5 6.2 31.3 31.3 0 0 0 0 12a31.3 31.3 0 0 0 .5 5.8 3 3 0 0 0 2.1 2.1c1.9.6 9.4.6 9.4.6s7.5 0 9.4-.6a3 3 0 0 0 2.1-2.1A31.3 31.3 0 0 0 24 12a31.3 31.3 0 0 0-.5-5.8z"/>
+                  <path fill="#fff" d="M9.6 15.6V8.4L15.8 12l-6.2 3.6z"/>
+                </svg>
+              ) : <Icon name="external" size={15} />}
+              <span className="btn-yt-label">Open on {srcName}</span>
+            </a>
           )}
-          {thumbs.length > 1 && (
-            <button className="icon-btn icon-btn-wide" onClick={cycle} title="Cycle thumbnail (newest first)">
-              <Icon name="cycle" size={16} />
-              <span className="icon-btn-num">{thumbIdx + 1}/{thumbs.length}</span>
-            </button>
-          )}
-          <AudioTracks videoId={id} duration={playback.duration || video.duration_secs || 0} onLibraryChanged={onTagsChanged} />
-          <button className="icon-btn" onClick={() => onEdit(video)} title="Edit metadata">
-            <Icon name="pencil" size={16} />
-          </button>
-          {video.file_path && <WriteTags key={video.video_id} videoId={video.video_id} />}
-          {confirming ? (
-            <>
-              <span className="del-confirm-label">Remove from vault?</span>
-              <button
-                className="btn-danger btn-export"
-                onClick={handleDelete}
-                disabled={deleting}
-                autoFocus
-                title="Tags, playlists and watch history go with it; the file stays on disk and a scan adds it back"
-              >
-                Remove
-              </button>
-              <button className="icon-btn" onClick={() => setConfirming(false)} title="Cancel (Esc)">
-                <Icon name="close" size={16} />
-              </button>
-            </>
-          ) : (
-            <button
-              className="icon-btn icon-btn-danger"
-              disabled={deleting}
-              onClick={() => setConfirming(true)}
-              title="Remove from vault"
-            >
-              <Icon name="trash" size={16} />
-            </button>
-          )}
+          <Menu
+            label="More actions"
+            items={[
+              onAddToPlaylist && playlists && {
+                label: "Add to playlist", icon: "playlist",
+                items: [
+                  ...playlists.map(pl => ({ key: pl.id, label: pl.name, checked: pl.video_ids?.includes(id), onClick: () => handleAddToPlaylist(pl) })),
+                  { divider: true },
+                  { key: "new", input: { placeholder: "New playlist…" }, onSubmit: n => handleAddToPlaylist({ id: null, name: n }) },
+                ],
+              },
+              { label: "Edit details", icon: "pencil", onClick: () => onEdit(video) },
+              { label: trackCount ? "Soundtracks" : "Add a soundtrack", icon: "volume", hint: trackCount ? String(trackCount) : null,
+                onClick: () => audioRef.current?.open(toolsRef.current?.getBoundingClientRect()) },
+              { divider: true },
+              fromYT && { label: "Refresh from YouTube", icon: "refresh", disabled: fetching, onClick: handleFetchMeta },
+              fromYT && { label: "Get latest thumbnail", icon: "image", disabled: thumbBusy, onClick: handleFetchThumbnail },
+              thumbs.length > 1 && { label: "Next thumbnail", icon: "cycle", hint: `${thumbIdx + 1} of ${thumbs.length}`, keepOpen: true, onClick: cycle },
+              video.file_path && { label: "Re-read chapters from file", icon: "refresh", disabled: segBusy, onClick: handleImportChapters,
+                title: "Read the chapters saved in the file again. Parts you made stay." },
+              video.file_path && { label: "Write details to file", icon: "tag",
+                onClick: () => writeRef.current?.open(toolsRef.current?.getBoundingClientRect()) },
+              { divider: true },
+              { label: "Remove from library", icon: "trash", danger: true, disabled: deleting, onClick: handleDelete,
+                confirm: { text: "Remove this video from the library? Its tags, parts, playlists and watch history go too. The file stays on disk, and a scan adds it back.", yes: "Remove" } },
+            ]}
+          />
+          <AudioTracks ref={audioRef} hideTrigger videoId={id} duration={playback.duration || video.duration_secs || 0} onLibraryChanged={onTagsChanged} onCount={setTrackCount} />
+          {video.file_path && <WriteTags ref={writeRef} hideTrigger key={video.video_id} videoId={video.video_id} />}
         </div>
       </div>
 
+      <div className="vp-layout">
+      <div className="vp-main">
       <div className="vp-player-wrap">
         {player.error ? (
           <div className="player-fallback">
@@ -348,94 +365,68 @@ export default function VideoPage({ videos, tags = [], onTagsChanged, onEdit, on
 
       <div className="vp-below">
         <h1 className="vp-title">{video.title || video.video_id}</h1>
-        <div className="vp-tags" style={{ animationDelay: "30ms" }}>
+        <div className="vp-byline">
+          <div className="vp-channels">
+            {artists.map(artist => (
+              <Link key={artist} to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel">
+                <img
+                  className="vp-channel-avatar"
+                  src={artistThumbUrl(artist)}
+                  alt=""
+                  onError={e => { e.target.style.visibility = "hidden"; }}
+                />
+                <span className="vp-channel-name">{artist}</span>
+                <span className="vp-channel-arrow"><Icon name="arrowRight" size={14} /></span>
+              </Link>
+            ))}
+          </div>
+          <div className="vp-meta">
+            {[
+              video.view_count != null && `${fmt(video.view_count)} views`,
+              video.like_count != null && `${fmt(video.like_count)} likes`,
+              video.recorded_date && fmtRecordedDate(video.recorded_date),
+              video.file_size_bytes != null && fmtBytes(video.file_size_bytes),
+              watched && `Watched ${Math.max(video.watch_count || 0, 1)}×`,
+            ].filter(Boolean).map(t => <span key={t}>{t}</span>)}
+          </div>
+        </div>
+
+        <div className="vp-tags">
           <span className="vp-tags-label"><Icon name="tag" size={13} /> Tags</span>
           <TagPicker
             allTags={tags}
             selected={videoTags}
             onAdd={handleAddVideoTag}
             onRemove={handleRemoveVideoTag}
-            placeholder={videoTags.length ? "Add another…" : "Tag this video…"}
+            placeholder={videoTags.length ? "Add another…" : "Tag the whole video…"}
             disabled={segBusy}
           />
-          {segmentTags.length > 0 && (
-            <span className="vp-tags-play">
-              <span className="vp-tags-play-label">Play only</span>
-              {segmentTags.map(t => (
-                <button
-                  key={t.id}
-                  className="vp-play-tag"
-                  style={{ borderColor: `${t.color}66`, color: t.color }}
-                  onClick={() => playSegmentsOfTag(t)}
-                  title={`Play this video's ${t.name} parts back to back`}
-                >
-                  <Icon name="play" size={10} className="icon-fill" /> {t.name}
-                </button>
-              ))}
-            </span>
-          )}
         </div>
-        <div className="vp-channels" style={{ animationDelay: "60ms" }}>
-          {artists.map(artist => (
-            <Link key={artist} to={`/artist/${encodeURIComponent(artist)}`} className="vp-channel">
-              <img
-                className="vp-channel-avatar"
-                src={artistThumbUrl(artist)}
-                alt=""
-                onError={e => { e.target.style.visibility = "hidden"; }}
-              />
-              <span className="vp-channel-name">{artist}</span>
-              <span className="vp-channel-arrow"><Icon name="arrowRight" size={14} /></span>
-            </Link>
-          ))}
-        </div>
+      </div>
+      </div>
 
-        <div className="vp-stats">
-          {[
-            video.duration_secs != null && { num: fmtDuration(video.duration_secs), label: "duration" },
-            video.view_count    != null && { num: fmt(video.view_count),            label: "views" },
-            video.like_count    != null && { num: fmt(video.like_count),            label: "likes" },
-            video.file_size_bytes != null && { num: fmtBytes(video.file_size_bytes), label: "on disk" },
-            video.recorded_date && { num: fmtRecordedDate(video.recorded_date), label: "uploaded" },
-            watched && {
-              num: `${Math.max(video.watch_count || 0, 1)}×`,
-              label: "watched",
-            },
-          ].filter(Boolean).map((s, i) => (
-            <div key={s.label} className="vp-stat" style={{ animationDelay: `${120 + i * 70}ms` }}>
-              <span className="vp-stat-num">{s.num}</span>
-              <span className="vp-stat-label">{s.label}</span>
-            </div>
-          ))}
-        </div>
+      <aside className="vp-side">
+        <SegmentList
+          segments={segments}
+          allTags={tags}
+          videoRef={player.videoRef}
+          playbackKey={player.activeId}
+          duration={playback.duration || video.duration_secs || 0}
+          selectedId={selectedSeg}
+          onSelect={setSelectedSeg}
+          onSeek={secs => seek(secs)}
+          onCreate={handleCreateSegment}
+          onUpdate={handleUpdateSegment}
+          onDelete={handleDeleteSegment}
+          onAddTag={handleAddSegTag}
+          onRemoveTag={handleRemoveSegTag}
+          playTags={segmentTags}
+          onPlayTag={playSegmentsOfTag}
+          busy={segBusy}
+        />
+      </aside>
 
-        <div className="vp-segments" style={{ animationDelay: "300ms" }}>
-          <SegmentList
-            segments={segments}
-            allTags={tags}
-            videoRef={player.videoRef}
-            playbackKey={player.activeId}
-            duration={playback.duration || video.duration_secs || 0}
-            selectedId={selectedSeg}
-            onSelect={setSelectedSeg}
-            onSeek={secs => seek(secs)}
-            onCreate={handleCreateSegment}
-            onUpdate={handleUpdateSegment}
-            onDelete={handleDeleteSegment}
-            onAddTag={handleAddSegTag}
-            onRemoveTag={handleRemoveSegTag}
-            onImportChapters={handleImportChapters}
-            busy={segBusy}
-            hasFile={!!video.file_path}
-          />
-        </div>
-
-        {description && (
-          <div className="vp-desc" style={{ animationDelay: "350ms" }}>
-            <div className="vp-desc-label">Description</div>
-            <div className="vp-desc-body">{description}</div>
-          </div>
-        )}
+      {description && <div className="vp-after"><Description key={id} text={description} /></div>}
       </div>
 
       {dupPrompt && (

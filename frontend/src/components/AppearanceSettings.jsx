@@ -103,7 +103,7 @@ function ThemeEditor({ initial, onSave, onCancel }) {
       })}
 
       <div className="theme-preview">
-        <button className="btn-primary" tabIndex={-1}>Scan Now</button>
+        <button className="btn-primary" tabIndex={-1}>Scan for new files</button>
         <span className="artist-badge">207 videos</span>
         <span className="theme-preview-play"><Icon name="play" size={14} /></span>
         <span className="status-dot online" />
@@ -134,7 +134,7 @@ function ProfileEffectSettings() {
           <option value="none">None</option>
         </select>
       </div>
-      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "10px" }}>
+      <div className="field-hint" style={{ marginTop: "10px" }}>
         Pick a different effect for one artist with the sparkle button on their profile.
         {picked > 0 && ` ${picked} artist${picked === 1 ? " has" : "s have"} their own pick.`} Saved in this browser.
       </div>
@@ -183,7 +183,7 @@ function RatingSettings({ saved, onSaved }) {
       </label>
       {saved.enabled ? (
         <form onSubmit={e => { e.preventDefault(); if (!problem) send({ enabled: true, bands: draft }, "Saved."); }}>
-          <div style={{ fontSize: "11px", color: "var(--muted)", margin: "10px 0" }}>
+          <div className="field-hint" style={{ margin: "10px 0" }}>
             A rated artist&rsquo;s card takes the color of the highest band that starts at or below their
             rating. Below the first band, and not rated: the plain border.
           </div>
@@ -234,7 +234,7 @@ function RatingSettings({ saved, onSaved }) {
           </div>
         </form>
       ) : (
-        <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "10px" }}>
+        <div className="field-hint" style={{ marginTop: "10px" }}>
           Ratings are hidden everywhere. Ratings already given are kept for when you turn them back on.
         </div>
       )}
@@ -320,7 +320,7 @@ export default function AppearanceSettings({ rating, onRatingSaved }) {
             </>
           )}
 
-          <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "10px" }}>
+          <div className="field-hint" style={{ marginTop: "10px" }}>
             Themes recolour icons, buttons, highlights and glows. The dark background stays the same.
             Duplicate any theme to pin exact colours for each part, including button text.
             Saved in this browser.

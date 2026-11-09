@@ -53,7 +53,7 @@ export function RatingInput({ value, onChange, busy = false, size = 24 }) {
 
   return (
     <span
-      className={`rating-input${busy ? " is-busy" : ""}`}
+      className={`rating-input${busy ? " is-busy" : ""}${value ? "" : " is-unrated"}`}
       role="slider"
       tabIndex={0}
       aria-label={ratingLabel(value)}

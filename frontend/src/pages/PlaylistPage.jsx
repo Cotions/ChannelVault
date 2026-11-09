@@ -11,6 +11,7 @@ import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import Icon from "../components/Icon";
+import { usePlayer } from "../player/playerContext";
 
 // Remount per id: the previous one's data, errors and in-flight requests
 // must never show on the next.
@@ -20,6 +21,7 @@ export default function PlaylistPage(props) {
 }
 
 function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlaylistsChanged }) {
+  const { playQueue } = usePlayer();
   const { id } = useParams();
   const navigate = useNavigate();
   const [playlist, setPlaylist] = useState(null);
@@ -95,6 +97,17 @@ function PlaylistPageBody({ libraryVersion, query, onEdit, onFetchMeta, onPlayli
         <h2 className="artist-page-title">{playlist ? playlist.name : "…"}</h2>
         {videos.length > 0 && (
           <span className="artist-badge">{videos.length} video{videos.length !== 1 ? "s" : ""}</span>
+        )}
+        {videos.length > 0 && (
+          <button
+            className="btn-primary btn-export"
+            onClick={() => playQueue(
+              sorted.map(v => ({ video_id: v.video_id, video_title: v.title, start_secs: 0, end_secs: null })),
+              { playlistName: playlist?.name },
+            )}
+          >
+            <Icon name="play" size={13} className="icon-fill" />Play all
+          </button>
         )}
         {videos.length > 1 && (
           <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />

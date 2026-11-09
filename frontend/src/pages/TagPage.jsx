@@ -12,6 +12,7 @@ import SortControls from "../components/SortControls";
 import Pagination, { PAGE_SIZE } from "../components/Pagination";
 import VideoCard from "../components/VideoCard";
 import TagChip from "../components/TagChip";
+import { playableItems } from "../lib/tagQueue";
 import Icon from "../components/Icon";
 import { usePlayer } from "../player/playerContext";
 
@@ -19,6 +20,9 @@ import { usePlayer } from "../player/playerContext";
    segments, as links that open the video at that second. */
 // Remount per id: the previous one's data, errors and in-flight requests
 // must never show on the next.
+// A card lists this many parts; the rest fold behind "N more parts".
+const PARTS_SHOWN = 2;
+
 export default function TagPage(props) {
   const { id } = useParams();
   return <TagPageBody key={id} {...props} />;
@@ -29,6 +33,7 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
   const navigate = useNavigate();
   const [tag,    setTag]    = useState(null);
   const [videos, setVideos] = useState([]);
+  const [openParts, setOpenParts] = useState(() => new Set());   // cards showing every part
   const [error,  setError]  = useState(null);
   const [layout, setLayout] = useState(readLayout);
   const [sort,   setSort]   = useRememberedState(`tag:${id}:sort`, "upload");
@@ -38,13 +43,17 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
 
   // Start segment play mode: fetch the flat queue for this tag, then hand it to
   // the player. startAt jumps straight to one segment; shuffle randomises the rest.
-  const startPlay = useCallback(async ({ startAt = null, shuffle = false } = {}) => {
+  // The queue follows the page's own order, video by video as the grid shows them.
+  const startPlay = useCallback(async ({ startAt = null, shuffle = false, order = [] } = {}) => {
     setQueueBusy(true);
     try {
       const r = await getTagSegments(id);
       if (!r.ok || !r.items?.length) return;
-      const idx = startAt == null ? 0 : Math.max(0, r.items.findIndex(i => i.segment_id === startAt));
-      playQueue(r.items, { tagId: r.tag.id, tagName: r.tag.name, color: r.tag.color }, idx, { shuffle });
+      const rank = new Map(order.map((vid, i) => [vid, i]));
+      const at = i => rank.get(i.video_id) ?? order.length;
+      const items = playableItems(r.items).sort((a, b) => at(a) - at(b) || (a.start_secs || 0) - (b.start_secs || 0));
+      const idx = startAt == null ? 0 : Math.max(0, items.findIndex(i => i.segment_id === startAt));
+      playQueue(items, { tagId: r.tag.id, tagName: r.tag.name, color: r.tag.color }, idx, { shuffle });
     } finally { setQueueBusy(false); }
   }, [id, playQueue]);
 
@@ -88,6 +97,9 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
   const safePage   = Math.min(page, pageCount);
   const pageVideos = sorted.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const segTotal   = videos.reduce((n, v) => n + (v.matched_segments?.length || 0), 0);
+  const wholeTotal = videos.filter(v => v.tagged_whole && !v.matched_segments?.length).length;
+  const order      = sorted.map(v => v.video_id);
+  const playLabel  = segTotal ? `Play ${segTotal} part${segTotal !== 1 ? "s" : ""}` : `Play ${wholeTotal} video${wholeTotal !== 1 ? "s" : ""}`;
 
   return (
     <div className="card">
@@ -96,33 +108,35 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
         <h2 className="artist-page-title tag-page-title">
           {tag ? <TagChip tag={tag} size="lg" /> : "…"}
         </h2>
-        {videos.length > 0 && (
-          <span className="artist-badge">
-            {videos.length} video{videos.length !== 1 ? "s" : ""}{segTotal ? ` · ${segTotal} segment${segTotal !== 1 ? "s" : ""}` : ""}
-          </span>
-        )}
         <div className="video-page-spacer" />
         {videos.length > 0 && (
           <>
-            <button className="btn-primary btn-export" onClick={() => startPlay()} disabled={queueBusy} title="Play only the parts carrying this tag, one after another, across every video">
-              <Icon name="play" size={14} className="icon-fill" /> Play segments
+            <button className="btn-primary btn-export" onClick={() => startPlay({ order })} disabled={queueBusy}
+              title="One after another, in the order shown">
+              <Icon name="play" size={14} className="icon-fill" /> {playLabel}
             </button>
-            <button className="icon-btn" onClick={() => startPlay({ shuffle: true })} disabled={queueBusy} title="Play them shuffled">
+            <button className="icon-btn" onClick={() => startPlay({ shuffle: true, order })} disabled={queueBusy} title="Play them shuffled" aria-label="Shuffle">
               <Icon name="shuffle" size={15} />
             </button>
           </>
         )}
-        {videos.length > 1 && <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />}
-        {videos.length > 0 && (
-          <div className="layout-toggle">
-            <button className={`btn-ghost${layout === "grid" ? " active" : ""}`} onClick={() => switchLayout("grid")} title="Grid view"><Icon name="grid" size={15} /></button>
-            <button className={`btn-ghost${layout === "list" ? " active" : ""}`} onClick={() => switchLayout("list")} title="List view"><Icon name="list" size={15} /></button>
-          </div>
-        )}
       </div>
+      {videos.length > 0 && (
+        <div className="grid-toolbar">
+          <span className="grid-toolbar-count">
+            {videos.length} video{videos.length !== 1 ? "s" : ""}{segTotal ? ` · ${segTotal} tagged part${segTotal !== 1 ? "s" : ""}` : ""}
+          </span>
+          <span className="page-head-spacer" />
+          {videos.length > 1 && <SortControls sort={sort} dir={dir} onSort={setSort} onDir={setDir} />}
+          <div className="layout-toggle">
+            <button className={`btn-ghost${layout === "grid" ? " active" : ""}`} onClick={() => switchLayout("grid")} title="Grid view" aria-label="Grid view"><Icon name="grid" size={16} /></button>
+            <button className={`btn-ghost${layout === "list" ? " active" : ""}`} onClick={() => switchLayout("list")} title="List view" aria-label="List view"><Icon name="list" size={16} /></button>
+          </div>
+        </div>
+      )}
 
       {videos.length === 0 ? (
-        <div className="empty">Nothing carries this tag yet. Add it to a video or a segment from any video page.</div>
+        <div className="empty">Nothing has this tag yet. Add it to a video, or to a part of one, from the video's page.</div>
       ) : sorted.length === 0 ? (
         <div className="empty">No videos match “{q}”.</div>
       ) : (
@@ -138,20 +152,19 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
                   playlists={playlists}
                   onAddToPlaylist={onAddToPlaylist}
                   layout={layout}
+                  hideTagId={tag?.id}
                 />
                 <div className="tag-seg-links">
-                  {v.tagged_whole && (
-                    <Link to={`/video/${v.video_id}`} className="tag-seg-link tag-seg-link-whole" title="The whole video carries this tag">
-                      <Icon name="play" size={10} /> whole video
-                    </Link>
+                  {v.tagged_whole && v.matched_segments?.length > 0 && (
+                    <span className="tag-seg-whole">Whole video, and</span>
                   )}
-                  {(v.matched_segments || []).map(s => (
+                  {(v.matched_segments || []).slice(0, openParts.has(v.video_id) ? undefined : PARTS_SHOWN).map(s => (
                     <span key={s.id} className="tag-seg-pair">
                       <button
                         className="tag-seg-play"
-                        onClick={() => startPlay({ startAt: s.id })}
+                        onClick={() => startPlay({ startAt: s.id, order })}
                         disabled={queueBusy}
-                        title="Start playing the tag from this segment"
+                        title="Play the tagged parts, starting here"
                       >
                         <Icon name="play" size={10} className="icon-fill" />
                       </button>
@@ -167,6 +180,22 @@ function TagPageBody({ libraryVersion, query, onEdit, onFetchMeta, playlists, on
                       </Link>
                     </span>
                   ))}
+                  {(v.matched_segments?.length || 0) > PARTS_SHOWN && <span className="tag-seg-break" />}
+                  {(v.matched_segments?.length || 0) > PARTS_SHOWN && (
+                    <button
+                      className="btn-ghost tag-seg-more"
+                      onClick={() => setOpenParts(prev => {
+                        const next = new Set(prev);
+                        if (next.has(v.video_id)) next.delete(v.video_id); else next.add(v.video_id);
+                        return next;
+                      })}
+                    >
+                      {openParts.has(v.video_id)
+                        ? "Show less"
+                        : `${v.matched_segments.length - PARTS_SHOWN} more part${v.matched_segments.length - PARTS_SHOWN === 1 ? "" : "s"}`}
+                      <Icon name={openParts.has(v.video_id) ? "arrowUp" : "arrowDown"} size={12} />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

@@ -3,13 +3,15 @@ import { goBack } from "../lib/nav";
 import { exportCsvUrl, exportJsonUrl, thumbUrl } from "../lib/api";
 import { fmt, fmtBytes, fmtDuration } from "../lib/fmt";
 import { artistsOf } from "../lib/artists";
+import Menu from "../components/Menu";
 import Icon from "../components/Icon";
 import { isYouTube } from "../lib/source";
 
 function fmtHours(secs) {
   if (!secs) return "—";
   const h = secs / 3600;
-  if (h >= 1) return `${h.toFixed(1)}h`;
+  if (h >= 48) return `${(h / 24).toFixed(1)} days`;
+  if (h >= 1) return `${h.toFixed(1)} h`;
   return `${Math.round(secs / 60)}min`;
 }
 
@@ -95,24 +97,23 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   // Grouped by what the numbers are about rather than one flat grid, so a
   // reader finds "how big is the vault" and "what is left on YouTube" at a glance.
   const libraryStats = [
-    { num: fmt(scopeVideos.length),                              label: "videos vaulted" },
-    ...(artist ? [] : [{ num: fmt(channels.length),              label: "channels" }]),
-    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: "on disk", sub: withSize.length < scopeVideos.length ? `${withSize.length}/${scopeVideos.length} sizes known` : null },
-    { num: fmtHours(totalSecs),                                  label: "of footage" },
+    { num: fmt(scopeVideos.length),                              label: "videos" },
+    ...(artist ? [] : [{ num: fmt(channels.length),              label: "channels with videos" }]),
+    { num: withSize.length > 0 ? fmtBytes(totalBytes) : "—",     label: "on disk" },
+    { num: fmtHours(totalSecs),                                  label: "of video" },
   ];
   const activityStats = [
     { num: fmt(totalWatches),                                    label: "total watches" },
-    { num: fmt(scopeVideos.filter(v => v.view_count != null).length), label: "with stats" },
     ...(artist ? [] : [
-      { num: fmt(wanted.length),                                 label: "wanted",  color: "#90caf9" },
-      { num: fmt(ignored.length),                                label: "ignored", color: "#ef9a9a" },
+      { num: fmt(wanted.length),                                 label: "wanted" },
+      { num: fmt(ignored.length),                                label: "ignored" },
     ]),
   ];
   const youtubeStats = availSegments
-    .map(s => ({ num: fmt(s.n), label: s.label, sub: pct(s.n), color: s.key === "public" ? undefined : s.color }));
+    .map(s => ({ num: fmt(s.n), label: s.label, sub: pct(s.n), color: s.key === "deleted" ? s.color : undefined }));
   const youtubeGroup = {
     key: "youtube", title: "On YouTube", stats: youtubeStats, bar: true,
-    aside: uncheckedCount ? `${fmt(uncheckedCount)} unchecked` : null,
+    aside: uncheckedCount ? `${fmt(uncheckedCount)} not checked yet` : null,
   };
 
   // An artist has no wanted/ignored tiles, so its two activity numbers join the
@@ -122,7 +123,7 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
     { ...youtubeGroup, wide: true },
   ] : [
     { key: "library",  title: "Library",  stats: libraryStats, wide: true },
-    { key: "activity", title: "Activity", stats: activityStats },
+    { key: "activity", title: "Watching and lists", stats: activityStats },
     youtubeGroup,
   ];
   let cellIndex = 0;
@@ -132,14 +133,20 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
   return (
     <div className="stats-page">
       <div className="artist-page-header">
-        <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
-          <Icon name="back" size={15} />Back
-        </button>
+        {artist && (
+          <button className="btn-secondary btn-back" onClick={() => goBack(navigate)}>
+            <Icon name="back" size={15} />Back
+          </button>
+        )}
         <h2 className="artist-page-title">{title}</h2>
         {!artist && (
           <>
-            <a href={exportCsvUrl()} download className="btn-secondary btn-export">Export CSV</a>
-            <a href={exportJsonUrl()} download className="btn-secondary btn-export">Export JSON</a>
+            <Menu label="Export the library" className="btn-secondary btn-export" items={[
+              { label: "Spreadsheet (CSV)", icon: "download", href: exportCsvUrl(), download: true },
+              { label: "Data file (JSON)", icon: "download", href: exportJsonUrl(), download: true },
+            ]}>
+              <Icon name="download" size={14} />Export
+            </Menu>
           </>
         )}
       </div>
@@ -163,8 +170,8 @@ export default function Stats({ videos, wanted = [], ignored = [] }) {
                   </div>
                 )}
                 <div
-                  className={`stats-hero${g.wide ? "" : " is-compact"}`}
-                  style={{ gridTemplateColumns: `repeat(${g.wide ? g.stats.length : 2}, 1fr)` }}
+                  className={`stats-hero${g.wide ? "" : " is-compact"}${!g.wide && g.stats.length === 3 ? " is-three" : ""}`}
+                  style={{ gridTemplateColumns: `repeat(${g.wide ? g.stats.length : (g.stats.length === 3 ? 3 : 2)}, 1fr)` }}
                 >
                   {g.stats.map(s => (
                     <div key={s.label} className="stats-hero-cell" style={{ animationDelay: `${cellIndex++ * 60}ms` }}>
