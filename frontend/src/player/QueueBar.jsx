@@ -25,6 +25,7 @@ export default function QueueBar({ compact = false }) {
       <div className="queue-bar-progress" style={{ width: `${frac * 100}%` }} />
       <span className="queue-pos" title="Position in the queue">{queue.idx + 1}<span className="queue-pos-sep">/</span>{total}</span>
       {tag && <TagChip tag={tag} size="sm" link={tag.id != null} />}
+      {!tag && queue.meta?.playlistName && <span className="queue-list-name">{queue.meta.playlistName}</span>}
       <Link to={`/video/${item.video_id}`} className="queue-title" title={item.video_title || item.video_id}>
         {item.title ? <><span className="queue-seg-title">{item.title}</span><span className="queue-sep">·</span></> : null}
         <span className="queue-video-title">{item.video_title || item.video_id}</span>
@@ -35,8 +36,8 @@ export default function QueueBar({ compact = false }) {
       <span className="queue-controls">
         <button className="cv-mini-btn" onClick={queuePrev} title="Previous in the queue"><Icon name="skipBack" size={14} /></button>
         <button className="cv-mini-btn" onClick={queueNext} title="Next in the queue"><Icon name="skipFwd" size={14} /></button>
-        <button className={`cv-mini-btn${queue.shuffle ? " is-on" : ""}`} onClick={toggleShuffle} title={queue.shuffle ? "Shuffle on" : "Shuffle off"}><Icon name="shuffle" size={14} /></button>
-        <button className={`cv-mini-btn${queue.loop ? " is-on" : ""}`} onClick={toggleLoop} title={queue.loop ? "Loop on" : "Loop off"}><Icon name="repeat" size={14} /></button>
+        <button className={`cv-mini-btn q-extra${queue.shuffle ? " is-on" : ""}`} onClick={toggleShuffle} title={queue.shuffle ? "Shuffle on" : "Shuffle off"}><Icon name="shuffle" size={14} /></button>
+        <button className={`cv-mini-btn q-extra${queue.loop ? " is-on" : ""}`} onClick={toggleLoop} title={queue.loop ? "Loop on" : "Loop off"}><Icon name="repeat" size={14} /></button>
         <button className="cv-mini-btn" onClick={clearQueue} title="Stop the queue (keeps the video playing)"><Icon name="close" size={14} /></button>
       </span>
     </div>

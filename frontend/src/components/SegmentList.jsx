@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fmtTime, parseTime } from "../lib/fmt";
 import TagChip from "./TagChip";
 import TagPicker from "./TagPicker";
@@ -33,8 +33,8 @@ function useActiveSegments(videoRef, key, segments) {
 export default function SegmentList({
   segments = [], allTags = [], videoRef, playbackKey, duration = 0,
   onSeek, selectedId, onSelect,
-  onCreate, onUpdate, onDelete, onAddTag, onRemoveTag, onImportChapters,
-  busy = false, hasFile = true,
+  onCreate, onUpdate, onDelete, onAddTag, onRemoveTag,
+  playTags = [], onPlayTag, busy = false,
 }) {
   const [showForm,   setShowForm]   = useState(false);
   const [form,       setForm]       = useState(emptyForm);
@@ -47,6 +47,20 @@ export default function SegmentList({
   const activeIds = useActiveSegments(videoRef, playbackKey, segments);
   // The "now" buttons read the playhead when pressed rather than on every tick.
   const now = () => fmtTime(videoRef?.current?.currentTime || 0);
+  // Opening the form starts the part where the video is, so marking one is
+  // "Mark a part", watch, "now" on End, Save.
+  // On a phone the form opens below the fold, its Save under the tab bar.
+  const formRef = useRef(null);
+  useEffect(() => {
+    if (showForm) formRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [showForm]);
+
+  function openForm() {
+    setFormErr(null);
+    if (showForm) { setShowForm(false); return; }
+    setForm(f => ({ ...f, start: now() }));
+    setShowForm(true);
+  }
 
   useEffect(() => {
     if (confirmId == null && editingId == null && !showForm) return;
@@ -64,6 +78,8 @@ export default function SegmentList({
   /* Shared by the new-segment form and the row editor: times have to parse,
      the range has to run forwards and it has to start inside the video. */
   function readTimes(start, end) {
+    if (!String(start).trim()) return { error: "Add a start time." };
+    if (!String(end).trim())   return { error: "Add an end time, or press now when the part ends." };
     const a = parseTime(start), b = parseTime(end);
     if (a == null || b == null)    return { error: "Times look like 12:30 or 1:02:09." };
     if (b <= a)                    return { error: "End must come after start." };
@@ -78,7 +94,7 @@ export default function SegmentList({
     setFormErr(null);
     const ok = await onCreate?.({ start_secs: times.start, end_secs: times.end, title: form.title.trim() || null, tags: form.tags.map(t => t.name) });
     if (ok !== false) { setForm(emptyForm()); setShowForm(false); }
-    else setFormErr("Couldn't save the segment.");
+    else setFormErr("Couldn't save the part.");
   }
 
   function startEdit(s) {
@@ -111,22 +127,35 @@ export default function SegmentList({
     <div className="seg-list">
       <div className="seg-list-head">
         <div className="card-title" style={{ margin: 0 }}>
-          Segments {segments.length > 0 && <span className="page-count">{segments.length}</span>}
+          Parts {segments.length > 0 && <span className="page-count">{segments.length}</span>}
         </div>
-        <div className="seg-list-actions">
-          {hasFile && (
-            <button className="btn-ghost" onClick={onImportChapters} disabled={busy} title="Read the chapters embedded in the file again. Hand-made segments stay.">
-              <Icon name="refresh" size={13} /> Re-import chapters
-            </button>
-          )}
-          <button className="btn-secondary btn-export" onClick={() => { setShowForm(v => !v); setFormErr(null); }} disabled={busy}>
-            <Icon name={showForm ? "close" : "plus"} size={14} /> {showForm ? "Cancel" : "New segment"}
+        {!showForm && (
+          <button className="btn-primary btn-export seg-mark" onClick={openForm} disabled={busy} title="Starts at the current position">
+            <Icon name="plus" size={14} /> Mark a part
           </button>
-        </div>
+        )}
       </div>
 
+      {playTags.length > 0 && (
+        <div className="seg-play">
+          <span className="seg-play-label">Play</span>
+          {playTags.map(t => (
+            <button
+              key={t.id}
+              type="button"
+              className="vp-play-tag"
+              style={{ borderColor: `${t.color}66`, color: t.color }}
+              onClick={() => onPlayTag?.(t)}
+              title={`Play this video's ${t.name} parts back to back`}
+            >
+              <Icon name="play" size={11} className="icon-fill" /> {t.name} parts
+            </button>
+          ))}
+        </div>
+      )}
+
       {showForm && (
-        <form className="seg-form" onSubmit={submit}>
+        <form className="seg-form" onSubmit={submit} ref={formRef}>
           <div className="seg-form-row">
             <label>
               Start
@@ -138,13 +167,13 @@ export default function SegmentList({
             <label>
               End
               <span className="seg-time-field">
-                <input value={form.end} placeholder={duration ? fmtTime(duration) : "0:00"} onChange={e => set("end", e.target.value)} />
+                <input value={form.end} onChange={e => set("end", e.target.value)} />
                 <button type="button" className="seg-now" onClick={() => set("end", now())} title="Use the current position">now</button>
               </span>
             </label>
             <label className="seg-form-title">
-              Title <span className="field-hint-inline">optional</span>
-              <input value={form.title} placeholder="What happens here" onChange={e => set("title", e.target.value)} />
+              Title
+              <input value={form.title} placeholder="Optional" onChange={e => set("title", e.target.value)} />
             </label>
           </div>
           <div className="seg-form-row">
@@ -162,14 +191,14 @@ export default function SegmentList({
           {formErr && <div className="msg show err">{formErr}</div>}
           <div className="modal-actions" style={{ marginTop: 4 }}>
             <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); setFormErr(null); }}>Cancel</button>
-            <button type="submit" className="btn-primary" disabled={busy}>Save segment</button>
+            <button type="submit" className="btn-primary" disabled={busy}>Save part</button>
           </div>
         </form>
       )}
 
       {sorted.length === 0 && !showForm && (
         <div className="empty seg-empty">
-          No segments yet. {hasFile ? "Re-import chapters if the file has them, or mark a range while watching." : "Mark a range while watching."}
+          No parts yet. Press <b>Mark a part</b> while watching to save a stretch you like.
         </div>
       )}
 
@@ -190,6 +219,7 @@ export default function SegmentList({
                 onSubmit={e => { e.preventDefault(); saveEdit(s); }}
               >
                 <div className="seg-edit-fields">
+                  <span className="seg-edit-times">
                   <span className="seg-time-field">
                     <input
                       className="seg-edit-time"
@@ -209,6 +239,7 @@ export default function SegmentList({
                       onChange={e => setEd("end", e.target.value)}
                     />
                     <button type="button" className="seg-now" onClick={() => setEd("end", now())} title="Use the current position">now</button>
+                  </span>
                   </span>
                   <input
                     className="seg-title-input"
@@ -251,8 +282,8 @@ export default function SegmentList({
                     placeholder="Tag…"
                   />
                 ) : (
-                  <button type="button" className="seg-add-tag" onClick={() => setTaggingId(s.id)} title="Add a tag to this segment">
-                    <Icon name="plus" size={11} /> tag
+                  <button type="button" className="seg-add-tag" onClick={() => setTaggingId(s.id)} title="Tag this part">
+                    <Icon name="plus" size={12} /> Tag
                   </button>
                 )}
                 </div>
@@ -266,7 +297,7 @@ export default function SegmentList({
                   <button className="icon-btn" onClick={() => setConfirmId(null)} title="Cancel (Esc)"><Icon name="close" size={14} /></button>
                 </>
               ) : (
-                <button className="icon-btn icon-btn-danger" onClick={() => setConfirmId(s.id)} title="Delete segment"><Icon name="trash" size={14} /></button>
+                <button className="icon-btn icon-btn-danger" onClick={() => setConfirmId(s.id)} title="Delete part"><Icon name="trash" size={14} /></button>
               )}
               </div>
               </>

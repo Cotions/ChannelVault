@@ -53,7 +53,7 @@ export default function DownloadQueue() {
         onClick={() => setOpen(v => !v)}
         title={active.length ? `${active.length} download${active.length !== 1 ? "s" : ""} in progress` : `${failed.length} download${failed.length !== 1 ? "s" : ""} failed`}
       >
-        <Icon name={!active.length && failed.length ? "warn" : "download"} size={13} />
+        <Icon name="download" size={13} />
         <span className="dl-queue-num">{label}</span>
       </button>
 

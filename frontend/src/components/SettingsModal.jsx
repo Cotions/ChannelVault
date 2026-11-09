@@ -4,6 +4,7 @@ import YtdlpSettings from "./YtdlpSettings";
 import AppearanceSettings from "./AppearanceSettings";
 import ProfileSettings from "./ProfileSettings";
 import Icon from "./Icon";
+import { useEscape } from "../lib/useEscape";
 
 const TABS = [
   { id: "library",    label: "Library",    icon: "folder" },
@@ -12,7 +13,9 @@ const TABS = [
   { id: "appearance", label: "Appearance", icon: "palette" },
 ];
 
-export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone, onProfilesChanged, rating, onRatingSaved, initialTab = "library" }) {
+export default function SettingsModal({ onClose, initialDir, initialDataDir, initialRoots, onScanDone, onProfilesChanged, rating, onRatingSaved, initialTab = "library", onQuit }) {
+  useEscape(onClose);
+  const [quitAsk, setQuitAsk] = useState(false);
   const [tab, setTab] = useState(initialTab);
 
   return (
@@ -31,6 +34,17 @@ export default function SettingsModal({ onClose, initialDir, initialDataDir, ini
                 onClick={() => setTab(t.id)}
               >
                 <Icon name={t.icon} size={15} />{t.label}
+              </button>
+            ))}
+            {onQuit && (quitAsk ? (
+              <div className="settings-quit-ask">
+                <span>Stop ChannelVault?</span>
+                <button className="btn-secondary" onClick={() => setQuitAsk(false)}>Cancel</button>
+                <button className="btn-danger" autoFocus onClick={onQuit}>Quit</button>
+              </div>
+            ) : (
+              <button className="settings-tab settings-quit" onClick={() => setQuitAsk(true)} title="Stop the backend and close the app">
+                <Icon name="power" size={15} />Quit
               </button>
             ))}
           </nav>

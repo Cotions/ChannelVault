@@ -7,9 +7,15 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
   const [dataDir, setDataDir] = useState(initialDataDir || "");
   const [roots,   setRoots]   = useState(initialRoots   || []);
 
-  useEffect(() => { if (initialDir)     setDir(initialDir); },     [initialDir]);
-  useEffect(() => { if (initialDataDir) setDataDir(initialDataDir); }, [initialDataDir]);
-  useEffect(() => { if (initialRoots)   setRoots(initialRoots); },   [initialRoots]);
+  // What the backend has, so a Save button only shows once a field is edited.
+  const [saved, setSaved] = useState({ dir: initialDir || "", dataDir: initialDataDir || "", roots: initialRoots || [] });
+
+  useEffect(() => { if (initialDir)     { setDir(initialDir);         setSaved(s => ({ ...s, dir: initialDir })); } },         [initialDir]);
+  useEffect(() => { if (initialDataDir) { setDataDir(initialDataDir); setSaved(s => ({ ...s, dataDir: initialDataDir })); } }, [initialDataDir]);
+  useEffect(() => { if (initialRoots)   { setRoots(initialRoots);     setSaved(s => ({ ...s, roots: initialRoots })); } },     [initialRoots]);
+  const dirDirty   = dir.trim() !== saved.dir;
+  const dataDirty  = dataDir.trim() !== saved.dataDir;
+  const rootsDirty = JSON.stringify(roots.map(r => r.trim()).filter(Boolean)) !== JSON.stringify(saved.roots) || roots.some(r => !r.trim());
   const [msg,     setMsg]     = useState(null);
   const [scanLog, setScanLog] = useState([]);
   const [scanning, setScanning] = useState(false);
@@ -25,7 +31,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
       if (data.ok && data.directory) {
         setDir(data.directory);
         const saved = await saveConfig(data.directory);
-        if (saved.ok) { flash(`Watching: ${saved.watch_directory}`, "ok"); onScanDone?.(); }
+        if (saved.ok) { setSaved(s => ({ ...s, dir: data.directory })); flash(`Watching: ${saved.watch_directory}`, "ok"); onScanDone?.(); }
         else flash(saved.error, "err");
       }
     } catch {
@@ -36,7 +42,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
   async function handleSave() {
     try {
       const data = await saveConfig(dir);
-      if (data.ok) { flash(`Watching: ${data.watch_directory}`, "ok"); onScanDone?.(); }
+      if (data.ok) { setSaved(s => ({ ...s, dir: dir.trim() })); flash(`Watching: ${data.watch_directory}`, "ok"); onScanDone?.(); }
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");
@@ -86,7 +92,7 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
     try {
       const clean = roots.map(r => r.trim()).filter(Boolean);
       const data  = await saveMediaRoots(clean);
-      if (data.ok) { setRoots(clean); flash(`Saved ${clean.length} media root(s)`, "ok"); onScanDone?.(); }
+      if (data.ok) { setRoots(clean); setSaved(s => ({ ...s, roots: clean })); flash(`Saved ${clean.length} folder${clean.length === 1 ? "" : "s"}`, "ok"); onScanDone?.(); }
       else flash(data.error, "err");
     } catch {
       flash("Request failed — is the backend running?", "err");
@@ -125,22 +131,23 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
 
   return (
     <div className={embedded ? "watch-folder-body" : "card"}>
-      <div className="card-title">Watch Folder</div>
+      <div className="card-title">Watch folder</div>
       <div className="folder-row">
         <input
           type="text"
           value={dir}
           onChange={e => setDir(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && dirDirty) handleSave(); }}
           placeholder="/home/user/Downloads"
         />
         <button className="btn-secondary" onClick={handleBrowse}>Browse…</button>
-        <button className="btn-secondary" onClick={handleSave}>Save</button>
+        {dirDirty && <button className="btn-secondary" onClick={handleSave}>Save</button>}
         <button className="btn-primary" onClick={handleScan} disabled={scanning}>
-          {scanning ? "Scanning…" : "Scan Now"}
+          {scanning ? "Scanning…" : "Scan for new files"}
         </button>
       </div>
 
-      <div className="card-title" style={{ marginTop: "16px" }}>Data Directory</div>
+      <div className="card-title" style={{ marginTop: "16px" }}>Data folder</div>
       <div className="folder-row">
         <input
           type="text"
@@ -149,13 +156,13 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
           placeholder="~/.local/share/channelvault"
         />
         <button className="btn-secondary" onClick={handleBrowseData}>Browse…</button>
-        <button className="btn-secondary" onClick={handleSaveData}>Save</button>
+        {dataDirty && <button className="btn-secondary" onClick={handleSaveData}>Save</button>}
       </div>
-      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "6px" }}>
-        Stores the database and thumbnail copies. Changing this migrates the existing DB.
+      <div className="field-hint" style={{ marginTop: "6px" }}>
+        Where the library database and thumbnails are kept. Changing it moves them.
       </div>
 
-      <div className="card-title" style={{ marginTop: "16px" }}>Media Roots</div>
+      <div className="card-title" style={{ marginTop: "16px" }}>Media folders</div>
       {roots.map((r, i) => (
         <div className="folder-row" key={i} style={{ marginBottom: "6px" }}>
           <input
@@ -169,13 +176,12 @@ export default function WatchFolder({ initialDir, initialDataDir, initialRoots, 
         </div>
       ))}
       <div className="folder-row">
-        <button className="btn-secondary" onClick={addRoot}>+ Add root</button>
-        <button className="btn-primary" onClick={handleSaveRoots}>Save Roots</button>
+        <button className="btn-secondary" onClick={addRoot}>+ Add folder</button>
+        {rootsDirty && <button className="btn-secondary" onClick={handleSaveRoots}>Save</button>}
       </div>
-      <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: "6px" }}>
-        Folders where your videos live. Files are matched even if moved or stored across
-        several drives. Add both Windows and Linux paths — missing ones are ignored, so one
-        config works on either machine. The watch folder is always searched too.
+      <div className="field-hint" style={{ marginTop: "6px" }}>
+        Other folders with your videos, on any drive. Folders that aren't there are skipped,
+        so Windows and Linux paths can sit side by side. The watch folder is always included.
       </div>
 
       {msg && <div className={`msg show ${msg.type}`}>{msg.text}</div>}
