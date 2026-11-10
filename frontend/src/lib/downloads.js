@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { getDownloads, addDownload, cancelDownload, retryDownload, clearDownloads, pauseDownloads,
+import { getDownloads, addDownload, cancelDownload, retryDownload, removeDownload, clearDownloads, pauseDownloads,
          getDownloadPrefs, setDownloadPref } from "./api";
 
 /* One shared view of the download queue: the header indicator and every
@@ -77,6 +77,7 @@ export async function queueDownload(v, quality) {
 
 export async function cancelJob(id) { await cancelDownload(id).catch(() => {}); await refreshDownloads(); }
 export async function retryJob(id)  { await retryDownload(id).catch(() => {}); await refreshDownloads(); }
+export async function removeJob(id) { await removeDownload(id).catch(() => {}); await refreshDownloads(); }
 export async function clearJobs()   { await clearDownloads().catch(() => {}); await refreshDownloads(); }
 
 /* Hold the queue: now = stop the running download midway too (it resumes

@@ -252,6 +252,7 @@ export function getDownloads()       { return get("/downloads"); }
 export function addDownload(v)       { return post("/downloads", v); }
 export function cancelDownload(id)   { return post(`/downloads/${id}/cancel`, {}); }
 export function retryDownload(id)    { return post(`/downloads/${id}/retry`, {}); }
+export function removeDownload(id)   { return post(`/downloads/${id}/remove`, {}); }
 export function clearDownloads()     { return post("/downloads/clear", {}); }
 export function pauseDownloads(paused, now = true) { return post("/downloads/pause", { paused, now }); }
 export function getDownloadFormats(id) { return get(`/downloads/formats/${encodeURIComponent(id)}`); }
