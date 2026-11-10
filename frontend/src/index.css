@@ -1263,6 +1263,9 @@ button:disabled { opacity: 0.5; cursor: default; }
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* Always two lines tall, so channel, date and views line up across a row
+     whether the title takes one line or two. */
+  min-height: calc(2em * 1.38);
 }
 .video-title a { color: var(--text); transition: color 0.15s; }
 .video-title a:hover { color: var(--accent-text); }

@@ -6198,7 +6198,19 @@ def _dl_quality_ok(q):
     # ASCII digits only: str.isdigit() also takes "²" (int() then raises) and
     # other scripts' digits, which would reach yt-dlp's -S as is.
     return q in ("best", "audio") or (re.fullmatch(r"[0-9]{3,4}", q) is not None and 100 <= int(q) <= 4320)
-_DL_TEMPLATE = "%(title).180B-%(id)s.%(ext)s"
+_DL_TEMPLATE = "%(title).{}B-%(id)s.%(ext)s"
+
+
+def _dl_template(folder):
+    """The output template, its title cut to fit the folder's filesystem.
+    Most allow 255 bytes a name, but an encrypted home (eCryptfs) only 143.
+    64 bytes are kept for "-<id>", yt-dlp's ".f251.webm.part-Frag12.part"
+    style suffixes, and the "/" -> "⧸" swaps that grow the title after the cut."""
+    try:
+        name_max = os.pathconf(folder, "PC_NAME_MAX")
+    except (OSError, ValueError):
+        name_max = 255
+    return _DL_TEMPLATE.format(max(40, min(180, name_max - 64)))
 # "|" between fields: yt-dlp pads them with spaces, and "Unknown B/s" has one.
 _DL_PROG_TPL = ("download:cvprog|%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s"
                 "|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s"
@@ -6240,7 +6252,7 @@ def _dl_argv(video_id, folder, quality="best", auto=False):
         # The library files a video under its channel; yt-dlp's own artist
         # field would put a music video under the song's artist instead.
         "--parse-metadata", "%(channel,uploader)s:%(meta_artist)s",
-        "-P", folder, "-o", _DL_TEMPLATE,
+        "-P", folder, "-o", _dl_template(folder),
         "--", f"https://www.youtube.com/watch?v={video_id}",
     ])
 
@@ -6768,6 +6780,20 @@ def retry_download(job_id):
         conn.commit()
         conn.close()
     _dl_wake.set()
+    return jsonify({"ok": bool(n)}), (200 if n else 404)
+
+
+@app.post("/downloads/<int:job_id>/remove")
+def remove_download(job_id):
+    """Forget one finished job (done, canceled or failed) and any file it left."""
+    with _db_lock:
+        conn = get_conn()
+        n = conn.execute("DELETE FROM download_jobs WHERE id=? AND status IN ('done', 'canceled', 'failed')",
+                         (job_id,)).rowcount
+        conn.commit()
+        conn.close()
+    if n:
+        shutil.rmtree(_dl_folder(job_id), ignore_errors=True)
     return jsonify({"ok": bool(n)}), (200 if n else 404)
 
 

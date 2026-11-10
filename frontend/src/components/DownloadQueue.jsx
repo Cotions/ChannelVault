@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useDownloads, isActive, cancelJob, retryJob, clearJobs, qualityLabel } from "../lib/downloads";
+import { useDownloads, isActive, cancelJob, retryJob, removeJob, clearJobs, qualityLabel } from "../lib/downloads";
 import Icon from "./Icon";
 
 function statusLine(j, paused) {
@@ -77,6 +77,10 @@ export default function DownloadQueue() {
                   )}
                   {(j.status === "failed" || j.status === "canceled") && (
                     <button className="del-btn" title="Retry" onClick={() => retryJob(j.id)}><Icon name="refresh" /></button>
+                  )}
+                  {!isActive(j) && (
+                    <button className="del-btn" title="Remove from the list (and delete what it downloaded so far)"
+                            onClick={() => removeJob(j.id)}><Icon name="close" /></button>
                   )}
                 </div>
               ))}
