@@ -157,7 +157,7 @@ if [ ! -f "$DIST/index.html" ] || \
   if command -v bun &>/dev/null; then PM=bun
   elif command -v npm &>/dev/null; then PM=npm
   else die "UI build is missing or stale and neither bun nor npm is installed."; fi
-  [ -d "$ROOT/frontend/node_modules" ] || { say "Installing UI dependencies ($PM)"; (cd "$ROOT/frontend" && "$PM" install); }
+  [ -d "$ROOT/frontend/node_modules" ] || { say "Installing UI dependencies ($PM)"; (cd "$ROOT/frontend" && if [ "$PM" = bun ]; then bun install --frozen-lockfile; else npm install; fi); }
   say "UI source changed since the last build: rebuilding ($PM)"
   (cd "$ROOT/frontend" && "$PM" run build)
 fi

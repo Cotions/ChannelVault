@@ -27,10 +27,18 @@ function emit(next) {
 
 export const isActive = j => j.status === "queued" || j.status === "running";
 
+// The last answer as sent: a poll that changed nothing (most of them, idle or
+// not) re-renders nothing either, rather than every page holding a button.
+let lastAnswer = null;
+
 export async function refreshDownloads() {
   try {
     const d = await getDownloads();
-    emit({ ...state, installed: !!d.installed, jobs: d.jobs || [], paused: !!d.paused, loaded: true });
+    const answer = JSON.stringify(d);
+    if (answer !== lastAnswer || !state.loaded) {
+      lastAnswer = answer;
+      emit({ ...state, installed: !!d.installed, jobs: d.jobs || [], paused: !!d.paused, loaded: true });
+    }
   } catch { /* offline: keep what we had */ }
   clearTimeout(timer);
   // A hidden tab does not poll: coming back into view asks right away.
@@ -83,11 +91,13 @@ export async function clearJobs()   { await clearDownloads().catch(() => {}); aw
 /* Hold the queue: now = stop the running download midway too (it resumes
    from where it got to); now = false lets it finish first. */
 export async function pauseQueue(now = true) {
+  lastAnswer = null;            // shown ahead of the server: its answer wins
   emit({ ...state, paused: true });
   await pauseDownloads(true, now).catch(() => {});
   await refreshDownloads();
 }
 export async function resumeQueue() {
+  lastAnswer = null;            // shown ahead of the server: its answer wins
   emit({ ...state, paused: false });
   await pauseDownloads(false).catch(() => {});
   await refreshDownloads();

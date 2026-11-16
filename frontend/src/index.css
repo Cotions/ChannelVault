@@ -1183,7 +1183,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   border: 1px solid rgba(var(--glow-rgb), 0.4);
   border-radius: 6px;
   padding: 4px 6px;
-  backdrop-filter: blur(4px);
   pointer-events: none;
 }
 /* Duration reads as part of the frame, the way every video UI does it —
@@ -1201,8 +1200,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   background: rgba(6, 8, 12, 0.82);
   border-radius: 5px;
   padding: 4px 6px;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   pointer-events: none;
   transition: opacity 0.2s;
 }
@@ -1223,8 +1220,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   border: 1px solid rgba(var(--glow-rgb), 0.4);
   border-radius: 6px;
   padding: 4px 6px;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   pointer-events: none;
 }
 .video-thumb {
@@ -1351,8 +1346,6 @@ button:disabled { opacity: 0.5; cursor: default; }
   color: #ffb3b5;
   background: rgba(40, 12, 14, 0.82);
   border: 1px solid rgba(229, 72, 77, 0.45);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
   pointer-events: none;
   transition: opacity 0.18s;
 }

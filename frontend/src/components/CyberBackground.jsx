@@ -184,16 +184,30 @@ export default function CyberBackground() {
        outside it. While the shell animates in it may be see-through, so it
        covers nothing then. */
     const INSET = 12 + 3 * 18;
+    // Looked up again on each re-measure (null), not every frame; false: none.
+    let shell = null;
     function cover() {
-      const el = document.querySelector(".cv-shell");
+      if (shell === null || (shell && !shell.isConnected)) shell = document.querySelector(".cv-shell") || false;
+      const el = shell;
       if (!el || el.getAnimations().some(a => a.playState !== "finished")) return null;
       const r = el.getBoundingClientRect();
       if (r.width <= INSET * 2 || r.height <= INSET * 2) return null;
       return { l: r.left + INSET, t: r.top + INSET, r: r.right - INSET, b: r.bottom - INSET };
     }
 
+    /* About 30 frames a second is plenty for falling glyphs, and every frame
+       drawn makes the browser redo the frosted panels' blur above the canvas.
+       Movement goes by elapsed time, so the rain keeps its speed. A scroll
+       draws at once: the field is pinned to the page, and a skipped frame
+       would show as the rain lagging behind the content. */
+    const FRAME_MS = 1000 / 30 - 2;
+    let drawnScroll = -1;
+
     function frame(now) {
       raf = requestAnimationFrame(frame);
+      const scroll = window.scrollY || window.pageYOffset || 0;
+      if (last && now - last < FRAME_MS && scroll === drawnScroll) return;
+      drawnScroll = scroll;
       const dt = last ? Math.min((now - last) / 1000, 0.05) : 0.016;
       last = now;
       const t = now / 1000;
@@ -201,9 +215,8 @@ export default function CyberBackground() {
       // Page height changes as routes render; re-measure a few times a second
       // rather than every frame. Read-only, so it never thrashes layout.
       sinceMeasure += dt;
-      if (sinceMeasure > 0.4) { sinceMeasure = 0; measure(t); }
+      if (sinceMeasure > 0.4) { sinceMeasure = 0; shell = null; measure(t); }
 
-      const scroll = window.scrollY || window.pageYOffset || 0;
       const worldCy = cy + scroll;
       const hide = cover();
 

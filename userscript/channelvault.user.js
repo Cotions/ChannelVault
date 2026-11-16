@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ChannelVault
 // @namespace    https://github.com/Cotions/channelvault
-// @version      1.14.0
+// @version      1.14.1
 // @description  Shows a badge on YouTube videos you've downloaded locally via ChannelVault
 // @author       Cotions
 // @match        https://www.youtube.com/*
@@ -109,8 +109,10 @@ GM_addStyle(`
 // ---------------------------------------------------------------------------
 
 function getVideoId() {
-  const params = new URLSearchParams(window.location.search);
-  if (params.get("v")) return params.get("v");
+  // Checked like the Shorts id: it goes into a local API path, and a crafted
+  // link's "?v=../../x" would otherwise reach another endpoint.
+  const v = new URLSearchParams(window.location.search).get("v");
+  if (v && /^[A-Za-z0-9_-]{11}$/.test(v)) return v;
   const m = window.location.pathname.match(/^\/shorts\/([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
 }
