@@ -162,8 +162,16 @@ export default function App() {
   }
 
   useEffect(() => { load(); loadProfiles(); }, []);
-  // A download that lands in the library shows up without a reload.
-  useEffect(() => onDownloadDone(() => { load(); loadInboxCount(); }), []);   // eslint-disable-line react-hooks/exhaustive-deps
+  // A download that lands in the library shows up without a reload. A batch
+  // finishing back to back reloads the library once, not once per video.
+  useEffect(() => {
+    let t = null;
+    const off = onDownloadDone(() => {
+      clearTimeout(t);
+      t = setTimeout(() => { load(); loadInboxCount(); }, 1000);
+    });
+    return () => { off(); clearTimeout(t); };
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // New uploads waiting in the inbox. The poller runs on the server; checking
   // its count now and then keeps the sidebar badge current.

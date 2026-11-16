@@ -101,14 +101,14 @@ ui_is_stale() {
 
 build_ui() {
   local pm; pm="$(pkg_manager)" || die "Need bun or npm to build the UI"
-  [ -d "$ROOT/frontend/node_modules" ] || { say "Installing UI dependencies ($pm)"; (cd "$ROOT/frontend" && "$pm" install); }
+  [ -d "$ROOT/frontend/node_modules" ] || { say "Installing UI dependencies ($pm)"; (cd "$ROOT/frontend" && if [ "$pm" = bun ]; then bun install --frozen-lockfile; else npm install; fi); }
   say "Building UI ($pm)"
   (cd "$ROOT/frontend" && "$pm" run build)
 }
 
 if [ "$MODE" = dev ]; then
   pm="$(pkg_manager)" || die "Need bun or npm for dev mode"
-  [ -d "$ROOT/frontend/node_modules" ] || (cd "$ROOT/frontend" && "$pm" install)
+  [ -d "$ROOT/frontend/node_modules" ] || (cd "$ROOT/frontend" && if [ "$pm" = bun ]; then bun install --frozen-lockfile; else npm install; fi)
   say "Starting Vite dev server"
   (cd "$ROOT/frontend" && "$pm" run dev) &
   VITE_PID=$!

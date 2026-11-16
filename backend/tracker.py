@@ -25,6 +25,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -218,6 +219,24 @@ def _accepts_gzip():
 
 
 @app.after_request
+def _keep_to_self(resp):
+    """What other sites may do with our answers, which the origin guard can't
+    cover: the media routes are header-free by necessity.
+
+    No frames: a hidden frame would make its own same-origin calls, header
+    and all, and a page overlaid on it could steer clicks onto Remove or Quit.
+    No embedding elsewhere: any site could otherwise try
+    <video src="http://localhost:3360/stream/<id>"> and learn from whether it
+    loads which videos, artists or files the library has. "same-site", not
+    "same-origin", so the --dev UI on localhost:5173 still loads media."""
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+    resp.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    return resp
+
+
+@app.after_request
 def _shrink_json(resp):
     """Keep JSON answers off the wire when they can be.
 
@@ -243,7 +262,7 @@ def _shrink_json(resp):
             return resp
     if len(data) < 1024 or not _accepts_gzip():
         return resp
-    resp.set_data(gzip.compress(data, compresslevel=6))
+    resp.set_data(gzip.compress(data, compresslevel=1))   # local link: speed over size
     resp.headers["Content-Encoding"] = "gzip"
     resp.vary.add("Accept-Encoding")
     return resp
@@ -1158,8 +1177,16 @@ def _meta_from_tinytag(file_path):
     year = tag.year
     if isinstance(year, list):
         year = year[0] if year else None
+    # In an mp3 (Open Video Downloader's audio files, say) TinyTag can cut the
+    # comment short at the "?": "https://www.youtube.com/watch?". The whole
+    # link is still among its other fields, as "_comment" or "purl".
+    url = tag.comment
+    if not _entry_id(url)[0]:
+        extra = [v for key in ("_comment", "purl")
+                 for v in (other.get(key) if isinstance(other.get(key), list) else [other.get(key)])]
+        url = next((v for v in extra if isinstance(v, str) and _entry_id(v)[0]), url)
     return {
-        "url":           tag.comment,
+        "url":           url,
         "title":         tag.title,
         "artist":        _clean_name(tag.artist),
         "genre":         tag.genre,
@@ -1341,6 +1368,17 @@ def process_video_file(file_path):
         description   = meta.get("description")
         recorded_date = meta.get("recorded_date")
 
+        # A tracked row whose file is gone (moved or renamed outside the app)
+        # follows this copy. Finding out can mean searching the whole library
+        # for the old path, so that happens before taking _db_lock, which
+        # every other write waits on; the update below only lands if the row
+        # still points where it did.
+        conn = get_conn()
+        prev = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'",
+                            (video_id,)).fetchone()
+        conn.close()
+        stale = prev and prev["file_path"] != file_path and not resolve_media_path(prev["file_path"])
+
         with _db_lock:
             conn = get_conn()
             # Read under the lock so a rename can't slip in between.
@@ -1371,12 +1409,9 @@ def process_video_file(file_path):
             ''', (video_id, title, artist, url, file_path,
                   meta.get("genre"), description, recorded_date, meta.get("duration"), meta.get("filesize"), source,
                   meta.get("view_count"), meta.get("like_count")))
-            # A tracked row whose file is gone (moved or renamed outside the app)
-            # follows this copy, so it doesn't sit there as "missing" forever.
-            row = conn.execute("SELECT file_path FROM downloaded_videos WHERE video_id=? AND status='downloaded'",
-                               (video_id,)).fetchone()
-            if row and row["file_path"] != file_path and not resolve_media_path(row["file_path"]):
-                conn.execute("UPDATE downloaded_videos SET file_path=? WHERE video_id=?", (file_path, video_id))
+            if stale:
+                conn.execute("UPDATE downloaded_videos SET file_path=? WHERE video_id=? AND file_path=?",
+                             (file_path, video_id, prev["file_path"]))
             # An already-tracked row keeps its data, but its size follows the
             # file: a size read while the file was still being copied heals here.
             if meta.get("filesize"):
@@ -3947,7 +3982,16 @@ def data_quality_duplicates():
     conn = get_conn()
     tracks = {os.path.realpath(resolve_media_path(r[0]) or r[0])
               for r in conn.execute("SELECT file_path FROM audio_tracks")}
+    # A tracked file at the same path and size carries the id it was tracked
+    # under, the rule /scan already goes by: no tag read for it. Only the rest
+    # (untracked copies, changed files) gets parsed, which after a launch was
+    # every file in the library, ffprobe and all, minutes on a cold disk.
+    known = {r["file_path"]: (r["file_size_bytes"], r["video_id"])
+             for r in conn.execute(
+                 "SELECT file_path, file_size_bytes, video_id FROM downloaded_videos "
+                 "WHERE status = 'downloaded' AND file_path IS NOT NULL AND file_size_bytes IS NOT NULL")}
     conn.close()
+    found, unknown = {}, []       # path -> id, in walk order
     for root, _dirs, files in os.walk(watch_dir):
         for fname in files:
             if not fname.lower().endswith(_LIBRARY_EXTS):
@@ -3955,9 +3999,21 @@ def data_quality_duplicates():
             fpath = os.path.join(root, fname)
             if os.path.realpath(fpath) in tracks:
                 continue
-            vid = _file_link_id(fpath)
-            if vid:
-                groups[vid].append(fpath)
+            k = known.get(fpath)
+            try:
+                if k and os.path.getsize(fpath) == k[0]:
+                    found[fpath] = k[1]
+                    continue
+            except OSError:
+                continue
+            found[fpath] = None
+            unknown.append(fpath)
+    # Mostly waiting on the disk and on ffprobe: a few at a time.
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        found.update(zip(unknown, pool.map(_file_link_id, unknown)))
+    for fpath, vid in found.items():
+        if vid:
+            groups[vid].append(fpath)
     duplicates = [
         {"video_id": vid, "title": None, "files": paths}
         for vid, paths in groups.items()
@@ -6240,11 +6296,18 @@ def _dl_quality_args(quality):
     return ["-f", _DL_FORMAT, "--merge-output-format", "mp4"]
 
 
-def _dl_argv(video_id, folder, quality="best", auto=False):
+# Signed in, yt-dlp also asks YouTube's embedded-player client for formats,
+# and some of its stream URLs (seen on videos with dubbed audio tracks) answer
+# 403 Forbidden. A 403 retries once without that client; the other clients'
+# URLs work, and the stream already downloaded is resumed, not fetched again.
+_DL_403_RETRY = ["--extractor-args", "youtube:player_client=default,-web_embedded"]
+
+
+def _dl_argv(video_id, folder, quality="best", auto=False, extra=()):
     # Queued by the feed: a stream still live or a premiere not out yet is
     # skipped (and tried again later) rather than recorded for hours.
     wait = ["--match-filters", "!is_live & live_status != is_upcoming"] if auto else []
-    return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + wait + [
+    return (["yt-dlp", "--no-update"] + _cookie_args() + _js_runtime_args() + wait + list(extra) + [
         "--no-playlist", "--newline", "--progress",
         "--progress-template", _DL_PROG_TPL,
     ] + _dl_quality_args(quality) + [
@@ -6298,6 +6361,55 @@ def _dl_flag(name):
         return bool(_dl_live.get(name))
 
 
+def _dl_interrupted():
+    with _dl_state:
+        return any(_dl_live.get(k) for k in ("cancel", "stopping", "pausing"))
+
+
+def _dl_spawn(argv):
+    """Run one yt-dlp download, feeding _dl_live its progress.
+    Returns (exit code, the last lines it printed)."""
+    tail = []
+    proc = subprocess.Popen(_die_with_parent() + argv,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, text=True, errors="replace",
+                            bufsize=1, start_new_session=True)
+    with _dl_state:
+        _dl_live["proc"] = proc
+        if _dl_live.get("cancel") or _dl_live.get("stopping") or _dl_live.get("pausing"):
+            _dl_kill(proc)
+    try:
+        for line in proc.stdout:
+            line = _DL_ANSI.sub("", line).strip()
+            m = _DL_PROGRESS.match(line)
+            if m:
+                try:
+                    pct = float(m.group(1))
+                except ValueError:
+                    continue
+                speed, eta, done_b, total_b, vcodec = (
+                    "" if g.strip() in _DL_UNKNOWN else g.strip() for g in m.groups()[1:])
+                with _dl_state:
+                    # A "best" download is two passes, the picture then the
+                    # sound, each from 0 to 100 %; say which one this is.
+                    _dl_live["progress"] = {"percent": pct, "speed": speed, "eta": eta,
+                                            "downloaded": done_b, "total": total_b,
+                                            "stream": "audio" if vcodec == "none" else "video" if vcodec else ""}
+            elif line:
+                tail = (tail + [line])[-30:]
+                # Streams are down; ffmpeg merges them and embeds the tags.
+                if re.match(r"\[(Merger|Metadata|EmbedThumbnail|Fixup\w*|ThumbnailsConvertor)\]", line):
+                    with _dl_state:
+                        _dl_live["progress"] = {"percent": 100.0, "speed": "", "eta": "", "finishing": True}
+    finally:
+        with _dl_state:
+            if proc.poll() is None:
+                _dl_kill(proc)
+            proc.wait()
+            _dl_live.pop("proc", None)     # reaped: its pid may belong to someone else now
+    return proc.returncode, "\n".join(tail)
+
+
 def _dl_run(job):
     """Download one job and file it. Returns the columns to store."""
     folder  = _dl_folder(job["id"])
@@ -6313,59 +6425,26 @@ def _dl_run(job):
     os.makedirs(folder, exist_ok=True)
     with open(marker, "w") as f:
         f.write(quality)
-    tail = []
     # Retried after a filing failure: the file is already here, and yt-dlp
     # would only say so. File it again rather than download it again.
     if not _dl_result(folder):
-        proc = subprocess.Popen(_die_with_parent() + _dl_argv(job["video_id"], folder, quality, bool(job.get("auto"))),
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, text=True, errors="replace",
-                                bufsize=1, start_new_session=True)
-        with _dl_state:
-            _dl_live["proc"] = proc
-            if _dl_live.get("cancel") or _dl_live.get("stopping") or _dl_live.get("pausing"):
-                _dl_kill(proc)
-        try:
-            for line in proc.stdout:
-                line = _DL_ANSI.sub("", line).strip()
-                m = _DL_PROGRESS.match(line)
-                if m:
-                    try:
-                        pct = float(m.group(1))
-                    except ValueError:
-                        continue
-                    speed, eta, done_b, total_b, vcodec = (
-                        "" if g.strip() in _DL_UNKNOWN else g.strip() for g in m.groups()[1:])
-                    with _dl_state:
-                        # A "best" download is two passes, the picture then the
-                        # sound, each from 0 to 100 %; say which one this is.
-                        _dl_live["progress"] = {"percent": pct, "speed": speed, "eta": eta,
-                                                "downloaded": done_b, "total": total_b,
-                                                "stream": "audio" if vcodec == "none" else "video" if vcodec else ""}
-                elif line:
-                    tail = (tail + [line])[-30:]
-                    # Streams are down; ffmpeg merges them and embeds the tags.
-                    if re.match(r"\[(Merger|Metadata|EmbedThumbnail|Fixup\w*|ThumbnailsConvertor)\]", line):
-                        with _dl_state:
-                            _dl_live["progress"] = {"percent": 100.0, "speed": "", "eta": "", "finishing": True}
-        finally:
-            with _dl_state:
-                if proc.poll() is None:
-                    _dl_kill(proc)
-                proc.wait()
-                _dl_live.pop("proc", None)     # reaped: its pid may belong to someone else now
+        argv = _dl_argv(job["video_id"], folder, quality, bool(job.get("auto")))
+        code, text = _dl_spawn(argv)
+        if code != 0 and "HTTP Error 403" in text and not _dl_interrupted():
+            print(f"[downloads] {job['video_id']}: 403, retrying without the embedded-player client")
+            argv = _dl_argv(job["video_id"], folder, quality, bool(job.get("auto")), _DL_403_RETRY)
+            code, text = _dl_spawn(argv)
         if _dl_flag("stopping"):
             raise _DlStopped()
         if _dl_flag("cancel"):
             return {"status": "canceled"}
         # Paused after yt-dlp was already done: nothing to lose, file it.
-        if proc.returncode != 0 and _dl_flag("pausing"):
+        if code != 0 and _dl_flag("pausing"):
             raise _DlPaused()
-        text = "\n".join(tail)
         if job.get("auto") and ("does not pass filter" in text
                                 or re.search(r"Premieres in|live event will begin|is_upcoming", text)):
             return {"status": "failed", "error": _DL_NOT_OUT}
-        if proc.returncode != 0:
+        if code != 0:
             return {"status": "failed", "error": _ytdlp_error(text)}
     if _dl_flag("cancel"):
         return {"status": "canceled"}

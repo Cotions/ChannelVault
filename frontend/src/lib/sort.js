@@ -17,16 +17,23 @@ export const SORT_OPTIONS = [
 // Accents don't count: "beyonce" finds "Beyoncé".
 export const fold = (s) => (s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 
+// Each video's searchable text, folded once per fetch rather than on every
+// keystroke for every video. Rows are replaced, never edited in place, so a
+// changed video is a new key. "\0" between fields: a query never spans two.
+const folded = new WeakMap();
+function haystack(v) {
+  let h = folded.get(v);
+  if (h === undefined) {
+    h = [v.title, v.channel_name, v.description, ...(v.tags || []).map(t => t.name)].map(fold).join("\0");
+    folded.set(v, h);
+  }
+  return h;
+}
+
 export function videoMatches(v, query, descHits) {
   const q = fold(query).trim();
   if (!q) return true;
-  return (
-    fold(v.title).includes(q) ||
-    fold(v.channel_name).includes(q) ||
-    fold(v.description).includes(q) ||
-    !!descHits?.has(v.video_id) ||
-    (v.tags || []).some(t => fold(t.name).includes(q))
-  );
+  return haystack(v).includes(q) || !!descHits?.has(v.video_id);
 }
 
 // True when the video carries every one of the selected tag ids.

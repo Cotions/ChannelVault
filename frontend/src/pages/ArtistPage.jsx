@@ -153,16 +153,18 @@ function ArtistPageBody({ videos, wanted, ignored, query, rating: ratingSettings
   const pins = useSortPins();   // videos fetched seconds ago hold their slot
   const descHits = useDescriptionHits(q);
   const [page, setPage] = useRememberedPage(`artist:${artist}`, [q, sort, dir]);
-  const artistVideos  = sortVideos(
+  // Memoized: the page re-renders on every download poll and keystroke, and
+  // each pass otherwise filters and sorts the whole library again.
+  const artistVideos  = useMemo(() => sortVideos(
     videos.filter(v => artistsOf(v).includes(artist) && videoMatches(v, q, descHits)),
     sort, dir, pins
-  );
+  ), [videos, artist, q, descHits, sort, dir, pins]);
 
   const pageCount = Math.max(1, Math.ceil(artistVideos.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
   const pageVideos = artistVideos.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
-  const artistWanted  = wanted.filter(v => artistsOf(v).includes(artist));
-  const artistIgnored = ignored.filter(v => artistsOf(v).includes(artist));
+  const artistWanted  = useMemo(() => wanted.filter(v => artistsOf(v).includes(artist)), [wanted, artist]);
+  const artistIgnored = useMemo(() => ignored.filter(v => artistsOf(v).includes(artist)), [ignored, artist]);
   // A YouTube channel even with nothing downloaded yet: wanted or skipped
   // entries are enough to follow it (the userscript can already have).
   const onYouTube = [...artistVideos, ...artistWanted, ...artistIgnored].some(isYouTube);
